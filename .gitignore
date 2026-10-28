@@ -1,0 +1,27 @@
+# Build output
+target*/
+dist/
+*.log
+*.log.*
+*~
+*.swp
+.DS_Store
+
+# Local data and settings
+*.db
+*.sqlite
+service*.toml
+
+# Never commit game files, research output or captures
+*.big
+*.big[0-9]*
+*.sat
+*.sdf
+*.exe
+*.dll
+*.pcap
+*.pcapng
+*.idb
+*.i64
+*.gzf
+*.bndb
