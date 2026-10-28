@@ -134,13 +134,18 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             return Err(Error::ParsingError);
         };
         let from = ci.address().ip();
+        // A name no account can have is refused before it's counted, so it can't fill the limits.
+        if !crate::accounts::valid_name(&login.user_name) {
+            warn!(logger, "sign-in from {} refused: not a valid name", ci.address());
+            return Err(Error::AccessDenied);
+        }
         if !self.failed.allowed(from, &login.user_name, Instant::now()) {
             warn!(logger, "sign-in as {:?} from {} refused: too many failed sign-ins", login.user_name, ci.address());
             return Err(Error::AccessDenied);
         }
         let pid = match self.accounts.verify(&login.user_name, &login.password) {
             Ok(Some(pid)) => {
-                self.failed.succeeded(&login.user_name);
+                self.failed.succeeded(from, &login.user_name);
                 pid
             }
             Ok(None) => {

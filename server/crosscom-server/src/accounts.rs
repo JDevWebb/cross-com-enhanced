@@ -126,7 +126,7 @@ fn dummy_hash() -> &'static str {
     })
 }
 
-fn valid_name(name: &str) -> bool {
+pub fn valid_name(name: &str) -> bool {
     (1..=MAX_NAME_LEN).contains(&name.chars().count()) && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
