@@ -3,10 +3,10 @@
 //! there's nothing; the server logs what the game asked for.
 
 use grfs_protocols::friends_service::friends_protocol::*;
-use grfs_protocols::game_session_service::game_session_protocol::*;
 use grfs_protocols::localization_service::localization_protocol::*;
 use grfs_protocols::title_storage::title_storage_protocol::*;
 use grfs_protocols::tracking_service::tracking_protocol_3::*;
+use grfs_protocols::ubi_friends_service::ubi_friends_protocol::*;
 use quazal::prudp::ClientRegistry;
 use quazal::rmc::types::QList;
 use quazal::rmc::Error;
@@ -40,6 +40,19 @@ impl<CI> TitleStorageProtocolServerTrait<CI> for TitleStorage {
 struct Friends;
 
 impl<CI> FriendsProtocolServerTrait<CI> for Friends {
+    fn get_detailed_list(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        _request: GetDetailedListRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetDetailedListResponse, Error> {
+        player(ci)?;
+        Ok(Friends::none())
+    }
+
     fn get_relationships(
         &self,
         _logger: &Logger,
@@ -121,6 +134,31 @@ impl<CI> TrackingProtocol3ServerTrait<CI> for Tracking {
     }
 }
 
+impl Friends {
+    fn none() -> GetDetailedListResponse {
+        GetDetailedListResponse { lst_friends_list: vec![] }
+    }
+}
+
+struct UbiFriends;
+
+impl<CI> UbiFriendsProtocolServerTrait<CI> for UbiFriends {
+    fn get_relationships_list(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        _request: GetRelationshipsListRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetRelationshipsListResponse, Error> {
+        player(ci)?;
+        Ok(GetRelationshipsListResponse {
+            relationships_list: QList(vec![]),
+        })
+    }
+}
+
 struct Localization;
 
 impl<CI> LocalizationProtocolServerTrait<CI> for Localization {
@@ -152,30 +190,12 @@ impl<CI> LocalizationProtocolServerTrait<CI> for Localization {
     }
 }
 
-/// Game sessions: none yet, so searches find nothing.
-struct GameSessions;
-
-impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
-    fn search_sessions_with_participants(
-        &self,
-        _logger: &Logger,
-        _ctx: &Context,
-        ci: &mut ClientInfo<CI>,
-        _request: SearchSessionsWithParticipantsRequest,
-        _client_registry: &ClientRegistry<CI>,
-        _socket: &std::net::UdpSocket,
-    ) -> Result<SearchSessionsWithParticipantsResponse, Error> {
-        player(ci)?;
-        Ok(SearchSessionsWithParticipantsResponse { search_results: QList(vec![]) })
-    }
-}
-
 pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
     vec![
         Box::new(TitleStorageProtocolServer::new(TitleStorage)),
         Box::new(FriendsProtocolServer::new(Friends)),
+        Box::new(UbiFriendsProtocolServer::new(UbiFriends)),
         Box::new(TrackingProtocol3Server::new(Tracking)),
         Box::new(LocalizationProtocolServer::new(Localization)),
-        Box::new(GameSessionProtocolServer::new(GameSessions)),
     ]
 }

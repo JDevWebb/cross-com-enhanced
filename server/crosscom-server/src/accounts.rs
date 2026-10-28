@@ -95,6 +95,12 @@ impl Accounts {
         Ok(next)
     }
 
+    /// The name of the account with this PID.
+    pub fn name(&self, pid: u32) -> Result<Option<String>, Error> {
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(db.query_row("SELECT name FROM accounts WHERE pid = ?1", [pid], |r| r.get(0)).optional()?)
+    }
+
     /// The account's PID, if the name and password match one. An unknown name takes as long as a
     /// wrong password, so the time taken doesn't tell which names exist.
     pub fn verify(&self, name: &str, password: &str) -> Result<Option<u32>, Error> {

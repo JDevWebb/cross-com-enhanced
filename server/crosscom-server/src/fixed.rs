@@ -95,11 +95,11 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
         FixedProtocol {
             id: 110,
             name: "ClansProtocol",
-            // The player's clan; the game carried on with 1.
+            // The player's clan: none (0). With 1 the game went on to ask for that clan's details.
             methods: &[Method {
                 id: 13,
                 name: "GetCurUserClan",
-                answer: || 1u32.to_bytes(),
+                answer: || 0u32.to_bytes(),
             }],
         },
         FixedProtocol {

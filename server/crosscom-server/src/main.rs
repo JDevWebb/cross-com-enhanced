@@ -13,11 +13,13 @@
 mod accounts;
 mod config;
 mod fixed;
+mod game_session;
 mod menu;
 mod online_config;
 mod privileges;
 mod rate_limit;
 mod secure;
+mod sessions;
 mod stats;
 mod ticket;
 
@@ -154,8 +156,10 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             move |logger| run_server(&logger, &auth, |handler| handler.register_protocol(ticket::new_protocol(accounts)))
         }),
         spawn("secure", logger.clone(), move |logger| {
+            let sessions = Arc::new(sessions::Sessions::default());
             run_server(&logger, &secure, |handler| {
-                handler.register_protocol(secure::new_protocol());
+                handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
+                handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts)));
                 handler.register_protocol(privileges::new_protocol());
                 for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
                     handler.register_protocol(protocol);

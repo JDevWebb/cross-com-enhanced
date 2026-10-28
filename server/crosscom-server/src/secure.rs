@@ -1,6 +1,8 @@
 //! Registering on the secure server (`SecureConnectionProtocol`): the game sends its own station
 //! URLs and gets its connection ID and its public address back.
 
+use std::sync::Arc;
+
 use grfs_protocols::secure_connection_service::secure_connection_protocol::*;
 use quazal::prudp::ClientRegistry;
 use quazal::rmc::types::QResult;
@@ -12,7 +14,9 @@ use quazal::Context;
 use slog::info;
 use slog::Logger;
 
-struct SecureConnection;
+struct SecureConnection {
+    sessions: Arc<crate::sessions::Sessions>,
+}
 
 /// The connection ID and the address the server sees the player at. The game's tracking
 /// principal registers its own connection too, so any signed-in principal may.
@@ -55,6 +59,12 @@ impl<CI> SecureConnectionProtocolServerTrait<CI> for SecureConnection {
     ) -> Result<RegisterExResponse, Error> {
         let (pid_connection_id, url_public) = registered(ci, 15, 3)?;
         info!(logger, "{:?} registered: {:?}", ci.user_id, request.vec_my_urls);
+        if let Some(pid) = ci.user_id {
+            // Where other players reach this one: what it says, then what the server sees.
+            let mut urls = request.vec_my_urls;
+            urls.push(url_public.clone());
+            self.sessions.set_urls(pid, urls);
+        }
         Ok(RegisterExResponse {
             return_value: QResult::Ok,
             pid_connection_id,
@@ -63,6 +73,6 @@ impl<CI> SecureConnectionProtocolServerTrait<CI> for SecureConnection {
     }
 }
 
-pub fn new_protocol<CI: 'static>() -> Box<dyn Protocol<CI>> {
-    Box::new(SecureConnectionProtocolServer::new(SecureConnection))
+pub fn new_protocol<CI: 'static>(sessions: Arc<crate::sessions::Sessions>) -> Box<dyn Protocol<CI>> {
+    Box::new(SecureConnectionProtocolServer::new(SecureConnection { sessions }))
 }
