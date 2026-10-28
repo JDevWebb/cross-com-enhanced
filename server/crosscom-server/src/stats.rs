@@ -31,8 +31,15 @@ use slog::info;
 use slog::Logger;
 
 const READ_INT32: u32 = 6;
-/// Lists in a request longer than this are refused; the game asks for a handful.
-const MAX_LIST: u32 = 4096;
+/// The longest lists a request may have. The game asks for 16 boards of one player, each with
+/// up to 2 keys and 12 columns; leaderboards ask for more players.
+const MAX_BOARDS: u32 = 64;
+const MAX_KEYS: u32 = 16;
+const MAX_COLUMNS: u32 = 64;
+const MAX_PLAYERS: u32 = 256;
+/// The biggest reply a read may need: the reply grows with players × boards × columns, so a
+/// small request could otherwise ask for a huge one.
+const MAX_REPLY: usize = 256 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 struct BoardQuery {
@@ -47,9 +54,9 @@ struct ReadRequest {
     players: Vec<u32>,
 }
 
-fn read_list<T>(rdr: &mut Cursor<&[u8]>, mut item: impl FnMut(&mut Cursor<&[u8]>) -> std::io::Result<T>) -> Result<Vec<T>, Error> {
+fn read_list<T>(rdr: &mut Cursor<&[u8]>, max: u32, mut item: impl FnMut(&mut Cursor<&[u8]>) -> std::io::Result<T>) -> Result<Vec<T>, Error> {
     let len = rdr.read_u32::<LittleEndian>().map_err(|_| Error::ParsingError)?;
-    if len > MAX_LIST {
+    if len > max {
         return Err(Error::ParsingError);
     }
     (0..len).map(|_| item(rdr).map_err(|_| Error::ParsingError)).collect()
@@ -57,14 +64,24 @@ fn read_list<T>(rdr: &mut Cursor<&[u8]>, mut item: impl FnMut(&mut Cursor<&[u8]>
 
 fn parse_read(parameters: &[u8]) -> Result<ReadRequest, Error> {
     let mut rdr = Cursor::new(parameters);
-    let boards = read_list(&mut rdr, |r| {
+    let boards = read_list(&mut rdr, MAX_BOARDS, |r| {
         let board = r.read_u8()?;
-        let keys = read_list(r, |r| r.read_u32::<LittleEndian>()).map_err(|_| std::io::ErrorKind::InvalidData)?;
-        let columns = read_list(r, |r| r.read_u8()).map_err(|_| std::io::ErrorKind::InvalidData)?;
+        let keys = read_list(r, MAX_KEYS, |r| r.read_u32::<LittleEndian>()).map_err(|_| std::io::ErrorKind::InvalidData)?;
+        let columns = read_list(r, MAX_COLUMNS, |r| r.read_u8()).map_err(|_| std::io::ErrorKind::InvalidData)?;
         Ok(BoardQuery { board, keys, columns })
     })?;
-    let players = read_list(&mut rdr, |r| r.read_u32::<LittleEndian>())?;
-    Ok(ReadRequest { boards, players })
+    let players = read_list(&mut rdr, MAX_PLAYERS, |r| r.read_u32::<LittleEndian>())?;
+    let request = ReadRequest { boards, players };
+    if reply_size(&request) > MAX_REPLY {
+        return Err(Error::ParsingError);
+    }
+    Ok(request)
+}
+
+/// The size of the reply to `request`, in bytes.
+fn reply_size(request: &ReadRequest) -> usize {
+    let per_player: usize = 4 + 4 + request.boards.iter().map(|b| 1 + 4 + 4 * b.keys.len() + 4 + 5 * b.columns.len()).sum::<usize>();
+    4 + request.players.len() * per_player
 }
 
 /// The reply to a ReadPlayerStatsInt32: every asked-for column of every board, for every
@@ -204,6 +221,28 @@ mod tests {
             2, 0, 0, 0, 0,                      // column 2 = 0
         ];
         assert_eq!(read_int32_reply(&read), expected);
+    }
+
+    #[test]
+    fn refuses_requests_for_huge_replies() {
+        // Within every list's cap, but players × boards × columns is too big.
+        let mut req = Vec::new();
+        req.write_u32::<LittleEndian>(MAX_BOARDS).unwrap();
+        for _ in 0..MAX_BOARDS {
+            req.write_u8(1).unwrap();
+            req.write_u32::<LittleEndian>(0).unwrap();
+            req.write_u32::<LittleEndian>(MAX_COLUMNS).unwrap();
+            req.extend(std::iter::repeat(1).take(MAX_COLUMNS as usize));
+        }
+        req.write_u32::<LittleEndian>(MAX_PLAYERS).unwrap();
+        req.extend(std::iter::repeat(7).take(4 * MAX_PLAYERS as usize));
+        assert!(parse_read(&req).is_err());
+    }
+
+    #[test]
+    fn the_reply_size_is_exact() {
+        let read = parse_read(&bytes(FROM_THE_GAME)).unwrap();
+        assert_eq!(reply_size(&read), read_int32_reply(&read).len());
     }
 
     #[test]
