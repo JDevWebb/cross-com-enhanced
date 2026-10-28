@@ -42,11 +42,12 @@ struct Count {
     failures: u32,
 }
 
-/// The key an address is counted under: IPv6 addresses by their /64, which one connection
-/// usually has all of.
+/// The key an address is counted under. An IPv4 address seen on an IPv6 socket
+/// (`::ffff:a.b.c.d`) counts as itself; real IPv6 addresses count by their /64, which one
+/// connection usually has all of.
 fn address_key(address: IpAddr) -> IpAddr {
-    match address {
-        IpAddr::V4(_) => address,
+    match address.to_canonical() {
+        address @ IpAddr::V4(_) => address,
         IpAddr::V6(v6) => {
             let mut segments = v6.segments();
             segments[4..].fill(0);
@@ -80,7 +81,7 @@ impl FailedSignIns {
     pub fn allowed(&self, address: IpAddr, name: &str, now: Instant) -> bool {
         let tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let name = name.to_lowercase();
-        let known = tables.known.get(&name).is_some_and(|a| a.contains(&address));
+        let known = tables.known.get(&name).is_some_and(|a| a.contains(&address.to_canonical()));
         current(tables.by_address.get(&address_key(address)), now) < MAX_PER_ADDRESS && (known || current(tables.by_name.get(&name), now) < MAX_PER_NAME)
     }
 
@@ -100,6 +101,7 @@ impl FailedSignIns {
                 tables.known.remove(&any);
             }
         }
+        let address = address.to_canonical();
         let known = tables.known.entry(name).or_default();
         known.retain(|a| *a != address);
         known.push(address);
@@ -170,6 +172,19 @@ mod tests {
         assert_eq!(table.len(), MAX_ENTRIES);
         assert_eq!(table[&usize::MAX].failures, MAX_PER_NAME - 1, "the near-limit count survives");
         assert!(!table.contains_key(&0), "single failures went, oldest first");
+    }
+
+    #[test]
+    fn ipv4_on_an_ipv6_socket_counts_as_itself() {
+        let limits = FailedSignIns::default();
+        let now = Instant::now();
+        for i in 0..MAX_PER_ADDRESS {
+            limits.failed("::ffff:192.0.2.1".parse().unwrap(), &format!("name{i}"), now);
+        }
+        assert!(!limits.allowed("192.0.2.1".parse().unwrap(), "other", now), "the same address either way");
+        assert!(limits.allowed("::ffff:192.0.2.2".parse().unwrap(), "other", now), "other IPv4 players aren't affected");
+        limits.succeeded("::ffff:192.0.2.9".parse().unwrap(), "Kozak");
+        assert_eq!(address_key("::ffff:192.0.2.9".parse().unwrap()), "192.0.2.9".parse::<IpAddr>().unwrap());
     }
 
     #[test]
