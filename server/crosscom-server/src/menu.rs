@@ -2,6 +2,7 @@
 //! storage content, the friends list and the tracking configuration. For now they answer that
 //! there's nothing; the server logs what the game asked for.
 
+use grfs_protocols::friend_messages_extension_service::friend_messages_extension_service_protocol::*;
 use grfs_protocols::friends_service::friends_protocol::*;
 use grfs_protocols::localization_service::localization_protocol::*;
 use grfs_protocols::title_storage::title_storage_protocol::*;
@@ -159,6 +160,24 @@ impl<CI> UbiFriendsProtocolServerTrait<CI> for UbiFriends {
     }
 }
 
+/// Friend invitation messages: none yet.
+struct FriendMessages;
+
+impl<CI> FriendMessagesExtensionServiceProtocolServerTrait<CI> for FriendMessages {
+    fn receive_friend_invitation_messages(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        _request: ReceiveFriendInvitationMessagesRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<ReceiveFriendInvitationMessagesResponse, Error> {
+        player(ci)?;
+        Ok(ReceiveFriendInvitationMessagesResponse { messages: vec![] })
+    }
+}
+
 struct Localization;
 
 impl<CI> LocalizationProtocolServerTrait<CI> for Localization {
@@ -195,6 +214,7 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
         Box::new(TitleStorageProtocolServer::new(TitleStorage)),
         Box::new(FriendsProtocolServer::new(Friends)),
         Box::new(UbiFriendsProtocolServer::new(UbiFriends)),
+        Box::new(FriendMessagesExtensionServiceProtocolServer::new(FriendMessages)),
         Box::new(TrackingProtocol3Server::new(Tracking)),
         Box::new(LocalizationProtocolServer::new(Localization)),
     ]
