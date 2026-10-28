@@ -73,6 +73,21 @@ impl<CI> PrivilegesProtocolServerTrait<CI> for Privileges {
         Ok(GetPrivilegesResponse { privileges })
     }
 
+    fn get_expired_privileges(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        _request: GetExpiredPrivilegesRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetExpiredPrivilegesResponse, Error> {
+        crate::ticket::player(ci)?;
+        Ok(GetExpiredPrivilegesResponse {
+            expired_privileges: QList(vec![]),
+        })
+    }
+
     fn get_privileges_ex(
         &self,
         _logger: &Logger,

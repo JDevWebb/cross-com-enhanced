@@ -12,6 +12,8 @@
 
 mod accounts;
 mod config;
+mod fixed;
+mod menu;
 mod online_config;
 mod privileges;
 mod rate_limit;
@@ -154,6 +156,9 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             run_server(&logger, &secure, |handler| {
                 handler.register_protocol(secure::new_protocol());
                 handler.register_protocol(privileges::new_protocol());
+                for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
+                    handler.register_protocol(protocol);
+                }
             })
         }),
     ];
