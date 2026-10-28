@@ -294,6 +294,7 @@ name = "crosscom-server"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "byteorder",
  "grfs_protocols",
  "quazal",
  "rand",

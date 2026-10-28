@@ -13,7 +13,9 @@
 //! The keys are `-1` or empty in what the game sends (16 boards when its menus load); they're
 //! echoed back.
 //!
-//! Nothing is stored yet, so every value read is 0, as for a new player.
+//! The five reads differ only in their values: an i32, an i64, an f32, a string (u16 length,
+//! then the bytes) or a blob (u16 length, then the bytes). Nothing is stored yet, so every value
+//! read is zero or empty, as for a new player.
 
 use std::io::Cursor;
 
@@ -21,6 +23,7 @@ use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
 use quazal::prudp::ClientRegistry;
+use quazal::rmc::basic::ToStream;
 use quazal::rmc::Error;
 use quazal::rmc::Protocol;
 use quazal::rmc::Request;
@@ -30,7 +33,21 @@ use slog::debug;
 use slog::info;
 use slog::Logger;
 
+/// A read's method, by the type of its values.
 const READ_INT32: u32 = 6;
+const READ_BLOB: u32 = 10;
+
+/// A new player's value, encoded, for a read method.
+fn zero_value(method: u32) -> Option<Vec<u8>> {
+    match method {
+        READ_INT32 => Some(vec![0; 4]),
+        7 => Some(vec![0; 8]),                // Int64
+        8 => Some(0f32.to_le_bytes().into()), // Float
+        9 => Some(String::new().to_bytes()),  // String
+        READ_BLOB => Some(vec![0, 0]),        // Blob: an empty u16-length buffer
+        _ => None,
+    }
+}
 /// The longest lists a request may have. The game asks for 16 boards of one player, each with
 /// up to 2 keys and 12 columns; leaderboards ask for more players.
 const MAX_BOARDS: u32 = 64;
@@ -71,22 +88,27 @@ fn parse_read(parameters: &[u8]) -> Result<ReadRequest, Error> {
         Ok(BoardQuery { board, keys, columns })
     })?;
     let players = read_list(&mut rdr, MAX_PLAYERS, |r| r.read_u32::<LittleEndian>())?;
-    let request = ReadRequest { boards, players };
-    if reply_size(&request) > MAX_REPLY {
-        return Err(Error::ParsingError);
-    }
-    Ok(request)
+    Ok(ReadRequest { boards, players })
 }
 
-/// The size of the reply to `request`, in bytes.
-fn reply_size(request: &ReadRequest) -> usize {
-    let per_player: usize = 4 + 4 + request.boards.iter().map(|b| 1 + 4 + 4 * b.keys.len() + 4 + 5 * b.columns.len()).sum::<usize>();
+/// The size of the reply to `request`, in bytes, with values `value_len` bytes long.
+fn reply_size(request: &ReadRequest, value_len: usize) -> usize {
+    let per_player: usize = 4
+        + 4
+        + request
+            .boards
+            .iter()
+            .map(|b| 1 + 4 + 4 * b.keys.len() + 4 + (1 + value_len) * b.columns.len())
+            .sum::<usize>();
     4 + request.players.len() * per_player
 }
 
-/// The reply to a ReadPlayerStatsInt32: every asked-for column of every board, for every
-/// asked-for player, as 0.
-fn read_int32_reply(request: &ReadRequest) -> Vec<u8> {
+/// The reply to a read: every asked-for column of every board, for every asked-for player, set to
+/// `value`. Refused when it would be too big: the reply grows with players × boards × columns.
+fn read_reply(request: &ReadRequest, value: &[u8]) -> Result<Vec<u8>, Error> {
+    if reply_size(request, value.len()) > MAX_REPLY {
+        return Err(Error::ParsingError);
+    }
     let mut out = Vec::new();
     #[allow(clippy::cast_possible_truncation)] // bounded by MAX_LIST
     let len = |n: usize| n as u32;
@@ -103,11 +125,11 @@ fn read_int32_reply(request: &ReadRequest) -> Vec<u8> {
             out.write_u32::<LittleEndian>(len(query.columns.len())).ok();
             for &column in &query.columns {
                 out.write_u8(column).ok();
-                out.write_i32::<LittleEndian>(0).ok();
+                out.extend_from_slice(value);
             }
         }
     }
-    out
+    Ok(out)
 }
 
 pub struct PlayerStatistics;
@@ -135,7 +157,7 @@ impl<CI> Protocol<CI> for PlayerStatistics {
         _socket: &std::net::UdpSocket,
     ) -> Result<Vec<u8>, Error> {
         crate::ticket::player(ci)?;
-        if request.method_id != READ_INT32 {
+        let Some(value) = zero_value(request.method_id) else {
             let shown = &request.parameters[..request.parameters.len().min(512)];
             info!(
                 logger,
@@ -144,10 +166,10 @@ impl<CI> Protocol<CI> for PlayerStatistics {
                 shown.iter().map(|b| format!("{b:02x}")).collect::<String>()
             );
             return Err(Error::UnknownMethod);
-        }
+        };
         let read = parse_read(&request.parameters)?;
-        debug!(logger, "ReadPlayerStatsInt32 {read:?}");
-        Ok(read_int32_reply(&read))
+        debug!(logger, "PlayerStatistics.{} {read:?}", request.method_id);
+        read_reply(&read, &value)
     }
 
     fn method_name(&self, method_id: u32) -> Option<String> {
@@ -220,7 +242,7 @@ mod tests {
             1, 0, 0, 0, 0,                      // column 1 = 0
             2, 0, 0, 0, 0,                      // column 2 = 0
         ];
-        assert_eq!(read_int32_reply(&read), expected);
+        assert_eq!(read_reply(&read, &zero_value(READ_INT32).unwrap()).unwrap(), expected);
     }
 
     #[test]
@@ -236,13 +258,29 @@ mod tests {
         }
         req.write_u32::<LittleEndian>(MAX_PLAYERS).unwrap();
         req.extend(std::iter::repeat(7).take(4 * MAX_PLAYERS as usize));
-        assert!(parse_read(&req).is_err());
+        let read = parse_read(&req).unwrap();
+        assert!(read_reply(&read, &zero_value(7).unwrap()).is_err());
     }
 
     #[test]
-    fn the_reply_size_is_exact() {
+    fn the_reply_size_is_exact_for_every_value_type() {
         let read = parse_read(&bytes(FROM_THE_GAME)).unwrap();
-        assert_eq!(reply_size(&read), read_int32_reply(&read).len());
+        for method in READ_INT32..=READ_BLOB {
+            let value = zero_value(method).unwrap();
+            assert_eq!(reply_size(&read, value.len()), read_reply(&read, &value).unwrap().len(), "method {method}");
+        }
+    }
+
+    #[test]
+    fn values_for_each_read() {
+        assert_eq!(zero_value(7).unwrap(), vec![0; 8]);
+        assert_eq!(
+            zero_value(9).unwrap(),
+            vec![0, 0],
+            "an empty string, as quazal writes it (the game takes it: LoginEx's empty message is the same)"
+        );
+        assert_eq!(zero_value(READ_BLOB).unwrap(), vec![0, 0]);
+        assert_eq!(zero_value(1), None, "sends aren't reads");
     }
 
     #[test]
