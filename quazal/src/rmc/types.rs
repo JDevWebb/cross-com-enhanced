@@ -74,20 +74,29 @@ impl Display for StationURL {
 }
 
 impl ToStream for StationURL {
+    /// No URL (the default) is written as an empty string, as it's read.
     fn to_stream<W>(&self, stream: &mut WriteStream<W>) -> io::Result<usize>
     where
         W: WriteBytesExt,
     {
+        if self.scheme.is_empty() && self.address.is_empty() {
+            return stream.write(&String::new());
+        }
         stream.write(&self.to_string())
     }
 }
 
 impl FromStream for StationURL {
+    /// An empty string is no URL (the default): games send it for an address they haven't got.
     fn from_stream<R>(stream: &mut ReadStream<R>) -> Result<Self, FromStreamError>
     where
         R: ReadBytesExt,
     {
-        Ok(stream.read::<String>()?.parse()?)
+        let text = stream.read::<String>()?;
+        if text.is_empty() {
+            return Ok(Self::default());
+        }
+        Ok(text.parse()?)
     }
 }
 
@@ -535,6 +544,28 @@ mod tests {
 
 /// Upper bound for pre-allocating a list whose length a peer sent us.
 const MAX_PREALLOC: usize = 256;
+
+#[cfg(test)]
+mod station_url_tests {
+    use super::StationURL;
+    use crate::rmc::basic::FromStream;
+    use crate::rmc::basic::ToStream;
+
+    #[test]
+    fn an_empty_string_is_no_url_both_ways() {
+        let empty = String::new().to_bytes();
+        let url = StationURL::from_bytes(&empty).unwrap();
+        assert!(url.scheme.is_empty() && url.address.is_empty());
+        assert_eq!(url.to_bytes(), empty);
+    }
+
+    #[test]
+    fn a_url_round_trips() {
+        let url: StationURL = "prudp:/address=192.168.1.20;port=3074".parse().unwrap();
+        let back = StationURL::from_bytes(&url.to_bytes()).unwrap();
+        assert_eq!((back.scheme.as_str(), back.address.as_str(), back.port), ("prudp", "192.168.1.20", 3074));
+    }
+}
 
 #[cfg(test)]
 mod any_tests {
