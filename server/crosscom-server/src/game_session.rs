@@ -395,6 +395,73 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     }
 }
 
+/// `GameSession.RegisterURLs`, read here rather than by the generated code: the game sends
+/// entries that aren't station URLs as `quazal` reads them, and a parse failure made it abandon
+/// the session it had just made. Each entry is logged; those that parse are kept.
+const REGISTER_URLS: u32 = 21;
+/// URLs read from one call at most.
+const MAX_REGISTERED: u32 = 16;
+
+struct GameSessionProtocol<CI> {
+    generated: Box<dyn Protocol<CI>>,
+    sessions: Arc<Sessions>,
+}
+
+impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
+    fn id(&self) -> u16 {
+        self.generated.id()
+    }
+
+    fn name(&self) -> String {
+        self.generated.name()
+    }
+
+    fn num_methods(&self) -> u32 {
+        self.generated.num_methods()
+    }
+
+    fn handle(
+        &self,
+        logger: &Logger,
+        ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: &quazal::rmc::Request,
+        client_registry: &ClientRegistry<CI>,
+        socket: &std::net::UdpSocket,
+    ) -> Result<Vec<u8>, Error> {
+        if request.method_id != REGISTER_URLS {
+            return self.generated.handle(logger, ctx, ci, request, client_registry, socket);
+        }
+        let pid = player(ci)?;
+        let mut stream = quazal::rmc::basic::ReadStream::from_bytes(&request.parameters);
+        let count: u32 = stream.read().map_err(|_| Error::ParsingError)?;
+        let mut urls = Vec::new();
+        for _ in 0..count.min(MAX_REGISTERED) {
+            let text: String = stream.read().map_err(|_| Error::ParsingError)?;
+            match text.parse::<quazal::rmc::types::StationURL>() {
+                Ok(url) => urls.push(url),
+                Err(e) => info!(logger, "{pid:#x} registered a URL that isn't one ({e}): {text:?}"),
+            }
+        }
+        info!(logger, "{pid:#x} registered URLs {urls:?}");
+        let observed = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
+            .parse()
+            .map_err(|_| Error::InternalError)?;
+        self.sessions.set_urls(pid, observed, urls);
+        Ok(Vec::new())
+    }
+
+    fn method_name(&self, method_id: u32) -> Option<String> {
+        self.generated.method_name(method_id)
+    }
+}
+
 pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>) -> Box<dyn Protocol<CI>> {
-    Box::new(GameSessionProtocolServer::new(GameSessions { sessions, accounts }))
+    Box::new(GameSessionProtocol {
+        generated: Box::new(GameSessionProtocolServer::new(GameSessions {
+            sessions: Arc::clone(&sessions),
+            accounts,
+        })),
+        sessions,
+    })
 }
