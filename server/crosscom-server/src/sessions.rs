@@ -29,6 +29,8 @@ pub struct Session {
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
+    /// When it was made, in order: IDs are random, so they don't tell.
+    created: u64,
 }
 
 impl Session {
@@ -69,6 +71,7 @@ pub struct Sessions {
 
 #[derive(Default)]
 struct Inner {
+    created: u64,
     sessions: BTreeMap<Key, Session>,
     urls: HashMap<u32, Vec<StationURL>>,
 }
@@ -105,7 +108,9 @@ impl Sessions {
     /// go when they have too many (the game makes a new one each time).
     pub fn create(&self, host: u32, type_id: u32, attributes: &[(u32, u32)]) -> Result<Key, Error> {
         let mut inner = self.lock();
-        let hosted: Vec<Key> = inner.sessions.iter().filter(|(_, s)| s.host == host).map(|(k, _)| *k).collect();
+        let mut hosted: Vec<(u64, Key)> = inner.sessions.iter().filter(|(_, s)| s.host == host).map(|(k, s)| (s.created, *k)).collect();
+        hosted.sort_unstable();
+        let hosted: Vec<Key> = hosted.into_iter().map(|(_, k)| k).collect();
         for key in hosted.iter().take((hosted.len() + 1).saturating_sub(MAX_PER_HOST)) {
             inner.sessions.remove(key);
         }
@@ -119,6 +124,8 @@ impl Sessions {
                 break (type_id, id);
             }
         };
+        inner.created += 1;
+        let created = inner.created;
         let mut attrs = Vec::new();
         set_attributes(&mut attrs, attributes);
         inner.sessions.insert(
@@ -128,6 +135,7 @@ impl Sessions {
                 attributes: attrs,
                 participants: vec![host],
                 joined: vec![host],
+                created,
             },
         );
         Ok(key)
