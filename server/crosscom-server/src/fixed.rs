@@ -142,7 +142,21 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
         FixedProtocol {
             id: 121,
             name: "MapListProtocol",
-            methods: &[],
+            // Both answer a list<u32> (worked out from the game's encoders): the map categories,
+            // and a category's maps. Empty for now, so the game keeps its own map rotation; which
+            // IDs it expects is still to work out.
+            methods: &[
+                Method {
+                    id: 1,
+                    name: "GetAvailableMapCategories",
+                    answer: || EMPTY_LIST.to_vec(),
+                },
+                Method {
+                    id: 2,
+                    name: "GetMapList",
+                    answer: || EMPTY_LIST.to_vec(),
+                },
+            ],
         },
         FixedProtocol {
             id: 125,
