@@ -1,0 +1,217 @@
+#![feature(seek_stream_len, proc_macro_hygiene, cursor_split, associated_type_defaults)]
+#![deny(clippy::pedantic)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
+#[macro_use]
+extern crate slog;
+#[macro_use]
+extern crate quazal_macros;
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::time::Instant;
+
+use derive_more::Display;
+use derive_more::Error as DeriveError;
+
+pub mod config;
+pub mod kerberos;
+pub mod prudp;
+pub mod rmc;
+
+pub use crate::config::*;
+
+/// Represents an error that can occur in the application.
+#[derive(Debug, Display, DeriveError)]
+pub enum Error {
+    /// The requested service was not found.
+    #[display("Service {_0} not found")]
+    ServiceNotFound(#[error(not(source))] String),
+    /// An invalid value was provided.
+    InvalidValue,
+}
+
+/// Represents a unique connection identifier.
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+pub struct ConnectionID(u32);
+
+impl From<ConnectionID> for u32 {
+    fn from(value: ConnectionID) -> Self {
+        value.0
+    }
+}
+
+impl FromStr for ConnectionID {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ConnectionID(s.parse()?))
+    }
+}
+
+/// Represents a signature for a client or server.
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+struct Signature(u32);
+
+/// Holds information about a client connection.
+#[derive(Debug)]
+pub struct ClientInfo<T = ()> {
+    /// The server's sequence ID for the connection.
+    server_sequence_id: u16,
+    /// The client's sequence ID for the connection.
+    client_sequence_id: u16,
+    /// The client's signature, if available.
+    client_signature: Option<u32>,
+    /// The server's signature.
+    server_signature: u32,
+    /// The client's session ID.
+    client_session: u8,
+    /// The server's session ID.
+    server_session: u8,
+    /// Leading fragments of messages being received (fragment id and payload), by
+    /// sequence number: see `prudp::add_fragment`.
+    pub(crate) packet_fragments: HashMap<u16, (u8, Vec<u8>)>,
+    /// Last fragments that came before one of their message's others, by sequence number:
+    /// handled once the rest is in.
+    pub(crate) held_last_fragments: HashMap<u16, crate::prudp::packet::QPacket>,
+    /// The client's network address.
+    address: SocketAddr,
+    /// The time the client was last seen.
+    last_seen: Instant,
+    /// The vports of this client's last message (theirs, ours).
+    ///
+    /// An answer swaps them out of the incoming packet. Anything the server sends on its own
+    /// has no incoming packet to take them from, so they are remembered here.
+    pub last_vports: Option<(crate::prudp::packet::VPort, crate::prudp::packet::VPort)>,
+    /// The client's connection ID, if available.
+    pub connection_id: Option<ConnectionID>,
+    /// The client's user ID, if available.
+    pub user_id: Option<u32>,
+    /// Additional user-defined data.
+    pub additional: T,
+    /// Recently handled sequence numbers of this client's data packets, with
+    /// the packets sent in reply, so a retransmission is answered again
+    /// instead of being handled twice.
+    pub(crate) handled: std::collections::VecDeque<(u16, Vec<Vec<u8>>)>,
+    /// When the replies to a retransmission were last sent again: at most one resend in
+    /// [`REPLAY_GAP`](crate::prudp), so repeating a few-byte packet can't ask for a large
+    /// reply over and over.
+    pub(crate) last_replay: Option<std::time::Instant>,
+    /// Replies being collected for the packet being handled.
+    pub(crate) replying: Option<Vec<Vec<u8>>>,
+    /// Reliable packets sent to this client and not yet acknowledged, by
+    /// sequence number: resent until they are.
+    pub(crate) unacked: std::collections::BTreeMap<u16, Unacked>,
+    /// The answer to this connection's CONNECT, sent again if the CONNECT is
+    /// (the client resends it when the answer is slow, or lost).
+    pub(crate) connect_answer: Option<Vec<u8>>,
+    /// This connection's CONNECT (its ticket and challenge): a CONNECT that's the same is
+    /// a resend, one that isn't comes from another game.
+    pub(crate) connect_request: Option<Vec<u8>>,
+    /// When the connection was made: one that never signs in only lasts so long.
+    pub connected: std::time::Instant,
+    /// Whether it's counted among its address's connections that haven't signed in (the
+    /// registry's count, settled when it signs in or goes).
+    pub(crate) counted_anonymous: bool,
+}
+
+/// A reliable packet waiting for the client's acknowledgement.
+#[derive(Debug)]
+pub(crate) struct Unacked {
+    pub data: Vec<u8>,
+    /// When it was first sent, and last.
+    pub first: std::time::Instant,
+    pub sent: std::time::Instant,
+    pub tries: u32,
+}
+
+impl<T> ClientInfo<T> {
+    /// Creates a new `ClientInfo` for a given address.
+    #[must_use]
+    pub fn new(address: SocketAddr) -> ClientInfo<T>
+    where
+        T: Default,
+    {
+        ClientInfo {
+            server_sequence_id: 1,
+            client_sequence_id: 1,
+            client_signature: None,
+            server_signature: rand::random(),
+            client_session: Default::default(),
+            server_session: Default::default(),
+            user_id: None,
+            packet_fragments: HashMap::default(),
+            held_last_fragments: HashMap::default(),
+            address,
+            additional: Default::default(),
+            last_seen: std::time::Instant::now(),
+            last_vports: None,
+            connection_id: None,
+            handled: std::collections::VecDeque::new(),
+            last_replay: None,
+            replying: None,
+            unacked: std::collections::BTreeMap::new(),
+            connect_answer: None,
+            connect_request: None,
+            connected: std::time::Instant::now(),
+            counted_anonymous: false,
+        }
+    }
+
+    /// Returns the client's network address.
+    pub fn address(&self) -> &SocketAddr {
+        &self.address
+    }
+
+    /// Updates the last seen time for the client.
+    pub fn seen(&mut self) {
+        self.last_seen = std::time::Instant::now();
+        if let Some(user_id) = self.user_id {
+            heard_from(user_id, self.last_seen);
+        }
+    }
+}
+
+/// When each signed-in user's game last sent the server anything (a call or a ping), on any
+/// of its connections: the server's other parts (the NAT relay's threads) can't see the
+/// connections themselves.
+fn heard() -> std::sync::MutexGuard<'static, HashMap<u32, Instant>> {
+    static HEARD: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, Instant>>> = std::sync::LazyLock::new(std::sync::Mutex::default);
+    HEARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Users not heard from in this long are forgotten (when there are many).
+const HEARD_KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn heard_from(user_id: u32, at: Instant) {
+    let mut heard = heard();
+    if heard.len() >= 4096 {
+        heard.retain(|_, t| at.duration_since(*t) < HEARD_KEPT);
+    }
+    heard.insert(user_id, at);
+}
+
+/// When `user_id`'s game last sent the server anything, if it has since this server started
+/// (and lately, when many have).
+#[must_use]
+pub fn last_heard(user_id: u32) -> Option<Instant> {
+    heard().get(&user_id).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signed_in_connection_is_heard_from() {
+        let mut ci: ClientInfo<()> = ClientInfo::new("203.0.113.5:3074".parse().unwrap());
+        ci.seen();
+        assert_eq!(last_heard(4_000_001), None, "nobody signed in yet");
+        ci.user_id = Some(4_000_001);
+        let before = Instant::now();
+        ci.seen();
+        assert!(last_heard(4_000_001).is_some_and(|t| t >= before));
+    }
+}
