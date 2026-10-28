@@ -326,8 +326,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<SearchSessionsWithParticipantsResponse, Error> {
-        player(ci)?;
-        let found = self.sessions.with_participants(request.game_session_type_id, &request.participant_ids.0);
+        // Only the caller's own sessions: answering for any PID would hand out other players'
+        // session keys, and with a key anyone can join and see the members. Friends' sessions
+        // can follow once there are friends.
+        let pid = player(ci)?;
+        let asked: Vec<u32> = request.participant_ids.0.iter().copied().filter(|&p| p == pid).collect();
+        let found = if asked.is_empty() {
+            vec![]
+        } else {
+            self.sessions.with_participants(request.game_session_type_id, &asked)
+        };
         Ok(SearchSessionsWithParticipantsResponse {
             search_results: QList(
                 found
