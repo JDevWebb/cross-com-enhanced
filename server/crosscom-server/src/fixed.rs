@@ -84,11 +84,6 @@ fn hex(bytes: &[u8]) -> String {
 pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
     const PROTOCOLS: &[FixedProtocol] = &[
         FixedProtocol {
-            id: 108,
-            name: "PlayerStatisticsProtocol",
-            methods: &[],
-        },
-        FixedProtocol {
             id: 109,
             name: "RichPresenceProtocol",
             methods: &[Method {

@@ -18,6 +18,7 @@ mod online_config;
 mod privileges;
 mod rate_limit;
 mod secure;
+mod stats;
 mod ticket;
 
 use std::net::SocketAddr;
@@ -159,6 +160,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                 for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
                     handler.register_protocol(protocol);
                 }
+                handler.register_protocol(Box::new(stats::PlayerStatistics));
             })
         }),
     ];
