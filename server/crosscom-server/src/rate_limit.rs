@@ -16,7 +16,9 @@ const WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Failures allowed in a window from one address, and for one account name.
 const MAX_PER_ADDRESS: u32 = 10;
 const MAX_PER_NAME: u32 = 10;
-/// Entries kept in each table; past it the oldest is dropped, so memory stays bounded.
+/// Entries kept in each table, so memory stays bounded. When a table is full of live counts, the
+/// one with the fewest failures goes (the oldest of those), never the ones near their limit: an
+/// attacker can't flush their own count by filling the table.
 const MAX_ENTRIES: usize = 50_000;
 /// Addresses remembered per account.
 const KNOWN_ADDRESSES: usize = 4;
@@ -40,6 +42,19 @@ struct Count {
     failures: u32,
 }
 
+/// The key an address is counted under: IPv6 addresses by their /64, which one connection
+/// usually has all of.
+fn address_key(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V4(_) => address,
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            segments[4..].fill(0);
+            IpAddr::from(segments)
+        }
+    }
+}
+
 fn current(count: Option<&Count>, now: Instant) -> u32 {
     count.filter(|c| now.duration_since(c.since) < WINDOW).map_or(0, |c| c.failures)
 }
@@ -48,8 +63,8 @@ fn bump<K: std::hash::Hash + Eq + Clone>(table: &mut HashMap<K, Count>, key: K, 
     if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
         table.retain(|_, c| now.duration_since(c.since) < WINDOW);
         if table.len() >= MAX_ENTRIES {
-            if let Some(oldest) = table.iter().min_by_key(|(_, c)| c.since).map(|(k, _)| k.clone()) {
-                table.remove(&oldest);
+            if let Some(least) = table.iter().min_by_key(|(_, c)| (c.failures, c.since)).map(|(k, _)| k.clone()) {
+                table.remove(&least);
             }
         }
     }
@@ -66,12 +81,12 @@ impl FailedSignIns {
         let tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let name = name.to_lowercase();
         let known = tables.known.get(&name).is_some_and(|a| a.contains(&address));
-        current(tables.by_address.get(&address), now) < MAX_PER_ADDRESS && (known || current(tables.by_name.get(&name), now) < MAX_PER_NAME)
+        current(tables.by_address.get(&address_key(address)), now) < MAX_PER_ADDRESS && (known || current(tables.by_name.get(&name), now) < MAX_PER_NAME)
     }
 
     pub fn failed(&self, address: IpAddr, name: &str, now: Instant) {
         let mut tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        bump(&mut tables.by_address, address, now);
+        bump(&mut tables.by_address, address_key(address), now);
         bump(&mut tables.by_name, name.to_lowercase(), now);
     }
 
@@ -141,13 +156,31 @@ mod tests {
     }
 
     #[test]
-    fn tables_stay_bounded() {
+    fn tables_stay_bounded_without_flushing_counts_near_their_limit() {
         let mut table = HashMap::new();
         let start = Instant::now();
+        // The attacker's own count, nearly at the limit, made first (so the oldest).
+        for _ in 0..MAX_PER_NAME - 1 {
+            bump(&mut table, usize::MAX, start);
+        }
+        // Then the table is flooded with single failures.
         for i in 0..MAX_ENTRIES + 10 {
             bump(&mut table, i, start + Duration::from_millis(i as u64));
         }
         assert_eq!(table.len(), MAX_ENTRIES);
-        assert!(!table.contains_key(&0), "the oldest went first");
+        assert_eq!(table[&usize::MAX].failures, MAX_PER_NAME - 1, "the near-limit count survives");
+        assert!(!table.contains_key(&0), "single failures went, oldest first");
+    }
+
+    #[test]
+    fn ipv6_counts_by_the_64() {
+        let limits = FailedSignIns::default();
+        let now = Instant::now();
+        for i in 0..MAX_PER_ADDRESS {
+            let address: IpAddr = format!("2001:db8:1:2::{:x}", i + 1).parse().unwrap();
+            limits.failed(address, &format!("name{i}"), now);
+        }
+        assert!(!limits.allowed("2001:db8:1:2:ffff::1".parse().unwrap(), "other", now));
+        assert!(limits.allowed("2001:db8:1:3::1".parse().unwrap(), "other", now));
     }
 }
