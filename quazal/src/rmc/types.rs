@@ -153,11 +153,18 @@ impl ClassRegistry {
     }
 }
 
-#[derive(Debug)]
 pub struct Any<V, K> {
     type_name: K,
     data: Vec<u8>,
     pd: PhantomData<V>,
+}
+
+/// Shows the class name and the payload's size, never the payload: an `any` can carry sign-in
+/// data, password included, and requests are logged with `Debug`.
+impl<V, K: Debug> Debug for Any<V, K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Any").field("type_name", &self.type_name).field("len", &self.data.len()).finish()
+    }
 }
 
 impl<V, K> Any<V, K> {
@@ -528,6 +535,20 @@ mod tests {
 
 /// Upper bound for pre-allocating a list whose length a peer sent us.
 const MAX_PREALLOC: usize = 256;
+
+#[cfg(test)]
+mod any_tests {
+    use super::Any;
+    use super::Data;
+
+    #[test]
+    fn debug_never_shows_the_payload() {
+        let any: Any<Data, String> = Any::new("UbiAuthenticationLoginCustomData".into(), b"hunter2".to_vec());
+        let text = format!("{any:?}");
+        assert!(text.contains("UbiAuthenticationLoginCustomData") && text.contains("len: 7"), "{text}");
+        assert!(!text.contains("104") && !text.contains("hunter2"), "{text}");
+    }
+}
 
 #[cfg(test)]
 mod buffer_tail_tests {

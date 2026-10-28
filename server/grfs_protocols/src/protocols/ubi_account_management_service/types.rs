@@ -7,14 +7,24 @@ pub struct ExternalAccount {
     pub id: String,
     pub username: String,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct UbiAccountStatus {
     pub basic_status: u32,
     pub missing_required_informations: bool,
     pub recovering_password: bool,
     pub pending_deactivation: bool,
 }
-#[derive(Debug, ToStream, FromStream)]
+impl std::fmt::Debug for UbiAccountStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UbiAccountStatus")
+            .field("basic_status", &self.basic_status)
+            .field("missing_required_informations", &self.missing_required_informations)
+            .field("recovering_password", &"<redacted>")
+            .field("pending_deactivation", &self.pending_deactivation)
+            .finish()
+    }
+}
+#[derive(ToStream, FromStream)]
 pub struct UbiAccount {
     pub ubi_account_id: String,
     pub username: String,
@@ -30,6 +40,26 @@ pub struct UbiAccount {
     pub last_name: String,
     pub preferred_language: String,
     pub external_accounts: Vec<ExternalAccount>,
+}
+impl std::fmt::Debug for UbiAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UbiAccount")
+            .field("ubi_account_id", &self.ubi_account_id)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("status", &self.status)
+            .field("email", &self.email)
+            .field("date_of_birth", &self.date_of_birth)
+            .field("gender", &self.gender)
+            .field("country_code", &self.country_code)
+            .field("opt_in", &self.opt_in)
+            .field("third_party_opt_in", &self.third_party_opt_in)
+            .field("first_name", &self.first_name)
+            .field("last_name", &self.last_name)
+            .field("preferred_language", &self.preferred_language)
+            .field("external_accounts", &self.external_accounts)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct TOS {

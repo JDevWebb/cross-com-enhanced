@@ -12,10 +12,15 @@ pub struct LocalizedString {
     pub localized_string_name: String,
     pub translated_strings: quazal::rmc::types::QList<TranslatedString>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LocalizationArg {
     pub key: String,
     pub value: String,
+}
+impl std::fmt::Debug for LocalizationArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalizationArg").field("key", &"<redacted>").field("value", &self.value).finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct LocalizationArgList {

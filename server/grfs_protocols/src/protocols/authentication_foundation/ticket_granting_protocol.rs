@@ -37,7 +37,7 @@ pub enum TicketGrantingProtocolMethod {
 pub struct LoginRequest {
     pub str_user_name: String,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LoginResponse {
     pub return_value: quazal::rmc::types::QResult,
     pub pid_principal: u32,
@@ -45,12 +45,23 @@ pub struct LoginResponse {
     pub p_connection_data: RVConnectionData,
     pub str_return_msg: String,
 }
+impl std::fmt::Debug for LoginResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginResponse")
+            .field("return_value", &self.return_value)
+            .field("pid_principal", &self.pid_principal)
+            .field("pbuf_response", &"<redacted>")
+            .field("p_connection_data", &self.p_connection_data)
+            .field("str_return_msg", &self.str_return_msg)
+            .finish()
+    }
+}
 #[derive(Debug, ToStream, FromStream)]
 pub struct LoginExRequest {
     pub str_user_name: String,
     pub o_extra_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LoginExResponse {
     pub return_value: quazal::rmc::types::QResult,
     pub pid_principal: u32,
@@ -58,15 +69,34 @@ pub struct LoginExResponse {
     pub p_connection_data: RVConnectionData,
     pub str_return_msg: String,
 }
+impl std::fmt::Debug for LoginExResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginExResponse")
+            .field("return_value", &self.return_value)
+            .field("pid_principal", &self.pid_principal)
+            .field("pbuf_response", &"<redacted>")
+            .field("p_connection_data", &self.p_connection_data)
+            .field("str_return_msg", &self.str_return_msg)
+            .finish()
+    }
+}
 #[derive(Debug, ToStream, FromStream)]
 pub struct RequestTicketRequest {
     pub id_source: u32,
     pub id_target: u32,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct RequestTicketResponse {
     pub return_value: quazal::rmc::types::QResult,
     pub buf_response: Vec<u8>,
+}
+impl std::fmt::Debug for RequestTicketResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestTicketResponse")
+            .field("return_value", &self.return_value)
+            .field("buf_response", &"<redacted>")
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct GetPidRequest {
@@ -88,12 +118,22 @@ pub struct GetNameResponse {
 pub struct LoginWithContextRequest {
     pub login_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LoginWithContextResponse {
     pub return_value: quazal::rmc::types::QResult,
     pub pid_principal: u32,
     pub pbuf_response: Vec<u8>,
     pub p_connection_data: RVConnectionData,
+}
+impl std::fmt::Debug for LoginWithContextResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginWithContextResponse")
+            .field("return_value", &self.return_value)
+            .field("pid_principal", &self.pid_principal)
+            .field("pbuf_response", &"<redacted>")
+            .field("p_connection_data", &self.p_connection_data)
+            .finish()
+    }
 }
 pub struct TicketGrantingProtocolServer<T: TicketGrantingProtocolServerTrait<CI>, CI>(T, ::std::marker::PhantomData<CI>);
 impl<T: TicketGrantingProtocolServerTrait<CI>, CI> TicketGrantingProtocolServer<T, CI> {

@@ -41,20 +41,37 @@ pub struct GetPrivilegesRequest {
 pub struct GetPrivilegesResponse {
     pub privileges: std::collections::HashMap<u32, Privilege>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct ActivateKeyRequest {
     pub unique_key: String,
     pub language_code: String,
+}
+impl std::fmt::Debug for ActivateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivateKeyRequest")
+            .field("unique_key", &"<redacted>")
+            .field("language_code", &self.language_code)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct ActivateKeyResponse {
     pub privilege: PrivilegeGroup,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct ActivateKeyWithExpectedPrivilegesRequest {
     pub unique_key: String,
     pub language_code: String,
     pub expected_privilege_ids: quazal::rmc::types::QList<u32>,
+}
+impl std::fmt::Debug for ActivateKeyWithExpectedPrivilegesRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivateKeyWithExpectedPrivilegesRequest")
+            .field("unique_key", &"<redacted>")
+            .field("language_code", &self.language_code)
+            .field("expected_privilege_ids", &self.expected_privilege_ids)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct ActivateKeyWithExpectedPrivilegesResponse {

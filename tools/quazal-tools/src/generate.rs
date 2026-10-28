@@ -120,6 +120,79 @@ fn to_ident<S: AsRef<str>>(s: S) -> syn::Ident {
     syn::Ident::new(s.as_ref(), proc_macro2::Span::call_site())
 }
 
+/// Whether a field's value must stay out of logs: passwords, account and CD keys, and Kerberos
+/// tickets. Game session keys are only IDs and stay visible.
+fn is_secret(field: &str) -> bool {
+    let field = field.trim_start_matches("r#");
+    field.contains("password") || ((field == "key" || field.ends_with("_key")) && !field.contains("session")) || field.ends_with("buf_response") || field == "o_auth_data"
+}
+
+/// A request, response or class struct. Its `Debug` (which the generated servers log requests and
+/// responses with) shows secret fields as `<redacted>`.
+fn data_struct(name: &Ident, fields: &[(Ident, proc_macro2::TokenStream)]) -> proc_macro2::TokenStream {
+    if fields.is_empty() {
+        return quote! {
+            #[derive(Debug, ToStream, FromStream)]
+            pub struct #name;
+        };
+    }
+    let defs = fields.iter().map(|(n, t)| quote!(pub #n: #t));
+    if !fields.iter().any(|(n, _)| is_secret(&n.to_string())) {
+        return quote! {
+            #[derive(Debug, ToStream, FromStream)]
+            pub struct #name {
+                #(#defs,)*
+            }
+        };
+    }
+    let name_str = name.to_string();
+    let debug_fields = fields.iter().map(|(n, _)| {
+        let label = n.to_string().trim_start_matches("r#").to_owned();
+        if is_secret(&label) {
+            quote!(.field(#label, &"<redacted>"))
+        } else {
+            quote!(.field(#label, &self.#n))
+        }
+    });
+    quote! {
+        #[derive(ToStream, FromStream)]
+        pub struct #name {
+            #(#defs,)*
+        }
+        impl std::fmt::Debug for #name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(#name_str)#(#debug_fields)*.finish()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::is_secret;
+
+    #[test]
+    fn redacts_credentials_not_session_keys() {
+        for f in [
+            "password",
+            "ubi_account_password",
+            "str_key",
+            "str_new_key",
+            "online_key",
+            "unique_key",
+            "key",
+            "pbuf_response",
+            "buf_response",
+            "o_auth_data",
+        ] {
+            assert!(is_secret(f), "{f}");
+        }
+        for f in ["game_session_key", "session_key", "game_session_keys", "user_name", "buf_data", "str_principal_name"] {
+            assert!(!is_secret(f), "{f}");
+        }
+    }
+}
+
 fn generate_class_code(directory: &Path, class: &ClassDeclaration, import_map: &ImportMap) -> io::Result<Option<(String, String)>> {
     println!("  [*] New class {}", class.name1);
     let mut imports = Vec::new();
@@ -144,9 +217,7 @@ fn generate_class_code(directory: &Path, class: &ClassDeclaration, import_map: &
 
             imports.append(&mut import_map.find_imports(&ty, &class.namespace));
 
-            quote! {
-                pub #name: #ty
-            }
+            (name, quote!(#ty))
         })
         .collect::<Vec<_>>();
 
@@ -155,27 +226,10 @@ fn generate_class_code(directory: &Path, class: &ClassDeclaration, import_map: &
         let ty = to_rust_type(&SubType::Class(class.base.clone()));
         imports.append(&mut import_map.find_imports(&ty, &class.namespace));
 
-        vars.insert(
-            0,
-            quote! {
-                pub #name: #ty
-            },
-        );
+        vars.insert(0, (name, quote!(#ty)));
     }
 
-    let ts = if vars.is_empty() {
-        quote! {
-            #[derive(Debug, ToStream, FromStream)]
-            pub struct #name;
-        }
-    } else {
-        quote! {
-            #[derive(Debug, ToStream, FromStream)]
-            pub struct #name {
-                #(#vars,)*
-            }
-        }
-    };
+    let ts = data_struct(&name, &vars);
 
     let file_name = d.join("types.rs");
 
@@ -294,9 +348,7 @@ fn generate_protocol_code(directory: &Path, protocol: &ProtocolDeclaration, impo
 
                     imports.append(&mut import_map.find_imports(&dtype, &protocol.namespace));
 
-                    quote! {
-                        pub return_value: #dtype
-                    }
+                    (format_ident!("return_value"), quote!(#dtype))
                 });
             let (req_params, resp_params): (Vec<_>, Vec<_>) = params.partition(|p| matches!(p.ty, ParameterType::Request));
 
@@ -308,9 +360,7 @@ fn generate_protocol_code(directory: &Path, protocol: &ProtocolDeclaration, impo
 
                     imports.append(&mut import_map.find_imports(&dtype, &protocol.namespace));
 
-                    quote! {
-                        pub #name: #dtype
-                    }
+                    (name, quote!(#dtype))
                 })
                 .collect::<Vec<_>>();
 
@@ -322,45 +372,13 @@ fn generate_protocol_code(directory: &Path, protocol: &ProtocolDeclaration, impo
 
                     imports.append(&mut import_map.find_imports(&dtype, &protocol.namespace));
 
-                    quote! {
-                        pub #name: #dtype
-                    }
+                    (name, quote!(#dtype))
                 })
                 .collect::<Vec<_>>();
 
-            let mut ts1 = if req_params.is_empty() {
-                quote! {
-                   #[derive(Debug, ToStream, FromStream)]
-                   pub struct #req;
-                }
-            } else {
-                quote! {
-                    #[derive(Debug, ToStream, FromStream)]
-                    pub struct #req {
-                        #(
-                            #req_params,
-                        )*
-                    }
-                }
-            };
-
-            let ts2 = if resp_params.is_empty() && retval.is_none() {
-                quote! {
-                    #[derive(Debug, ToStream, FromStream)]
-                    pub struct #resp;
-                }
-            } else {
-                let retval = retval.into_iter();
-                quote! {
-                    #[derive(Debug, ToStream, FromStream)]
-                    pub struct #resp {
-                        #(#retval,)*
-                        #(
-                            #resp_params,
-                        )*
-                    }
-                }
-            };
+            let mut ts1 = data_struct(req, &req_params);
+            let resp_fields: Vec<_> = retval.into_iter().chain(resp_params).collect();
+            let ts2 = data_struct(resp, &resp_fields);
 
             ts1.extend(ts2);
             ts1

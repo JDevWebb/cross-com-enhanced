@@ -70,10 +70,18 @@ pub struct GetAccountResponse {
     pub ubi_account: UbiAccount,
     pub exists: bool,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LinkAccountRequest {
     pub ubi_account_username: String,
     pub ubi_account_password: String,
+}
+impl std::fmt::Debug for LinkAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinkAccountRequest")
+            .field("ubi_account_username", &self.ubi_account_username)
+            .field("ubi_account_password", &"<redacted>")
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct LinkAccountResponse;
@@ -95,10 +103,18 @@ pub struct ValidateUsernameRequest {
 pub struct ValidateUsernameResponse {
     pub username_validation: UsernameValidation,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct ValidatePasswordRequest {
     pub password: String,
     pub username: String,
+}
+impl std::fmt::Debug for ValidatePasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatePasswordRequest")
+            .field("password", &"<redacted>")
+            .field("username", &self.username)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct ValidatePasswordResponse {

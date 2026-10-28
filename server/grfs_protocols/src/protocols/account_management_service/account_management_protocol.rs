@@ -57,12 +57,22 @@ pub enum AccountManagementProtocolMethod {
     DisconnectPrincipal = 29u32,
     DisconnectAllPrincipals = 30u32,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct CreateAccountRequest {
     pub str_principal_name: String,
     pub str_key: String,
     pub ui_groups: u32,
     pub str_email: String,
+}
+impl std::fmt::Debug for CreateAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAccountRequest")
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_key", &"<redacted>")
+            .field("ui_groups", &self.ui_groups)
+            .field("str_email", &self.str_email)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct CreateAccountResponse {
@@ -84,9 +94,14 @@ pub struct DisableAccountRequest {
 pub struct DisableAccountResponse {
     pub return_value: quazal::rmc::types::QResult,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct ChangePasswordRequest {
     pub str_new_key: String,
+}
+impl std::fmt::Debug for ChangePasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangePasswordRequest").field("str_new_key", &"<redacted>").finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct ChangePasswordResponse {
@@ -221,7 +236,7 @@ pub struct ResetPasswordRequest;
 pub struct ResetPasswordResponse {
     pub return_value: bool,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct CreateAccountWithCustomDataRequest {
     pub str_principal_name: String,
     pub str_key: String,
@@ -229,6 +244,18 @@ pub struct CreateAccountWithCustomDataRequest {
     pub str_email: String,
     pub o_public_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
     pub o_private_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
+}
+impl std::fmt::Debug for CreateAccountWithCustomDataRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAccountWithCustomDataRequest")
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_key", &"<redacted>")
+            .field("ui_groups", &self.ui_groups)
+            .field("str_email", &self.str_email)
+            .field("o_public_data", &self.o_public_data)
+            .field("o_private_data", &self.o_private_data)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct CreateAccountWithCustomDataResponse;
@@ -240,20 +267,39 @@ pub struct RetrieveAccountResponse {
     pub o_public_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
     pub o_private_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct UpdateAccountRequest {
     pub str_key: String,
     pub str_email: String,
     pub o_public_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
     pub o_private_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
+impl std::fmt::Debug for UpdateAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateAccountRequest")
+            .field("str_key", &"<redacted>")
+            .field("str_email", &self.str_email)
+            .field("o_public_data", &self.o_public_data)
+            .field("o_private_data", &self.o_private_data)
+            .finish()
+    }
+}
 #[derive(Debug, ToStream, FromStream)]
 pub struct UpdateAccountResponse;
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct ChangePasswordByGuestRequest {
     pub str_principal_name: String,
     pub str_email: String,
     pub str_key: String,
+}
+impl std::fmt::Debug for ChangePasswordByGuestRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangePasswordByGuestRequest")
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_email", &self.str_email)
+            .field("str_key", &"<redacted>")
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct ChangePasswordByGuestResponse;
@@ -267,7 +313,7 @@ pub struct FindByNameLikeRequest {
 pub struct FindByNameLikeResponse {
     pub plst_accounts: Vec<BasicAccountInfo>,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct CustomCreateAccountRequest {
     pub str_principal_name: String,
     pub str_key: String,
@@ -275,11 +321,22 @@ pub struct CustomCreateAccountRequest {
     pub str_email: String,
     pub o_auth_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
+impl std::fmt::Debug for CustomCreateAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomCreateAccountRequest")
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_key", &"<redacted>")
+            .field("ui_groups", &self.ui_groups)
+            .field("str_email", &self.str_email)
+            .field("o_auth_data", &"<redacted>")
+            .finish()
+    }
+}
 #[derive(Debug, ToStream, FromStream)]
 pub struct CustomCreateAccountResponse {
     pub pid: u32,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LookupOrCreateAccountRequest {
     pub str_principal_name: String,
     pub str_key: String,
@@ -287,11 +344,22 @@ pub struct LookupOrCreateAccountRequest {
     pub str_email: String,
     pub o_auth_data: quazal::rmc::types::Any<quazal::rmc::types::Data, String>,
 }
+impl std::fmt::Debug for LookupOrCreateAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LookupOrCreateAccountRequest")
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_key", &"<redacted>")
+            .field("ui_groups", &self.ui_groups)
+            .field("str_email", &self.str_email)
+            .field("o_auth_data", &"<redacted>")
+            .finish()
+    }
+}
 #[derive(Debug, ToStream, FromStream)]
 pub struct LookupOrCreateAccountResponse {
     pub pid: u32,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct CreateAccountExRequest {
     pub principal_type: i8,
     pub str_principal_name: String,
@@ -299,6 +367,18 @@ pub struct CreateAccountExRequest {
     pub ui_groups: u32,
     pub str_email: String,
     pub context: u64,
+}
+impl std::fmt::Debug for CreateAccountExRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAccountExRequest")
+            .field("principal_type", &self.principal_type)
+            .field("str_principal_name", &self.str_principal_name)
+            .field("str_key", &"<redacted>")
+            .field("ui_groups", &self.ui_groups)
+            .field("str_email", &self.str_email)
+            .field("context", &self.context)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct CreateAccountExResponse {
