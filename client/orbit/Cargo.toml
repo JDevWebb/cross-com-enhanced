@@ -1,0 +1,18 @@
+[package]
+name = "crosscom-orbit"
+version = "0.1.0"
+edition = "2021"
+description = "ubiorbitapi_r2_loader.dll: the game's sign-in details from crosscom.toml, and its online lookups sent to the Cross-Com server"
+
+[lib]
+# The file name the game loads.
+name = "ubiorbitapi_r2_loader"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+crosscom-client-common = { path = "../common" }
+log = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+retour = { version = "0.4.0-alpha.4", features = ["static-detour"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemServices"] }

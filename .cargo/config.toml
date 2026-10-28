@@ -1,0 +1,4 @@
+# The client DLLs load into a 2012 game: link the C runtime into them, so players don't need a
+# recent Visual C++ redistributable installed.
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

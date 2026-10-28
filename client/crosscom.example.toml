@@ -1,0 +1,13 @@
+# Cross-Com client settings. Save as crosscom.toml in the game's folder, next to
+# "Future Soldier DX11.exe". The launcher writes this file for you.
+
+# The Cross-Com server to play on: a host name or an address.
+server = "127.0.0.1"
+
+# The account to sign in with (each at most 79 characters).
+username = "your-name"
+password = "your-password"
+cd_key = "your-cd-key"
+
+# error, warn, info (the default), debug or trace. The log is crosscom.log, next to this file.
+log_level = "info"

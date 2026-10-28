@@ -1,0 +1,10 @@
+[package]
+name = "crosscom-client-common"
+version = "0.1.0"
+edition = "2021"
+description = "What both client DLLs share: the settings file and the log"
+
+[dependencies]
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }

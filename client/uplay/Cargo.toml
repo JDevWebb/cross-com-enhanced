@@ -1,0 +1,12 @@
+[package]
+name = "crosscom-uplay"
+version = "0.1.0"
+edition = "2021"
+description = "uplay_r1_loader.dll: the Uplay functions the game calls, answered without Uplay"
+
+[lib]
+# The file name the game loads.
+name = "uplay_r1_loader"
+crate-type = ["cdylib"]
+
+[dependencies]
