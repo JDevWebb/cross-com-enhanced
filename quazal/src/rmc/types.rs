@@ -236,6 +236,30 @@ impl FromStream for DateTime {
     }
 }
 
+/// The rest of the stream as raw bytes, with no length in front (Quazal's `buffertail`), always
+/// the last field of its structure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BufferTail(pub Vec<u8>);
+
+impl ToStream for BufferTail {
+    fn to_stream<W>(&self, stream: &mut WriteStream<W>) -> io::Result<usize>
+    where
+        W: WriteBytesExt,
+    {
+        stream.write_n_bytes(&self.0)
+    }
+}
+
+impl FromStream for BufferTail {
+    fn from_stream<R>(stream: &mut ReadStream<R>) -> Result<Self, FromStreamError>
+    where
+        R: ReadBytesExt,
+        Self: Sized,
+    {
+        Ok(Self(stream.read_all()?))
+    }
+}
+
 #[derive(Debug, FromStream, ToStream)]
 pub struct Data;
 
@@ -504,3 +528,18 @@ mod tests {
 
 /// Upper bound for pre-allocating a list whose length a peer sent us.
 const MAX_PREALLOC: usize = 256;
+
+#[cfg(test)]
+mod buffer_tail_tests {
+    use super::BufferTail;
+    use crate::rmc::basic::FromStream;
+    use crate::rmc::basic::ToStream;
+
+    #[test]
+    fn takes_the_rest_without_a_length() {
+        let tail = BufferTail(vec![1, 2, 3]);
+        assert_eq!(tail.to_bytes(), vec![1, 2, 3]);
+        assert_eq!(BufferTail::from_bytes(&[9, 8]).unwrap(), BufferTail(vec![9, 8]));
+        assert_eq!(BufferTail::from_bytes(&[]).unwrap(), BufferTail(vec![]));
+    }
+}

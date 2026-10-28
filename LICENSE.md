@@ -10,17 +10,18 @@ This project can't license other people's work, and doesn't try to. If upstream 
 
 ## What is under the MIT licence
 
-1. **Everything outside `quazal/`.**
-2. **In `quazal/`, the work of 5th Echelon Enhanced and Cross-Com Enhanced** (both by JDevWebb): the files `quazal/src/rmc/unhandled.rs` and `quazal/src/rmc/failures.rs`, and the lines JDevWebb added or changed in the other files, as recorded in the git history (`git log --author=JDevWebb -- quazal`, `git blame`). The files as a whole are not.
+1. **Everything outside `quazal/` and `tools/quazal-tools/`.**
+2. **In those two folders, the work of 5th Echelon Enhanced and Cross-Com Enhanced** (both by JDevWebb): the files `quazal/src/rmc/unhandled.rs` and `quazal/src/rmc/failures.rs`, and the lines JDevWebb added or changed in the other files, as recorded in the git history (`git log --author=JDevWebb -- quazal`, `git blame`). The files as a whole are not.
 
 ## Not covered by this licence
 
 | What | Whose, and on what terms |
 |---|---|
 | `quazal/`: the Quazal PRUDP, RMC and Kerberos implementation, apart from the work listed above | unixoide and upstream 5th Echelon contributors; no licence yet |
-| Changes to `quazal/` by Matthias Walther, koteykaby and Askorbinovaya Kislota | Their authors |
+| `tools/quazal-tools/`: the DDL parser and protocol code generator, apart from the work listed above | unixoide and upstream 5th Echelon contributors; no licence yet |
+| Changes to `quazal/` by Matthias Walther, koteykaby and Askorbinovaya Kislota, and to `tools/quazal-tools/` by garruslnun | Their authors |
 
-`quazal/` came from 5th Echelon Enhanced with its history, so every commit keeps its original author.
+`quazal/` and `tools/quazal-tools/` came from 5th Echelon Enhanced with their history, so every commit keeps its original author.
 
 **No warranty, for everything here.** Whatever its licence, the software in this repository and its builds are provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement. In no event are the authors liable for any claim, damages or other liability, in contract, tort or otherwise, arising from or in connection with them, their use, or other dealings in them.
 

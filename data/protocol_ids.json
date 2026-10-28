@@ -1,5 +1,4 @@
 {
-  "_comment": "Quazal protocol IDs for Ghost Recon: Future Soldier (PC). Sources: B = 5th Echelon's Blacklist mapping (same online SDK), P = the Phoenix Network GRFS backend, Q = the standard Quazal numbering. See docs/protocol.md for confidence and conflicts.",
   "NATTraversalProtocol": 3,
   "TicketGrantingProtocol": 10,
   "SecureConnectionProtocol": 11,

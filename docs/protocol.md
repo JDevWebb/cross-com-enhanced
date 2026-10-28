@@ -29,7 +29,7 @@ The game uses Ubisoft's online SDK, built on Quazal Rendez-Vous: the same family
 
 ## 4. Protocols
 
-The game declares 27 protocols with full method signatures; methods are numbered from 1 in declaration order. The IDs are in [`data/protocol_ids.json`](../data/protocol_ids.json). Sources: **B** 5th Echelon's Blacklist mapping (same SDK), **P** Phoenix, **Q** standard Quazal numbering.
+The game declares 27 protocols with full method signatures; methods are numbered from 1 in declaration order. The IDs are in [`data/protocol_ids.json`](../data/protocol_ids.json), which the protocol code generator reads. Sources: **B** 5th Echelon's Blacklist mapping (same SDK), **P** Phoenix, **Q** standard Quazal numbering.
 
 | ID | Protocol | Methods | Source | Needed for |
 |---:|---|---:|---|---|

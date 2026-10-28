@@ -1,0 +1,62 @@
+[package]
+name = "grfs_protocols"
+version = "0.1.0"
+edition = "2021"
+description = "Future Soldier's online protocols, generated with quazal-tools from the game's protocol declarations"
+
+[features]
+default = [
+    "account_management_service",
+    "authentication_foundation",
+    "friend_messages_extension_service",
+    "friends_service",
+    "game_session_admin_service",
+    "game_session_service",
+    "health_service",
+    "localization_service",
+    "match_making_service",
+    "nat_traversal",
+    "news_service",
+    "persistent_store_service",
+    "privileges_service",
+    "protocol_foundation",
+    "search_friends_service",
+    "secure_connection_service",
+    "title_storage",
+    "title_storage_admin",
+    "tracking_service",
+    "ubi_account_management_service",
+    "ubi_authentication",
+    "ubi_friends_service",
+    "ubi_news",
+]
+account_management_service = []
+authentication_foundation = []
+friend_messages_extension_service = []
+friends_service = []
+game_session_admin_service = []
+game_session_service = []
+health_service = []
+localization_service = []
+match_making_service = []
+nat_traversal = []
+news_service = []
+persistent_store_service = []
+privileges_service = []
+protocol_foundation = []
+search_friends_service = []
+secure_connection_service = []
+title_storage = []
+title_storage_admin = []
+tracking_service = []
+ubi_account_management_service = []
+ubi_authentication = []
+ubi_friends_service = []
+ubi_news = []
+
+[dependencies]
+byteorder = { workspace = true }
+num_enum = { workspace = true }
+quazal = { path = "../../quazal" }
+quazal-macros = { path = "../../quazal/quazal-macros" }
+slog = { workspace = true, features = ["max_level_trace"] }

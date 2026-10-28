@@ -213,6 +213,11 @@ fn generate_class_code(directory: &Path, class: &ClassDeclaration, import_map: &
 #[allow(clippy::similar_names, clippy::cast_possible_truncation)]
 fn generate_protocol_code(directory: &Path, protocol: &ProtocolDeclaration, import_map: &ImportMap) -> io::Result<Option<(String, String)>> {
     println!("  [*] New protocol {}", protocol.name1);
+    // A protocol without a known ID can't be served; leave it out rather than guess one.
+    let Some(id) = protocol.id else {
+        println!("[-] No ID for protocol {}: skipped", protocol.name1);
+        return Ok(None);
+    };
 
     let mut imports = Vec::new();
     let ns_name = protocol.namespace.to_case(Case::Snake);
@@ -243,11 +248,7 @@ fn generate_protocol_code(directory: &Path, protocol: &ProtocolDeclaration, impo
     let server_struct_name = format_ident!("{}Server", &struct_name_str);
     let client_struct_name = format_ident!("{}Client", &struct_name_str);
     let id_const_name = format_ident!("{}_ID", struct_name_str.to_case(Case::UpperSnake));
-    #[allow(clippy::single_match_else)]
-    let id = match protocol.id {
-        Some(id) => quote!(#id),
-        None => quote!(todo!()),
-    };
+    let id = quote!(#id);
     let methods: Vec<_> = protocol
         .methods
         .iter()

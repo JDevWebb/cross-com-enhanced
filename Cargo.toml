@@ -5,6 +5,9 @@ members = [
   "client/uplay",
   "quazal",
   "quazal/quazal-macros",
+  "server/grfs_protocols",
+  "tools/quazal-tools",
+  "tools/quazal-tools/quazal-tools-macros",
 ]
 resolver = "2"
 
@@ -34,3 +37,7 @@ sloggers = { version = "2.0", features = ["json"] }
 sodiumoxide = "0.2"
 syn = "2.0"
 toml = "0.9"
+convert_case = "0.8"
+etherparse = "0.19"
+nom = "7.1"
+pcap-parser = { version = "0.17", features = ["data"] }
