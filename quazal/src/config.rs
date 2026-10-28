@@ -126,6 +126,15 @@ impl Context {
         }
     }
 
+    /// Creates a new context for Ghost Recon: Future Soldier.
+    #[must_use]
+    pub fn ghost_recon_future_soldier() -> Context {
+        Context {
+            access_key: b"8dtRv2oj".to_vec(),
+            ..Default::default()
+        }
+    }
+
     /// Returns the key for a given stream type.
     #[must_use]
     pub fn key(&self, stype: StreamType) -> u32 {

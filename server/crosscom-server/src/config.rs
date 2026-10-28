@@ -1,0 +1,86 @@
+//! The server's settings: `crosscom-server.toml`.
+
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::ToSocketAddrs;
+use std::path::Path;
+use std::path::PathBuf;
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// This server's address as players reach it: a host name or an IP address. The game is told
+    /// to connect here.
+    pub public_address: String,
+    /// The address to listen on; all of the machine's by default.
+    pub listen_ip: IpAddr,
+    /// The online config service, over HTTP. The game always asks on port 80.
+    pub http_port: u16,
+    /// The sign-in (authentication) server, over UDP.
+    pub auth_port: u16,
+    /// The secure server, where the game's online services are, over UDP.
+    pub secure_port: u16,
+    /// The accounts database.
+    pub database: PathBuf,
+    /// `error`, `warning`, `info`, `debug` or `trace`.
+    pub log_level: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            public_address: "127.0.0.1".into(),
+            listen_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            http_port: 80,
+            auth_port: 21030,
+            secure_port: 21031,
+            database: "crosscom.db".into(),
+            log_level: "info".into(),
+        }
+    }
+}
+
+impl Config {
+    /// Reads the settings; a missing file gives the defaults.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text).map_err(|e| format!("{} isn't valid: {}", path.display(), e.message())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("couldn't read {}: {e}", path.display())),
+        }
+    }
+
+    /// The public address as an IP address, looking the name up if it is one. Station URLs need an
+    /// address, not a name.
+    pub fn public_ip(&self) -> Result<IpAddr, String> {
+        if let Ok(ip) = self.public_address.parse() {
+            return Ok(ip);
+        }
+        (self.public_address.as_str(), 0)
+            .to_socket_addrs()
+            .map_err(|e| format!("couldn't look up {}: {e}", self.public_address))?
+            .map(|a| a.ip())
+            .find(IpAddr::is_ipv4)
+            .ok_or_else(|| format!("{} has no IPv4 address", self.public_address))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_fill_in_what_is_missing() {
+        let config: Config = toml::from_str("public_address = \"203.0.113.7\"").unwrap();
+        assert_eq!(config.public_ip().unwrap(), "203.0.113.7".parse::<IpAddr>().unwrap());
+        assert_eq!(config.auth_port, 21030);
+        assert_eq!(config.http_port, 80);
+    }
+
+    #[test]
+    fn refuses_unknown_settings() {
+        assert!(toml::from_str::<Config>("auth_prot = 1").is_err());
+    }
+}

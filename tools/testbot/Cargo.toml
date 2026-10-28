@@ -1,0 +1,13 @@
+[package]
+name = "crosscom-testbot"
+version = "0.1.0"
+edition = "2021"
+description = "Signs in to a Cross-Com server the way the game does, to test it without the game"
+
+[dependencies]
+eyre = { workspace = true }
+grfs_protocols = { path = "../../server/grfs_protocols" }
+md-5 = { workspace = true }
+quazal = { path = "../../quazal" }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }

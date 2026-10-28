@@ -5,8 +5,10 @@ members = [
   "client/uplay",
   "quazal",
   "quazal/quazal-macros",
+  "server/crosscom-server",
   "server/grfs_protocols",
   "tools/quazal-tools",
+  "tools/testbot",
   "tools/quazal-tools/quazal-tools-macros",
 ]
 resolver = "2"
@@ -41,3 +43,5 @@ convert_case = "0.8"
 etherparse = "0.19"
 nom = "7.1"
 pcap-parser = { version = "0.17", features = ["data"] }
+eyre = "0.6"
+tokio = { version = "1.36", features = ["rt-multi-thread"] }

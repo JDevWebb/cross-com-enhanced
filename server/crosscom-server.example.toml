@@ -1,0 +1,21 @@
+# Cross-Com server settings. Save as crosscom-server.toml next to the server, or pass
+# --config FILE. Every setting is optional; these are the defaults.
+
+# This server's address as players reach it: a host name or an IP address.
+public_address = "127.0.0.1"
+
+# The address to listen on: all of the machine's.
+listen_ip = "0.0.0.0"
+
+# The online config service (HTTP). The game always asks on port 80.
+http_port = 80
+
+# Signing in, and the game's online services (both UDP).
+auth_port = 21030
+secure_port = 21031
+
+# The accounts database (SQLite).
+database = "crosscom.db"
+
+# error, warning, info, debug or trace.
+log_level = "info"
