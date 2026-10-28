@@ -68,7 +68,7 @@ impl<CI> PrivilegesProtocolServerTrait<CI> for Privileges {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetPrivilegesResponse, Error> {
-        ci.user_id.ok_or(Error::AccessDenied)?;
+        crate::ticket::player(ci)?;
         let privileges = PRIVILEGES.iter().map(|&(id, d)| (id, Privilege { id, description: d.into() })).collect::<HashMap<_, _>>();
         Ok(GetPrivilegesResponse { privileges })
     }
@@ -82,7 +82,7 @@ impl<CI> PrivilegesProtocolServerTrait<CI> for Privileges {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetPrivilegesExResponse, Error> {
-        ci.user_id.ok_or(Error::AccessDenied)?;
+        crate::ticket::player(ci)?;
         let privileges_ex = PRIVILEGES
             .iter()
             .map(|&(id, d)| PrivilegeEx {

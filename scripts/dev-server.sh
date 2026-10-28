@@ -22,5 +22,6 @@ run "${mounts[@]}" "$image" sh -c "cargo build -q -p crosscom-server && printf '
 if [ $# -ge 3 ]; then
   run "${mounts[@]}" "$image" /target/debug/crosscom-server --config /data/crosscom-server.toml add-account "$2" "$3" || true
 fi
-exec docker run --rm -it --name crosscom-dev "${mounts[@]}" -p 80:80 -p 21030:21030/udp -p 21031:21031/udp "$image" \
+tty=(); [ -t 0 ] && tty=(-it)
+exec docker run --rm ${tty[@]+"${tty[@]}"} --name crosscom-dev "${mounts[@]}" -p 80:80 -p 21030:21030/udp -p 21031:21031/udp "$image" \
   /target/debug/crosscom-server --config /data/crosscom-server.toml

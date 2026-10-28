@@ -14,7 +14,8 @@ use slog::Logger;
 
 struct SecureConnection;
 
-/// The connection ID and the address the server sees the player at.
+/// The connection ID and the address the server sees the player at. The game's tracking
+/// principal registers its own connection too, so any signed-in principal may.
 fn registered<CI>(ci: &ClientInfo<CI>, sid: u8, ty: u8) -> Result<(u32, StationURL), Error> {
     ci.user_id.ok_or(Error::AccessDenied)?;
     let connection_id = ci.connection_id.ok_or(Error::InternalError)?.into();

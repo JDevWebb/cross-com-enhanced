@@ -7,7 +7,11 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use serde::Serialize;
 use slog::info;
@@ -15,6 +19,10 @@ use slog::warn;
 use slog::Logger;
 
 const PATH: &str = "/OnlineConfigService.svc/GetOnlineConfig";
+/// How long one request may take in all, however slowly it arrives.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+/// Requests answered at once; more are turned away. The game asks once as it starts.
+const MAX_CONNECTIONS: usize = 64;
 
 #[derive(Serialize)]
 struct Item {
@@ -52,25 +60,39 @@ pub fn content(public_ip: IpAddr, auth_port: u16) -> String {
 pub fn serve(logger: &Logger, listen: SocketAddr, content: String) -> std::io::Result<()> {
     let listener = TcpListener::bind(listen)?;
     info!(logger, "Online config on http://{listen}{PATH}");
+    let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
+        if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            open.fetch_sub(1, Ordering::AcqRel);
+            continue; // dropping the stream closes it
+        }
         let logger = logger.clone();
         let content = content.clone();
+        let open = Arc::clone(&open);
         std::thread::spawn(move || {
             if let Err(e) = answer(&logger, stream, &content) {
                 warn!(logger, "online config request failed: {e}");
             }
+            open.fetch_sub(1, Ordering::AcqRel);
         });
     }
     Ok(())
 }
 
 fn answer(logger: &Logger, mut stream: TcpStream, content: &str) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let deadline = Instant::now() + REQUEST_DEADLINE;
+    stream.set_write_timeout(Some(REQUEST_DEADLINE))?;
     let peer = stream.peer_addr()?;
     let mut buf = [0u8; 4096];
     let mut len = 0;
-    // Only the request line matters; read until the headers end or the buffer is full.
+    // Only the request line matters; read until the headers end or the buffer is full, within
+    // one deadline for the whole request.
     while len < buf.len() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request too slow"));
+        }
+        stream.set_read_timeout(Some(left))?;
         let n = stream.read(&mut buf[len..])?;
         if n == 0 {
             break;

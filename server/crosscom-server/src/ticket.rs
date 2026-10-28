@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -31,6 +32,7 @@ use slog::warn;
 use slog::Logger;
 
 use crate::accounts::Accounts;
+use crate::rate_limit::FailedSignIns;
 
 /// The secure server's principal ID.
 pub const SERVER_PID: u32 = 0x1000;
@@ -42,6 +44,16 @@ const TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 struct TicketGranting {
     accounts: Arc<Accounts>,
+    failed: FailedSignIns,
+}
+
+/// The signed-in player. The tracking principal, which anyone can sign in as (its password is
+/// built into the game), isn't a player and is refused.
+pub fn player<CI>(ci: &ClientInfo<CI>) -> Result<u32, Error> {
+    match ci.user_id {
+        Some(pid) if pid != TRACKING_PID => Ok(pid),
+        _ => Err(Error::AccessDenied),
+    }
 }
 
 /// The password a principal's tickets are encrypted for; `None` is the game's default
@@ -121,9 +133,18 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             warn!(logger, "LoginEx from {} without UbiAuthenticationLoginCustomData", ci.address());
             return Err(Error::ParsingError);
         };
+        let from = ci.address().ip();
+        if !self.failed.allowed(from, &login.user_name, Instant::now()) {
+            warn!(logger, "sign-in as {:?} from {} refused: too many failed sign-ins", login.user_name, ci.address());
+            return Err(Error::AccessDenied);
+        }
         let pid = match self.accounts.verify(&login.user_name, &login.password) {
-            Ok(Some(pid)) => pid,
+            Ok(Some(pid)) => {
+                self.failed.succeeded(&login.user_name);
+                pid
+            }
             Ok(None) => {
+                self.failed.failed(from, &login.user_name, Instant::now());
                 warn!(logger, "sign-in as {:?} from {} refused: wrong name or password", login.user_name, ci.address());
                 return Err(Error::AccessDenied);
             }
@@ -164,12 +185,25 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
 }
 
 pub fn new_protocol<CI: 'static>(accounts: Arc<Accounts>) -> Box<dyn Protocol<CI>> {
-    Box::new(TicketGrantingProtocolServer::new(TicketGranting { accounts }))
+    Box::new(TicketGrantingProtocolServer::new(TicketGranting {
+        accounts,
+        failed: FailedSignIns::default(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracking_is_not_a_player() {
+        let mut ci = ClientInfo::<()>::new("192.0.2.1:3074".parse().unwrap());
+        assert!(player(&ci).is_err());
+        ci.user_id = Some(TRACKING_PID);
+        assert!(player(&ci).is_err());
+        ci.user_id = Some(0x0010_0000);
+        assert_eq!(player(&ci).unwrap(), 0x0010_0000);
+    }
 
     #[test]
     fn only_tracking_has_its_own_ticket_password() {

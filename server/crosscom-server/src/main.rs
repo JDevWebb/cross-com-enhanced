@@ -14,6 +14,7 @@ mod accounts;
 mod config;
 mod online_config;
 mod privileges;
+mod rate_limit;
 mod secure;
 mod ticket;
 

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use argon2::password_hash::PasswordHash;
 use argon2::password_hash::PasswordHasher;
@@ -94,14 +95,19 @@ impl Accounts {
         Ok(next)
     }
 
-    /// The account's PID, if the name and password match one.
+    /// The account's PID, if the name and password match one. An unknown name takes as long as a
+    /// wrong password, so the time taken doesn't tell which names exist.
     pub fn verify(&self, name: &str, password: &str) -> Result<Option<u32>, Error> {
+        if password.chars().count() > MAX_PASSWORD_LEN {
+            return Ok(None);
+        }
         let row: Option<(u32, String)> = {
             let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             db.query_row("SELECT pid, password_hash FROM accounts WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?
         };
         let Some((pid, hash)) = row else {
+            let _ = PasswordHash::new(dummy_hash()).map(|h| Argon2::default().verify_password(password.as_bytes(), &h));
             return Ok(None);
         };
         let Ok(hash) = PasswordHash::new(&hash) else {
@@ -109,6 +115,15 @@ impl Accounts {
         };
         Ok(Argon2::default().verify_password(password.as_bytes(), &hash).is_ok().then_some(pid))
     }
+}
+
+/// A hash to check passwords against when the name is unknown.
+fn dummy_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        let salt = SaltString::encode_b64(&[0x5a; 16]).expect("a fixed salt");
+        Argon2::default().hash_password(b"no such account", &salt).map(|h| h.to_string()).unwrap_or_default()
+    })
 }
 
 fn valid_name(name: &str) -> bool {
@@ -128,6 +143,7 @@ mod tests {
         assert_eq!(accounts.verify("kozak", "hunter2").unwrap(), Some(pid), "names ignore case");
         assert_eq!(accounts.verify("Kozak", "wrong").unwrap(), None);
         assert_eq!(accounts.verify("Pepper", "hunter2").unwrap(), None);
+        assert_eq!(accounts.verify("Kozak", &"x".repeat(MAX_PASSWORD_LEN + 1)).unwrap(), None);
     }
 
     #[test]
