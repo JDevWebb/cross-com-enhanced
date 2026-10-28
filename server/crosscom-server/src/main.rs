@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use quazal::prudp::packet::QPacket;
 use quazal::prudp::packet::StreamHandlerRegistry;
 use quazal::prudp::packet::StreamType;
 use quazal::prudp::packet::VPort;
@@ -203,7 +204,24 @@ fn run_server(logger: &Logger, ctx: &Context, register: impl FnOnce(&mut RVSecHa
     );
     // No handlers for expired or disconnected clients yet: nothing per player is kept.
     let mut server = Server::<fn(quazal::ClientInfo), fn(quazal::ClientInfo)>::new(logger.clone(), ctx, registry);
+    server.user_handler = Some(address_echo);
     server.bind(ctx.listen)?;
     server.serve();
     Ok(())
+}
+
+/// The address echo: the game asks (a PRUDP user packet, on virtual port 1) where the server
+/// sees it, to tell other players, and keeps asking until it's answered. The answer is its own
+/// payload followed by `udp:/address=IP;port=PORT` and a NUL. `quazal` limits how often and how
+/// much it answers, since the source of a UDP packet can be forged.
+fn address_echo(logger: &Logger, packet: QPacket, client: SocketAddr, socket: &std::net::UdpSocket) {
+    if packet.source.port != 1 || packet.destination.port != 1 {
+        slog::debug!(logger, "user packet for ports {} -> {} ignored", packet.source.port, packet.destination.port);
+        return;
+    }
+    let mut reply = packet.payload;
+    reply.extend_from_slice(format!("udp:/address={};port={}\0", client.ip(), client.port()).as_bytes());
+    if let Err(e) = socket.send_to(&reply, client) {
+        slog::warn!(logger, "address echo to {client} failed: {e}");
+    }
 }
