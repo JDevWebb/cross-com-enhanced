@@ -57,12 +57,24 @@ impl GameSessions {
         }
     }
 
-    fn participant(&self, pid: u32) -> GameSessionParticipant {
+    /// A participant as other members see them: name and addresses only for those who joined
+    /// themselves.
+    fn participant(&self, session: &sessions::Session, pid: u32) -> GameSessionParticipant {
+        let joined = session.joined(pid);
         GameSessionParticipant {
             pid,
-            name: self.accounts.name(pid).ok().flatten().unwrap_or_default(),
-            station_urls: QList(self.sessions.urls(pid)),
+            name: if joined {
+                self.accounts.name(pid).ok().flatten().unwrap_or_default()
+            } else {
+                String::new()
+            },
+            station_urls: QList(if joined { self.sessions.urls(pid) } else { vec![] }),
         }
+    }
+
+    /// The session, if `pid` is in it: only members see who else is.
+    fn member_of(&self, pid: u32, k: sessions::Key) -> Result<sessions::Session, Error> {
+        self.sessions.get(k).filter(|s| s.has(pid)).ok_or(Error::AccessDenied)
     }
 }
 
@@ -226,8 +238,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetParticipantCountResponse, Error> {
-        player(ci)?;
-        let session = self.sessions.get(key(&request.game_session_key)).ok_or(Error::AccessDenied)?;
+        let pid = player(ci)?;
+        let session = self.member_of(pid, key(&request.game_session_key))?;
         #[allow(clippy::cast_possible_truncation)] // bounded by sessions::MAX_PARTICIPANTS
         Ok(GetParticipantCountResponse {
             count: session.participants.len() as u32,
@@ -243,15 +255,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetParticipantsResponse, Error> {
-        player(ci)?;
-        let session = self.sessions.get(key(&request.game_session_key)).ok_or(Error::AccessDenied)?;
+        let pid = player(ci)?;
+        let session = self.member_of(pid, key(&request.game_session_key))?;
         let range = &request.result_range;
         let participants = session
             .participants
             .iter()
             .skip(range.offset as usize)
             .take(range.size as usize)
-            .map(|&p| self.participant(p))
+            .map(|&p| self.participant(&session, p))
             .collect();
         Ok(GetParticipantsResponse {
             participants: QList(participants),
@@ -268,7 +280,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<RegisterUrLsResponse, Error> {
         let pid = player(ci)?;
-        self.sessions.set_urls(pid, request.station_urls.0);
+        let observed = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
+            .parse()
+            .map_err(|_| Error::InternalError)?;
+        self.sessions.set_urls(pid, observed, request.station_urls.0);
         Ok(RegisterUrLsResponse)
     }
 
@@ -356,15 +371,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetParticipantsUrLsResponse, Error> {
-        player(ci)?;
-        let session = self.sessions.get(key(&request.game_session_key)).ok_or(Error::AccessDenied)?;
+        let pid = player(ci)?;
+        let session = self.member_of(pid, key(&request.game_session_key))?;
         let participants = request
             .participant_ids
             .0
             .iter()
             .filter(|p| session.participants.contains(p))
             .take(MAX_RESULTS)
-            .map(|&p| self.participant(p))
+            .map(|&p| self.participant(&session, p))
             .collect();
         Ok(GetParticipantsUrLsResponse {
             participants: QList(participants),

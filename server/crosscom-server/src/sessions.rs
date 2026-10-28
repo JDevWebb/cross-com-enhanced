@@ -3,9 +3,11 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Mutex;
 
 use quazal::rmc::types::StationURL;
+use rand::Rng;
 
 /// Sessions kept at most, and per host. The game makes one as a player opens Multiplayer.
 const MAX_SESSIONS: usize = 10_000;
@@ -24,6 +26,33 @@ pub struct Session {
     /// (id, value), in the order first set.
     pub attributes: Vec<(u32, u32)>,
     pub participants: Vec<u32>,
+    /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
+    /// a host adding a PID mustn't be a way to learn that player's address.
+    pub joined: Vec<u32>,
+}
+
+impl Session {
+    pub fn has(&self, pid: u32) -> bool {
+        self.participants.contains(&pid)
+    }
+
+    pub fn joined(&self, pid: u32) -> bool {
+        self.joined.contains(&pid)
+    }
+}
+
+/// Whether a station URL a player claims for itself may be passed on: an address on a private
+/// network (a LAN, or a VPN such as Tailscale's 100.64/10), or the one the server sees it at.
+/// Anything else could point other players' games at someone else.
+pub fn claimable(url: &StationURL, observed: IpAddr) -> bool {
+    match url.address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_private() || ip.is_link_local() || (a == 100 && (64..128).contains(&b)) || IpAddr::V4(ip) == observed
+        }
+        Ok(ip) => ip == observed,
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -40,7 +69,6 @@ pub struct Sessions {
 
 #[derive(Default)]
 struct Inner {
-    next_id: u32,
     sessions: BTreeMap<Key, Session>,
     urls: HashMap<u32, Vec<StationURL>>,
 }
@@ -60,9 +88,13 @@ impl Sessions {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Where `pid` can be reached, as it registered.
-    pub fn set_urls(&self, pid: u32, urls: Vec<StationURL>) {
-        self.lock().urls.insert(pid, urls.into_iter().take(MAX_URLS).collect());
+    /// Where `pid` can be reached: first the address the server sees it at, then those it claims
+    /// that may be passed on (see [`claimable`]).
+    pub fn set_urls(&self, pid: u32, observed: StationURL, claimed: Vec<StationURL>) {
+        let seen: Option<IpAddr> = observed.address.parse().ok();
+        let mut urls = vec![observed];
+        urls.extend(claimed.into_iter().filter(|u| seen.is_some_and(|ip| claimable(u, ip))).take(MAX_URLS - 1));
+        self.lock().urls.insert(pid, urls);
     }
 
     pub fn urls(&self, pid: u32) -> Vec<StationURL> {
@@ -80,8 +112,13 @@ impl Sessions {
         if inner.sessions.len() >= MAX_SESSIONS {
             return Err(Error::Full);
         }
-        inner.next_id = inner.next_id.wrapping_add(1).max(1);
-        let key = (type_id, inner.next_id);
+        // Random, so one session's ID doesn't lead to the others.
+        let key = loop {
+            let id = rand::rng().random_range(1..=u32::MAX);
+            if !inner.sessions.contains_key(&(type_id, id)) {
+                break (type_id, id);
+            }
+        };
         let mut attrs = Vec::new();
         set_attributes(&mut attrs, attributes);
         inner.sessions.insert(
@@ -90,6 +127,7 @@ impl Sessions {
                 host,
                 attributes: attrs,
                 participants: vec![host],
+                joined: vec![host],
             },
         );
         Ok(key)
@@ -116,7 +154,14 @@ impl Sessions {
     }
 
     pub fn join(&self, pid: u32, key: Key) -> Result<(), Error> {
-        self.add(key, &[pid])
+        self.add(key, &[pid])?;
+        let mut inner = self.lock();
+        if let Some(session) = inner.sessions.get_mut(&key) {
+            if !session.joined.contains(&pid) {
+                session.joined.push(pid);
+            }
+        }
+        Ok(())
     }
 
     pub fn add(&self, key: Key, pids: &[u32]) -> Result<(), Error> {
@@ -139,11 +184,12 @@ impl Sessions {
         let mut inner = self.lock();
         let session = inner.sessions.get_mut(&key).ok_or(Error::NotFound)?;
         session.participants.retain(|p| !pids.contains(p));
+        session.joined.retain(|p| !pids.contains(p));
         match session.participants.first() {
             None => {
                 inner.sessions.remove(&key);
             }
-            Some(&next) if pids.contains(&session.host) => session.host = next,
+            Some(&next) if pids.contains(&session.host) => session.host = session.joined.first().copied().unwrap_or(next),
             Some(_) => {}
         }
         Ok(())
@@ -206,6 +252,30 @@ mod tests {
         assert_eq!(sessions.search(1, 100).len(), MAX_PER_HOST);
         assert!(sessions.get(keys[0]).is_none());
         assert!(sessions.get(*keys.last().unwrap()).is_some());
+    }
+
+    fn url(address: &str) -> StationURL {
+        format!("prudp:/address={address};port=3074").parse().unwrap()
+    }
+
+    #[test]
+    fn keeps_the_seen_address_first_and_only_claims_that_can_be_passed_on() {
+        let sessions = Sessions::default();
+        let claimed = vec![url("192.168.1.20"), url("100.111.224.124"), url("8.8.8.8"), url("203.0.113.7"), url("not-an-ip")];
+        sessions.set_urls(10, url("203.0.113.7"), claimed);
+        let kept: Vec<String> = sessions.urls(10).iter().map(|u| u.address.clone()).collect();
+        assert_eq!(kept, vec!["203.0.113.7", "192.168.1.20", "100.111.224.124", "203.0.113.7"]);
+    }
+
+    #[test]
+    fn only_players_who_joined_count_as_joined() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[]).unwrap();
+        sessions.add(key, &[11]).unwrap();
+        sessions.join(12, key).unwrap();
+        let session = sessions.get(key).unwrap();
+        assert!(session.has(11) && !session.joined(11), "added by the host only");
+        assert!(session.joined(12) && session.joined(10));
     }
 
     #[test]

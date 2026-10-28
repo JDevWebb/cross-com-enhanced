@@ -60,10 +60,9 @@ impl<CI> SecureConnectionProtocolServerTrait<CI> for SecureConnection {
         let (pid_connection_id, url_public) = registered(ci, 15, 3)?;
         info!(logger, "{:?} registered: {:?}", ci.user_id, request.vec_my_urls);
         if let Some(pid) = ci.user_id {
-            // Where other players reach this one: what it says, then what the server sees.
-            let mut urls = request.vec_my_urls;
-            urls.push(url_public.clone());
-            self.sessions.set_urls(pid, urls);
+            // Where other players reach this one: what the server sees first, then the addresses
+            // it gives that may be passed on.
+            self.sessions.set_urls(pid, url_public.clone(), request.vec_my_urls);
         }
         Ok(RegisterExResponse {
             return_value: QResult::Ok,
