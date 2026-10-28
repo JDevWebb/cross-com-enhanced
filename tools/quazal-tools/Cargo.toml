@@ -1,0 +1,24 @@
+[package]
+name = "quazal-tools"
+version = "0.2.5"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+verbose_errors = []
+
+[dependencies]
+nom = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+clap = "~2.33.0"
+byteorder = { workspace = true }
+quazal-tools-macros = { path = "./quazal-tools-macros" }
+convert_case = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+proc-macro2 = { workspace = true }
+pcap-parser = { workspace = true, features = ["data"] }
+etherparse = { workspace = true }
+quazal = { path = "../../quazal" }

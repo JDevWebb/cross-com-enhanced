@@ -1,0 +1,12 @@
+[package]
+name = "quazal-tools-macros"
+version = "0.2.5"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
