@@ -35,7 +35,12 @@ pub struct Config {
 #[derive(Debug)]
 pub enum Error {
     Read(std::io::Error),
-    Parse(toml::de::Error),
+    /// Only the message and the line: `toml`'s own error quotes the line, which may hold the
+    /// password, and these errors go into the log players share.
+    Parse {
+        message: String,
+        line: Option<usize>,
+    },
     /// A username, password or CD key the game can't take.
     Invalid(String),
 }
@@ -44,7 +49,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Read(e) => write!(f, "couldn't read {FILE_NAME}: {e}"),
-            Error::Parse(e) => write!(f, "{FILE_NAME} isn't valid: {e}"),
+            Error::Parse { message, line: Some(line) } => write!(f, "{FILE_NAME} isn't valid at line {line}: {message}"),
+            Error::Parse { message, line: None } => write!(f, "{FILE_NAME} isn't valid: {message}"),
             Error::Invalid(e) => write!(f, "{FILE_NAME}: {e}"),
         }
     }
@@ -60,7 +66,10 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let config: Self = toml::from_str(text).map_err(Error::Parse)?;
+        let config: Self = toml::from_str(text).map_err(|e| Error::Parse {
+            message: safe_message(e.message()),
+            line: e.span().map(|span| text[..span.start.min(text.len())].lines().count().max(1)),
+        })?;
         config.validate()?;
         Ok(config)
     }
@@ -85,6 +94,16 @@ impl Config {
         } else {
             None
         }
+    }
+}
+
+/// `toml`'s message, when it can only name settings ("unknown field `sever`"); any other may quote
+/// a value, such as a password written without quotes, so it's replaced.
+fn safe_message(message: &str) -> String {
+    if message.starts_with("unknown field") || message.starts_with("missing field") || message.starts_with("duplicate key") {
+        message.to_owned()
+    } else {
+        "a setting isn't written correctly; text values need double quotes".to_owned()
     }
 }
 
@@ -117,7 +136,20 @@ mod tests {
 
     #[test]
     fn refuses_unknown_settings() {
-        assert!(matches!(Config::parse("sever = \"typo\""), Err(Error::Parse(_))));
+        assert!(matches!(Config::parse("sever = \"typo\""), Err(Error::Parse { .. })));
+    }
+
+    #[test]
+    fn parse_errors_never_quote_the_file() {
+        let err = Config::parse("username = \"Kozak\"\npassword = \"s3cret-pass\" oops\n").unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains("s3cret-pass"), "{text}");
+        assert!(text.contains("line 2"), "{text}");
+
+        let err = Config::parse("password = 123456").unwrap_err().to_string();
+        assert!(!err.contains("123456"), "{err}");
+        let err = Config::parse("sever = \"x\"").unwrap_err().to_string();
+        assert!(err.contains("unknown field `sever`"), "{err}");
     }
 
     #[test]
