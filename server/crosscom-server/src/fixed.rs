@@ -116,6 +116,30 @@ fn map_list() -> Vec<u8> {
     out
 }
 
+/// The time now, in Quazal's packed date-time: seconds in bits 0-5, minutes 6-11, hours 12-16,
+/// day 17-21, month 22-25 and the year from bit 26. Misc.1 answers it (an 8-byte value, worked
+/// out from the game's encoder); the game asks right after a match's map list.
+fn server_time() -> u64 {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    packed_date_time(secs)
+}
+
+fn packed_date_time(unix: u64) -> u64 {
+    let (days, rest) = (unix / 86_400, unix % 86_400);
+    let (hour, minute, second) = (rest / 3600, rest / 60 % 60, rest % 60);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u64;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u64;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as u64;
+    second | minute << 6 | hour << 12 | day << 17 | month << 22 | year << 26
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -146,6 +170,11 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
             id: 111,
             name: "MiscProtocol",
             methods: &[
+                Method {
+                    id: 1,
+                    name: "GetServerTime",
+                    answer: || server_time().to_le_bytes().to_vec(),
+                },
                 Method {
                     id: 3,
                     name: "GetGenericSettings",
@@ -219,4 +248,19 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
         },
     ];
     PROTOCOLS.iter().map(|p| Box::new(FixedProtocol { ..*p }) as Box<dyn Protocol<CI>>).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packed_date_time;
+
+    #[test]
+    fn packs_a_date_the_quazal_way() {
+        // 2026-10-29 13:45:30 UTC
+        let t = packed_date_time(1_793_281_530);
+        assert_eq!((t >> 26, t >> 22 & 0xf, t >> 17 & 0x1f), (2026, 10, 29));
+        assert_eq!((t >> 12 & 0x1f, t >> 6 & 0x3f, t & 0x3f), (13, 45, 30));
+        let leap = packed_date_time(951_782_400); // 2000-02-29 00:00:00
+        assert_eq!((leap >> 26, leap >> 22 & 0xf, leap >> 17 & 0x1f), (2000, 2, 29));
+    }
 }
