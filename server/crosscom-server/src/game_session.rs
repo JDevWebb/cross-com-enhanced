@@ -108,8 +108,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<UpdateSessionResponse, Error> {
         let pid = player(ci)?;
         let update = &request.game_session_update;
-        self.sessions.update(pid, key(&update.session_key), &properties(&update.attributes)).map_err(error)?;
-        Ok(UpdateSessionResponse)
+        match self.sessions.update(pid, key(&update.session_key), &properties(&update.attributes)) {
+            // The game updates a match once more as it leaves it, after the session ended with
+            // its last player: there's nothing left to update, and that's not an error.
+            Ok(()) | Err(sessions::Error::NotFound) => Ok(UpdateSessionResponse),
+            Err(e) => Err(error(e)),
+        }
     }
 
     fn delete_session(
