@@ -76,6 +76,46 @@ impl<CI> Protocol<CI> for FixedProtocol {
     }
 }
 
+/// Maps offered, as the world keys of their mode-specific worlds (the ones the game's DLC
+/// configuration names): an experiment. With no maps the game abandons the match it was going to
+/// host; whether these are the IDs it wants is to be seen.
+const MAPS: [u32; 26] = [
+    0x222a_c79a,
+    0x222a_c991,
+    0x222a_c0d6,
+    0x222a_cb1f,
+    0x222a_cb44,
+    0x222a_cb69,
+    0x222a_cb7b,
+    0x222a_cb8d,
+    0x222a_c535,
+    0x222a_cba6, // the ten maps, Stockade
+    0x3220_f4de,
+    0x3220_f542,
+    0x3220_f55f,
+    0x3220_f67e,
+    0xa033_3e99, // Peshawar Streets: Conflict, Decoy, Saboteur, Siege, Stockade
+    0x3220_f9db,
+    0x3220_fa0f,
+    0x3220_fa2c,
+    0x3220_fa72,
+    0xbc32_91bc, // Peshawar Rooftops
+    0x3220_fc58,
+    0x3220_fcb5,
+    0x3220_fce5,
+    0x3220_fd02,
+    0x3220_efa1, // Peshawar Residential
+    0x9f2e_1b5b, // Arctic Base, Guerrilla
+];
+
+fn map_list() -> Vec<u8> {
+    let mut out = (MAPS.len() as u32).to_le_bytes().to_vec();
+    for map in MAPS {
+        out.extend_from_slice(&map.to_le_bytes());
+    }
+    out
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -154,7 +194,7 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                 Method {
                     id: 2,
                     name: "GetMapList",
-                    answer: || EMPTY_LIST.to_vec(),
+                    answer: map_list,
                 },
             ],
         },

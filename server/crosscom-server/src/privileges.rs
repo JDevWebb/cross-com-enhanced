@@ -54,6 +54,11 @@ const PRIVILEGES: &[(u32, &str)] = &[
     (0x13C4, "Unlock a Tom Clancy weapon skin"),
     (0x13CE, "Unlock a Splinter Cell weapon skin"),
     (0x13D6, "Unknown privilege"),
+    // The DLC packs, as each one's dlc.ini names its privilege: Arctic Strike, then the second
+    // and third packs. Without them the game treats the DLC as not owned.
+    (3000, "DLC 1: Arctic Strike"),
+    (3010, "DLC 2"),
+    (3020, "DLC 3"),
 ];
 
 struct Privileges;
