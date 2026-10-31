@@ -4,7 +4,7 @@ What Cross-Com Enhanced has worked out about how *Ghost Recon: Future Soldier* (
 
 The game uses Ubisoft's online SDK, built on Quazal Rendez-Vous: the same family as *Splinter Cell: Blacklist* (see [5th Echelon](https://github.com/unixoide/5th-echelon)) and *Ghost Recon Online* (see [GROBackendWV](https://github.com/zeroKilo/GROBackendWV)). Many details below were first found by the [Phoenix Network GRFS backend](https://github.com/Phoenix-Network-Ltd/Ghost-Recon-Future-Soldier-Research) and confirmed against the game.
 
-**Status (2026-10-29):** worked out from the game and the projects above, not yet tested against the game. Items marked *to confirm* are settled when the game first calls our server: it logs every call it can't answer.
+**Status (2026-10-31):** the game signs in, reaches its menus, hosts matches and plays them against a Cross-Com server. Sections marked *not yet seen in a game* were worked out from the game's own code and tested with the testbot only.
 
 ## 1. Finding the server
 
@@ -29,55 +29,81 @@ The game uses Ubisoft's online SDK, built on Quazal Rendez-Vous: the same family
 
 ## 4. Protocols
 
-The game declares 27 protocols with full method signatures; methods are numbered from 1 in declaration order. The IDs are in [`data/protocol_ids.json`](../data/protocol_ids.json), which the protocol code generator reads. Sources: **B** 5th Echelon's Blacklist mapping (same SDK), **P** Phoenix, **Q** standard Quazal numbering.
+The game declares 27 protocols with full method signatures; methods are numbered from 1 in declaration order. The IDs are in [`data/protocol_ids.json`](../data/protocol_ids.json), which the protocol code generator reads. It also has protocols of its own that aren't among those declarations (108 and up), and the Overlord ones (5001-5008), which come from a shared Ubisoft library.
 
-| ID | Protocol | Methods | Source | Needed for |
-|---:|---|---:|---|---|
-| 3 | NATTraversal | | B, P | matches over the internet |
-| 10 | TicketGranting | 6 | B, P | sign-in |
-| 11 | SecureConnection | 4 | B, P | sign-in |
-| 14 | Notification | | B | events pushed to the game |
-| 18, 19 | Health, Monitoring | | B | |
-| 20 | Friends | | B, P | friends |
-| 21 | MatchMaking | 41 | P | lobbies (Gatherings) |
-| 24 | PersistentStore | 9 | P | probably profiles and progression |
-| 25 | AccountManagement | | B, P | |
-| 29 | UbiAccountManagement | | B | |
-| 31 | News | | P | |
-| 33 | UbiNews | | P | |
-| 35 | Privileges | 6 | B, P | main menu (`GetPrivilegesEx`, 6) |
-| 36 | Tracking (v3) | | B, P | main menu (configuration) |
-| 39 | Localization | | B, P | |
-| 42 | GameSession | 26 | B, P | sessions and invitations |
-| 47 | UbiFriends | | P | friends |
-| 50 | MatchMakingExt | 6 | Q, *to confirm* | lobbies |
-| 51 | TitleStorage | 4 | P | content files (`BrowseContentsByType` 2, `DownloadContent` 4) |
-| 86 | SearchFriends | | P | |
-| 87 | FriendMessagesExtension | | P | |
-| 5001–5008 | Rpne, OverlordNews, OverlordCore, ExtraContent, OverlordFriends, Awards, OverlordChallenge, OverlordDare | | B, P | main menu (`OverlordCore.GetSettings`, 1) |
+| ID | Protocol | What the game uses it for |
+|---:|---|---|
+| 3 | NATTraversal | being probed by players it wants to reach (section 7) |
+| 10 | TicketGranting | sign-in |
+| 11 | SecureConnection | sign-in (`RegisterEx`) |
+| 14 | Notification | events the server pushes (section 8) |
+| 20 | Friends | the friends list, requests, blocking (section 8) |
+| 35 | Privileges | what the player may do, including owning each DLC (3000, 3010, 3020) |
+| 36 | Tracking (v3) | its tracking configuration and tags |
+| 39 | Localization | the locale |
+| 42 | GameSession | parties, matches and invitations (section 6) |
+| 47 | UbiFriends | a second friends list, added to Friends' |
+| 51 | TitleStorage | content files |
+| 86 | SearchFriends | finding players by name |
+| 87 | FriendMessagesExtension | the message sent with a friend request |
+| 108 | PlayerStatistics | rank, experience and the profile (section 5) |
+| 109 | RichPresence | presence |
+| 110 | Clans | the player's clan (13), and a list asked as the menus load (28: a list and a u32) |
+| 111 | Misc | the server time (1), generic settings (3) |
+| 120 | UplayWin | Uplay actions and rewards |
+| 121 | MapList | which maps a match may vote between (section 6) |
+| 125 | TrackingExtension | |
+| 5002 | OverlordNews | news: `GetNews(predicate, result range)` answers a list |
+| 5003 | OverlordCore | settings |
+| 5008 | OverlordDare | `RequestDareInfo(u32)` answers one dare-info object (its fields aren't known) |
 
-**To confirm:**
-- **UplayWin** is 49 in Blacklist and 120 in Phoenix (which came from Ghost Recon Online).
-- **TrackingExtension** is 1001 in Blacklist and 125 in Phoenix.
-- Phoenix also answers protocols 109, 110, 111 and 126 under Ghost Recon Online's names (rich presence, clans, misc settings, events tracking). Which Future Soldier protocols they are is to confirm.
-- Admin protocols the game declares but shouldn't call: GameSessionAdmin, TitleStorageAdmin, NewsAdmin, LocalizationAdmin, RemoteLogDevice.
+Every call the server can't answer is logged with its parameters, which is how the rest are worked out.
 
-## 5. Matchmaking
+## 5. Player statistics (108)
 
-Lobbies use classic Quazal **Gatherings** (MatchMaking, 21): `RegisterGathering`, `FindByType`/`FindBySQLQuery`, `Participate`, `LaunchSession`, `GetParticipantsURLs` and the rest. The match itself is hosted by a player and runs peer to peer; the server introduces the players (NAT traversal) and can relay them.
+Methods 1-5 send and 6-10 read values of one type each: i32, i64, f32, string and blob (a string or blob is a u16 length, then the bytes).
 
-## 6. Platform libraries the game loads
+```text
+send:  list<{ board: u8, keys: list<u32>, values: list<{ column: u8, value, op: u8 }> }>
+read:  list<{ board: u8, keys: list<u32>, columns: list<u8> }>, players: list<u32>
+reply: list<{ player: u32, rows: list<{ board: u8, keys: list<u32>, values: list<{ column: u8, value }> }> }>
+```
+
+The game sends its whole profile from the menus (350 rows of board 3, keyed by pairs), every op 2 (set). A read's key `-1` matches any key, so a board read with `-1` keys answers a row for each stored key set.
+
+## 6. Sessions, matchmaking and maps
+
+Parties and matches are **GameSession** sessions (42), not Gatherings. The match itself is hosted by a player's game, peer to peer.
+
+- **Properties** the game sets: 3 public slots, 4 private (invite-only) slots, 7 whether the session wasn't matchmade (1 for a party or a custom match), and 100-117 the match's settings.
+- **Quick match** searches (`SearchSessions`, query 2) with the public slots it needs (property 3) and the settings it wants; when it finds nothing it creates a match with the same settings and waits in its lobby. A match is offered when it's matchmade, has that many free public slots and the same settings.
+- **Station URLs**: the game registers its peer-to-peer address with `RegisterURLs` (21) as `udp:/address=...;port=...;PID=...;RVCID=...`, learning its public address and port from the server's echo (PRUDP user packets on port 1: the server answers with the packet and `udp:/address=IP;port=PORT`).
+- **Map list (121)**: `GetAvailableMapCategories()` and `GetMapList(u32 category)` both answer a `list<u32>` of world keys. The category is the player's match preferences: a bit per game mode (`1 << mode`: 1 Stockade, 2 Conflict, 3 Decoy, 4 Safehouse, 5 Siege, 6 Team Deathmatch, 7 Touchdown, 8 Guerrilla) and a bit per map pack (`0x4000`, `0x8000`, `0x10000`). Each map has one world per mode; the world loaded decides the mode. The keys of all 18 adversarial maps and 6 Guerrilla maps are in [`server/crosscom-server/src/maps.rs`](../server/crosscom-server/src/maps.rs).
+- **The server time** (`Misc.1`) is asked right after a match's map list: an 8-byte Quazal date-time (seconds in bits 0-5, minutes 6-11, hours 12-16, day 17-21, month 22-25, year from 26).
+
+## 7. NAT traversal
+
+A game that wants to reach other players calls `RequestProbeInitiation` (3.1, with their station URLs) or `RequestProbeInitiationExt` (3.3, with the station to probe too). The server calls `InitiateProbe` (3.2) on each of those players' games, so their packets open the way through both routers. A call the server makes to a game must be numbered and signed as the server's own packets are; one made like a client's request is dropped.
+
+## 8. Friends, events and invitations (*not yet seen in a game*)
+
+- **Relationships**, as the game's friend list reads them: 1 a friend, 2 a friend request, 3 blocked; a status of 1 is online. The list is built from `Friends.GetRelationships`, then `UbiFriends.GetRelationshipsList`, then the blocked players (`Friends.GetDetailedList(3)`).
+- **Events** (`ProcessNotificationEvent`, 14.1): `{ source pid, type, param1, param2, string, param3 }`. The type is a category times 1000 plus a subtype, and the game dispatches on the category: 1 friend events (param1 the other player, param2 the relationship: 2 "asks to be friends", 1 "now friends"), 3 participation events, 7 game session events (7005 an invitation received: param1 the session type, param2 its ID, the string the message), 1000 and up custom events.
+- **Game invitations** are GameSession methods 12-19: send, list and count received and sent, accept, decline, cancel. After accepting, the game joins the session itself.
+
+## 9. Platform libraries the game loads
 
 The game loads two Ubisoft libraries by name, and calls only these functions:
 
-**`ubiorbitapi_r2_loader.dll`** (Orbit; C++ `mg::orbitclient`, `thiscall`): `OrbitClient` constructor, `GetInstallationErrorNum`, `GetInstallationErrorString`, `StartLauncher`, `Update`, `GetLoginDetails`, `GetRequestUniqueId`, `GetSavegameReader`, `GetSavegameWriter`; `SavegameReader::Read`, `Close`; `SavegameWriter::SetName`, `Write`, `Close`. `GetLoginDetails` gives the game the account name, password and CD key it signs in with; the savegame calls are its cloud saves. Results come back through listener objects the game passes in.
+**`ubiorbitapi_r2_loader.dll`** (Orbit; C++ `mg::orbitclient`, `thiscall`): `OrbitClient` constructor, `GetInstallationErrorNum`, `GetInstallationErrorString`, `StartLauncher`, `Update`, `GetLoginDetails`, `GetRequestUniqueId`, `GetSavegameReader`, `GetSavegameWriter`; `SavegameReader::Read`, `Close`; `SavegameWriter::SetName`, `Write`, `Close`. `GetLoginDetails` gives the game the account name, password and CD key it signs in with, through the listener the game passes in: its first virtual method takes `(request id, user, password, CD key)`, each copied into an 80-byte buffer (so each is at most 79 characters).
 
-**`uplay_r1_loader.dll`**: `UPLAY_Init`, `UPLAY_Quit`, `UPLAY_Update`, `UPLAY_GetNextEvent`, `UPLAY_FRIENDS_Init`, `UPLAY_FRIENDS_GetFriendList`.
+**`uplay_r1_loader.dll`**: `UPLAY_Init`, `UPLAY_Quit`, `UPLAY_Update`, `UPLAY_GetNextEvent`, `UPLAY_FRIENDS_Init`, `UPLAY_FRIENDS_GetFriendList`; the game runs with all of them answering 0.
 
-Cross-Com's client replaces both.
+Cross-Com's client replaces both. The game plays its videos with Bink; the client can skip the three splash videos by answering `BinkOpen` for them as for a missing file.
 
-## 7. Still to work out
+## 10. Still to work out
 
-- The listener interfaces Orbit calls back on (their method order).
-- What the game needs to run without PunkBuster, whose servers are gone.
-- The protocol IDs marked *to confirm*.
+- Which map pack each of the category's pack bits is (the order is a guess), and the packs of the two newest Guerrilla maps.
+- The dare-info object (5008.1), and what Clans method 28 is.
+- Statistics ops other than 2 (set), if the game sends any.
+- What the game needs to run without PunkBuster, whose servers are gone (so far: nothing).
