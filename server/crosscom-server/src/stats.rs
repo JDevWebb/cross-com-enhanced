@@ -72,11 +72,14 @@ const SEND_INT32: u32 = 1;
 const SEND_BLOB: u32 = 5;
 /// The op that sets a value: the only one seen.
 const OP_SET: u8 = 2;
-/// The longest string or blob kept, the most rows one send may write, and the most values kept
-/// per player.
-const MAX_VALUE_LEN: usize = 4096;
+/// The longest string or blob kept, the most rows one send may write, and the most a player may
+/// keep: values, and bytes of keys and values.
+const MAX_VALUE_LEN: usize = 1024;
 const MAX_ROWS: u32 = 2048;
 const MAX_STORED: i64 = 65_536;
+/// As much as one reply carries, so all of it can be read back (a whole profile is about 25 KB).
+#[allow(clippy::cast_possible_wrap)]
+const MAX_STORED_BYTES: i64 = MAX_REPLY as i64;
 
 /// One value of a send, as encoded (so a read returns it as it came).
 fn read_value(rdr: &mut Cursor<&[u8]>, send_method: u32) -> std::io::Result<Vec<u8>> {
@@ -166,8 +169,8 @@ impl Store {
         self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Writes a send's rows for `pid`, all or nothing. Refused if the player would have more
-    /// than `MAX_STORED` values.
+    /// Writes a send's rows for `pid`, all or nothing. Refused if the player would keep more than
+    /// `MAX_STORED` values or `MAX_STORED_BYTES`.
     fn write(&self, pid: u32, value_type: u32, rows: &[Row]) -> Result<(), Error> {
         let mut db = self.lock();
         let tx = db.transaction().map_err(|_| Error::InternalError)?;
@@ -182,17 +185,22 @@ impl Store {
                 }
             }
         }
-        let stored: i64 = tx
-            .query_row("SELECT COUNT(*) FROM player_stats WHERE pid = ?1", [pid], |r| r.get(0))
+        let (stored, bytes): (i64, i64) = tx
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(length(keys) + length(value)), 0) FROM player_stats WHERE pid = ?1",
+                [pid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .map_err(|_| Error::InternalError)?;
-        if stored > MAX_STORED {
+        if stored > MAX_STORED || bytes > MAX_STORED_BYTES {
             return Err(Error::AccessDenied);
         }
         tx.commit().map_err(|_| Error::InternalError)
     }
 
-    /// A player's stored rows of a board: (keys, column, value).
-    fn rows(&self, pid: u32, value_type: u32, board: u8) -> Result<Vec<(Vec<u32>, u8, Vec<u8>)>, Error> {
+    /// A player's stored rows of a board: (keys, column, value). Refused past `MAX_REPLY` bytes,
+    /// which no reply could carry.
+    fn rows(&self, pid: u32, value_type: u32, board: u8) -> Result<Stored, Error> {
         let db = self.lock();
         let mut query = db
             .prepare_cached("SELECT keys, col, value FROM player_stats WHERE pid = ?1 AND type = ?2 AND board = ?3 ORDER BY keys, col")
@@ -202,7 +210,17 @@ impl Store {
                 Ok((keys_from_blob(&r.get::<_, Vec<u8>>(0)?), r.get::<_, u8>(1)?, r.get::<_, Vec<u8>>(2)?))
             })
             .map_err(|_| Error::InternalError)?;
-        rows.collect::<Result<_, _>>().map_err(|_| Error::InternalError)
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        for row in rows {
+            let row = row.map_err(|_| Error::InternalError)?;
+            bytes += 4 * row.0.len() + 1 + row.2.len();
+            if bytes > MAX_REPLY {
+                return Err(Error::ParsingError);
+            }
+            out.push(row);
+        }
+        Ok(out)
     }
 }
 
@@ -262,7 +280,7 @@ fn reply_size(request: &ReadRequest, value_len: usize) -> usize {
 }
 
 /// What a player has stored of a board: (keys, column, value), in keys order.
-type Stored = Vec<(Vec<u32>, u8, Vec<u8>)>;
+pub(crate) type Stored = Vec<(Vec<u32>, u8, Vec<u8>)>;
 
 fn matches(query: &[u32], keys: &[u32]) -> bool {
     query.len() == keys.len() && query.iter().zip(keys).all(|(&q, &k)| q == u32::MAX || q == k)
@@ -281,12 +299,21 @@ fn read_reply(request: &ReadRequest, zero: &[u8], mut stored: impl FnMut(u32, u8
     out.write_u32::<LittleEndian>(len(request.players.len())).ok();
     for &pid in &request.players {
         let mut rows: Vec<(&BoardQuery, &[u32], Vec<&[u8]>)> = Vec::new();
-        let mut kept = Vec::new();
+        // Each board once, however often it's asked for; and no more than a reply can carry.
+        let mut loaded: Vec<(u8, Stored)> = Vec::new();
+        let mut bytes = 0;
         for query in &request.boards {
-            kept.push((query, stored(pid, query.board)?));
+            if !loaded.iter().any(|(b, _)| *b == query.board) {
+                let found = stored(pid, query.board)?;
+                bytes += found.iter().map(|(k, _, v)| 4 * k.len() + 1 + v.len()).sum::<usize>();
+                if out.len() + bytes > MAX_REPLY {
+                    return Err(Error::ParsingError);
+                }
+                loaded.push((query.board, found));
+            }
         }
-        for (query, found) in &kept {
-            let query: &BoardQuery = query;
+        for query in &request.boards {
+            let found = &loaded.iter().find(|(b, _)| *b == query.board).expect("loaded above").1;
             let before = rows.len();
             let mut at = 0;
             while at < found.len() {
@@ -615,5 +642,20 @@ mod tests {
             .collect();
         assert!(store.write(5, SEND_INT32, &many).is_err());
         assert!(store.rows(5, SEND_INT32, 2).unwrap().is_empty(), "nothing of a refused send is kept");
+    }
+
+    #[test]
+    fn a_player_cant_keep_too_many_bytes() {
+        let store = Store::in_memory().unwrap();
+        let blob = |k: u32| Row {
+            board: 1,
+            keys: vec![k],
+            values: (0..8).map(|c| (c, vec![0; 2 + MAX_VALUE_LEN], OP_SET)).collect(),
+        };
+        let fits: Vec<Row> = (0..30).map(blob).collect();
+        store.write(5, SEND_BLOB, &fits).unwrap();
+        let more: Vec<Row> = (30..40).map(blob).collect();
+        assert!(store.write(5, SEND_BLOB, &more).is_err(), "over {MAX_STORED_BYTES} bytes");
+        assert_eq!(store.rows(5, SEND_BLOB, 1).unwrap().len(), 30 * 8, "what was kept reads back whole");
     }
 }
