@@ -98,7 +98,8 @@ curl -X POST http://SERVER/accounts \
 
 It answers `201` with the account's ID, or an error with `{"error": "..."}`: `403` without the
 right code, `409` if the name is taken, `400` for a name or password the game can't use, `429`
-after too many tries (10 a day from one address, 200 an hour in all).
+after too many tries (10 a day from one address; 200 sign-ups an hour in all, counting only
+those with the right code).
 
 Sign-up goes over plain HTTP, like the game's own sign-in to the server, so passwords cross the
 network unencrypted. Players should use a password they use nowhere else. If you leave sign-up

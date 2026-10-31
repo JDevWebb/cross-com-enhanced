@@ -46,13 +46,9 @@ struct Limits {
 }
 
 impl Limits {
-    /// Counts an attempt from `address`; false when it's over a limit.
-    fn allow(&mut self, address: IpAddr, now: Instant) -> bool {
+    /// Counts an attempt from `address`; false when the address is over its limit.
+    fn allow_address(&mut self, address: IpAddr, now: Instant) -> bool {
         let key = address_key(address);
-        let all = match self.all {
-            Some((since, n)) if now.duration_since(since) < ALL_WINDOW => (since, n),
-            _ => (now, 0),
-        };
         if self.by_address.len() >= MAX_ADDRESSES && !self.by_address.contains_key(&key) {
             self.by_address.retain(|_, (since, _)| now.duration_since(*since) < ADDRESS_WINDOW);
             if self.by_address.len() >= MAX_ADDRESSES {
@@ -63,12 +59,31 @@ impl Limits {
             Some(&(since, n)) if now.duration_since(since) < ADDRESS_WINDOW => (since, n),
             _ => (now, 0),
         };
-        if all.1 >= IN_ALL || mine.1 >= PER_ADDRESS {
+        if mine.1 >= PER_ADDRESS {
+            return false;
+        }
+        self.by_address.insert(key, (mine.0, mine.1 + 1));
+        true
+    }
+
+    /// Counts an attempt against the server-wide limit; false when it's reached. Only attempts
+    /// with the right code (or on a server without one) count, so strangers guessing the code
+    /// can't use up the players' sign-ups.
+    fn allow_all(&mut self, now: Instant) -> bool {
+        let all = match self.all {
+            Some((since, n)) if now.duration_since(since) < ALL_WINDOW => (since, n),
+            _ => (now, 0),
+        };
+        if all.1 >= IN_ALL {
             return false;
         }
         self.all = Some((all.0, all.1 + 1));
-        self.by_address.insert(key, (mine.0, mine.1 + 1));
         true
+    }
+
+    #[cfg(test)]
+    fn allow(&mut self, address: IpAddr, now: Instant) -> bool {
+        self.allow_address(address, now) && self.allow_all(now)
     }
 }
 
@@ -105,8 +120,10 @@ impl SignUp {
     /// Answers a sign-up from `address` with `body`. The name is returned for the log when an
     /// account was made.
     pub fn handle(&self, address: IpAddr, body: &[u8]) -> (Answer, Option<String>) {
-        if !self.limits.lock().unwrap_or_else(std::sync::PoisonError::into_inner).allow(address, Instant::now()) {
-            return (error("429 Too Many Requests", "too many sign-ups; try again later"), None);
+        let limits = || self.limits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let too_many = || (error("429 Too Many Requests", "too many sign-ups; try again later"), None);
+        if !limits().allow_address(address, Instant::now()) {
+            return too_many();
         }
         let Ok(request) = serde_json::from_slice::<Request>(body) else {
             return (
@@ -118,6 +135,9 @@ impl SignUp {
             if !request.code.as_deref().is_some_and(|c| same(c, code)) {
                 return (error("403 Forbidden", "this server needs its sign-up code"), None);
             }
+        }
+        if !limits().allow_all(Instant::now()) {
+            return too_many();
         }
         match self.accounts.add(&request.name, &request.password) {
             Ok(pid) => (("201 Created", json!({ "pid": pid }).to_string()), Some(request.name)),
@@ -181,5 +201,17 @@ mod tests {
         }
         assert!(!limits.allow("198.51.100.1".parse().unwrap(), now));
         assert!(limits.allow("198.51.100.1".parse().unwrap(), now + ALL_WINDOW));
+    }
+
+    #[test]
+    fn wrong_codes_dont_use_up_the_servers_sign_ups() {
+        let accounts = Arc::new(Accounts::open(std::path::Path::new(":memory:")).unwrap());
+        let signup = SignUp::new(accounts, Some("ghosts".into()));
+        for i in 0..IN_ALL + 50 {
+            let stranger = IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]);
+            assert_eq!(signup.handle(stranger, &body("x", "pw", Some("guess"))).0 .0, "403 Forbidden");
+        }
+        let player: IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(signup.handle(player, &body("Kozak", "pw", Some("ghosts"))).0 .0, "201 Created");
     }
 }
