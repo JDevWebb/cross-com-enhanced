@@ -58,8 +58,14 @@ struct Social {
 /// Whether `from` may tell `to` of a request now (and notes it if so).
 fn may_tell(told: &mut HashMap<(u32, u32), Instant>, from: u32, to: u32, now: Instant) -> bool {
     told.retain(|_, at| now.duration_since(*at) < NOTIFY_EVERY);
-    if told.contains_key(&(from, to)) || told.keys().filter(|(f, _)| *f == from).count() >= MAX_TOLD || told.len() >= MAX_PAIRS {
+    if told.contains_key(&(from, to)) || told.keys().filter(|(f, _)| *f == from).count() >= MAX_TOLD {
         return false;
+    }
+    // Full: the oldest goes, so filling the table can't silence everyone else's requests.
+    if told.len() >= MAX_PAIRS {
+        if let Some(oldest) = told.iter().min_by_key(|(_, at)| **at).map(|(k, _)| *k) {
+            told.remove(&oldest);
+        }
     }
     told.insert((from, to), now);
     true
@@ -97,8 +103,8 @@ impl Social {
                 if !message.is_empty() {
                     self.friends.set_message(me, other, message).map_err(error)?;
                 }
-                let told = &mut self.told.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if may_tell(told, me, other, Instant::now()) {
+                let tell = may_tell(&mut self.told.lock().unwrap_or_else(std::sync::PoisonError::into_inner), me, other, Instant::now());
+                if tell {
                     notify::send(logger, ctx, socket, registry, other, &notify::friend_request(me, &self.name(me)));
                 }
             }
@@ -572,5 +578,13 @@ mod tests {
             may_tell(&mut told, 5, to, now);
         }
         assert!(!may_tell(&mut told, 5, 999, now), "too many players at once");
+
+        // A full table makes room rather than silencing everyone.
+        let mut told = HashMap::new();
+        for i in 0..MAX_PAIRS as u32 {
+            told.insert((i, i), now);
+        }
+        assert!(may_tell(&mut told, 1_000_000, 7, now + Duration::from_secs(1)));
+        assert_eq!(told.len(), MAX_PAIRS);
     }
 }
