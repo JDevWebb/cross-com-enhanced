@@ -33,7 +33,32 @@ pub struct Session {
     created: u64,
 }
 
+/// Session properties the game sets: public slots (4 is private, invite-only, slots), and whether
+/// the session wasn't made by matchmaking (a party, or a custom match).
+pub const PUBLIC_SLOTS: u32 = 3;
+pub const NOT_MATCHMADE: u32 = 7;
+
 impl Session {
+    pub fn attribute(&self, id: u32) -> Option<u32> {
+        self.attributes.iter().find(|(i, _)| *i == id).map(|&(_, v)| v)
+    }
+
+    /// Whether a search with `parameters` may offer this session. A quick match searches with
+    /// the public slots it needs (property 3) and the match settings it wants (mode, map pack,
+    /// size...), which a session must have the same. Parties, custom matches and sessions with
+    /// no public slots are never offered: they're joined by invitation.
+    pub fn matches(&self, parameters: &[(u32, u32)]) -> bool {
+        let public = self.attribute(PUBLIC_SLOTS).unwrap_or(0);
+        if self.attribute(NOT_MATCHMADE).unwrap_or(0) != 0 || public == 0 {
+            return false;
+        }
+        let free = public.saturating_sub(u32::try_from(self.participants.len()).unwrap_or(u32::MAX));
+        parameters.iter().all(|&(id, value)| match id {
+            PUBLIC_SLOTS => free >= value.max(1),
+            _ => self.attribute(id) == Some(value),
+        })
+    }
+
     pub fn has(&self, pid: u32) -> bool {
         self.participants.contains(&pid)
     }
@@ -213,6 +238,7 @@ impl Sessions {
     }
 
     /// Sessions of a type, up to `limit`.
+    #[cfg(test)]
     pub fn search(&self, type_id: u32, limit: usize) -> Vec<(Key, Session)> {
         self.lock()
             .sessions
@@ -221,6 +247,21 @@ impl Sessions {
             .take(limit)
             .map(|(k, s)| (*k, s.clone()))
             .collect()
+    }
+
+    /// Sessions of a type a search may offer: matchmade, with public slots, and matching the
+    /// search's parameters (see [`Session::matches`]), up to `limit`, fullest first.
+    pub fn find(&self, type_id: u32, parameters: &[(u32, u32)], limit: usize) -> Vec<(Key, Session)> {
+        let mut found: Vec<(Key, Session)> = self
+            .lock()
+            .sessions
+            .iter()
+            .filter(|(k, s)| k.0 == type_id && s.matches(parameters))
+            .map(|(k, s)| (*k, s.clone()))
+            .collect();
+        found.sort_by_key(|(_, s)| (std::cmp::Reverse(s.participants.len()), s.created));
+        found.truncate(limit);
+        found
     }
 
     /// Sessions of a type with any of `pids` in them.
@@ -294,5 +335,59 @@ mod tests {
         assert_eq!(sessions.search(1, 10).iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![a]);
         assert_eq!(sessions.with_participants(1, &[10]).len(), 1);
         assert!(sessions.with_participants(1, &[20]).is_empty());
+    }
+
+    /// What the game sends: a quick match's search, and the sessions it makes.
+    const SEARCH: [(u32, u32); 8] = [(3, 1), (100, 1), (101, 2), (116, 2), (105, 16), (103, 0), (115, 0), (114, 12)];
+    const QUICK_MATCH: [(u32, u32); 14] = [
+        (7, 0),
+        (3, 12),
+        (4, 0),
+        (100, 1),
+        (101, 2),
+        (116, 2),
+        (105, 16),
+        (115, 0),
+        (103, 0),
+        (113, 10),
+        (114, 12),
+        (112, 3),
+        (117, 0),
+        (102, 3),
+    ];
+
+    #[test]
+    fn a_quick_match_search_finds_only_open_public_matches_like_it() {
+        let sessions = Sessions::default();
+        let quick = sessions.create(10, 1, &QUICK_MATCH).unwrap();
+        sessions.create(11, 1, &[(7, 1), (3, 6), (4, 0), (102, 0), (100, 1)]).unwrap(); // a party
+        let mut custom = QUICK_MATCH;
+        custom[0] = (7, 1);
+        custom[1] = (3, 0);
+        custom[2] = (4, 12);
+        sessions.create(12, 1, &custom).unwrap();
+        let mut other_mode = QUICK_MATCH;
+        other_mode[4] = (101, 3);
+        sessions.create(13, 1, &other_mode).unwrap();
+        let found: Vec<Key> = sessions.find(1, &SEARCH, 10).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(found, vec![quick]);
+
+        // Full: no public slot left.
+        let small = sessions.create(14, 1, &[(7, 0), (3, 2)]).unwrap();
+        let offered = |s: &Sessions| s.find(1, &[(3, 1)], 10).into_iter().any(|(k, _)| k == small);
+        assert!(offered(&sessions));
+        sessions.join(15, small).unwrap();
+        assert!(!offered(&sessions));
+    }
+
+    #[test]
+    fn fuller_matches_come_first() {
+        let sessions = Sessions::default();
+        let a = sessions.create(10, 1, &QUICK_MATCH).unwrap();
+        let b = sessions.create(20, 1, &QUICK_MATCH).unwrap();
+        sessions.join(21, b).unwrap();
+        let found: Vec<Key> = sessions.find(1, &SEARCH, 10).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(found, vec![b, a]);
+        assert_eq!(sessions.find(1, &SEARCH, 1).len(), 1);
     }
 }

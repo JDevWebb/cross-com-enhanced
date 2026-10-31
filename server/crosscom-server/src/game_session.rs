@@ -188,10 +188,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<SearchSessionsResponse, Error> {
         let pid = player(ci)?;
-        // Every session of the type but the player's own; the query's filters aren't applied yet.
-        let found = self.sessions.search(request.game_session_query.type_id, MAX_RESULTS);
+        let query = &request.game_session_query;
+        let found = self.sessions.find(query.type_id, &properties(&query.parameters), MAX_RESULTS + 1);
         Ok(SearchSessionsResponse {
-            search_results: QList(found.into_iter().filter(|(_, s)| s.host != pid).map(|r| self.result(r)).collect()),
+            search_results: QList(found.into_iter().filter(|(_, s)| s.host != pid).take(MAX_RESULTS).map(|r| self.result(r)).collect()),
         })
     }
 
