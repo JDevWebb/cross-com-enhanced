@@ -7,7 +7,11 @@
 //! nobody shows twice. A player asked to be friends, or whose request was accepted, is told at
 //! once if they're connected.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 
 use grfs_protocols::friend_messages_extension_service::friend_messages_extension_service_protocol as messages;
 use grfs_protocols::friend_messages_extension_service::types::FriendInvitationMessage;
@@ -37,10 +41,28 @@ use crate::ticket::player;
 const MAX_FOUND: u32 = 20;
 const MIN_SEARCH_LEN: usize = 2;
 
+/// How often one player may tell another of a friend request, and how many players they may tell
+/// in that time: asking, being declined and asking again mustn't be a way to pester someone.
+const NOTIFY_EVERY: Duration = Duration::from_secs(10 * 60);
+const MAX_TOLD: usize = 20;
+/// Pairs remembered at once.
+const MAX_PAIRS: usize = 50_000;
+
 #[derive(Clone)]
 struct Social {
     friends: Arc<Friends>,
     accounts: Arc<Accounts>,
+    told: Arc<Mutex<HashMap<(u32, u32), Instant>>>,
+}
+
+/// Whether `from` may tell `to` of a request now (and notes it if so).
+fn may_tell(told: &mut HashMap<(u32, u32), Instant>, from: u32, to: u32, now: Instant) -> bool {
+    told.retain(|_, at| now.duration_since(*at) < NOTIFY_EVERY);
+    if told.contains_key(&(from, to)) || told.keys().filter(|(f, _)| *f == from).count() >= MAX_TOLD || told.len() >= MAX_PAIRS {
+        return false;
+    }
+    told.insert((from, to), now);
+    true
 }
 
 fn error(e: friends::Error) -> Error {
@@ -75,12 +97,20 @@ impl Social {
                 if !message.is_empty() {
                     self.friends.set_message(me, other, message).map_err(error)?;
                 }
-                notify::send(logger, ctx, socket, registry, other, &notify::friend_request(me, &self.name(me)));
+                let told = &mut self.told.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if may_tell(told, me, other, Instant::now()) {
+                    notify::send(logger, ctx, socket, registry, other, &notify::friend_request(me, &self.name(me)));
+                }
+            }
+            Requested::Dropped => {
+                if !message.is_empty() {
+                    self.friends.set_message(me, other, message).map_err(error)?;
+                }
             }
             Requested::Friends => {
                 notify::send(logger, ctx, socket, registry, other, &notify::now_friends(me, &self.name(me)));
             }
-            Requested::Already | Requested::Dropped => {}
+            Requested::Already => {}
         }
         Ok(())
     }
@@ -452,7 +482,7 @@ impl<CI> search::SearchFriendsProtocolServerTrait<CI> for Social {
         Ok(search::SearchFriendsResponse {
             found_list: found
                 .into_iter()
-                .filter(|&(pid, _)| pid != me && !self.friends.blocked(pid, me))
+                .filter(|&(pid, _)| pid != me)
                 .take(MAX_FOUND as usize)
                 .map(|(pid, str_name)| FoundFriend { pid, str_name })
                 .collect(),
@@ -514,11 +544,33 @@ impl<CI> messages::FriendMessagesExtensionServiceProtocolServerTrait<CI> for Soc
 }
 
 pub fn protocols<CI: 'static>(friends: Arc<Friends>, accounts: Arc<Accounts>) -> Vec<Box<dyn Protocol<CI>>> {
-    let social = Social { friends, accounts };
+    let social = Social {
+        friends,
+        accounts,
+        told: Arc::default(),
+    };
     vec![
         Box::new(FriendsProtocolServer::new(social.clone())),
         Box::new(ubi::UbiFriendsProtocolServer::new(social.clone())),
         Box::new(search::SearchFriendsProtocolServer::new(social.clone())),
         Box::new(messages::FriendMessagesExtensionServiceProtocolServer::new(social)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_player_is_told_of_a_request_once_in_a_while() {
+        let mut told = HashMap::new();
+        let now = Instant::now();
+        assert!(may_tell(&mut told, 1, 2, now));
+        assert!(!may_tell(&mut told, 1, 2, now + Duration::from_secs(60)), "asked again soon after a decline");
+        assert!(may_tell(&mut told, 1, 2, now + NOTIFY_EVERY));
+        for to in 10..10 + MAX_TOLD as u32 {
+            may_tell(&mut told, 5, to, now);
+        }
+        assert!(!may_tell(&mut told, 5, 999, now), "too many players at once");
+    }
 }

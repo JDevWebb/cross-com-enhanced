@@ -4,7 +4,7 @@
 //! friend request, 3 a blocked player. A player sees their friends, the requests others sent
 //! them (which they may accept or decline), and whom they blocked. A request someone sent is
 //! not shown to them as a relationship, and nobody learns that they were blocked: a request to
-//! someone who blocked you seems to go out, and is dropped.
+//! someone who blocked you is kept like any other, and never shown to them.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -48,7 +48,8 @@ pub enum Requested {
     Friends,
     /// Already friends, or already asked.
     Already,
-    /// They blocked the sender: kept from them, and to the sender it looks as if it went out.
+    /// They blocked the sender: kept, but never shown to them nor told; to the sender it is as
+    /// any other request.
     Dropped,
 }
 
@@ -128,14 +129,15 @@ impl Friends {
         let result = match (Self::state(&tx, from, to)?, Self::state(&tx, to, from)?) {
             (Some(BLOCKED), _) => Err(Error::YouBlocked),
             (Some(FRIEND | REQUEST), _) => Ok(Requested::Already),
-            (_, Some(BLOCKED)) => Ok(Requested::Dropped),
             (_, Some(REQUEST)) => Self::befriend(&tx, from, to).map(|()| Requested::Friends),
-            _ => {
+            (_, theirs) => {
                 if Self::count(&tx, from, REQUEST)? >= MAX_OPEN_REQUESTS {
                     return Err(Error::TooMany);
                 }
+                // Kept even when they blocked the sender, so the sender's own list shows it as
+                // any other; the one blocking never sees it (see `relationships`).
                 tx.execute("INSERT INTO relationships (a, b, state) VALUES (?1, ?2, ?3)", params![from, to, REQUEST])?;
-                Ok(Requested::Sent)
+                Ok(if theirs == Some(BLOCKED) { Requested::Dropped } else { Requested::Sent })
             }
         };
         tx.commit()?;
@@ -146,7 +148,7 @@ impl Friends {
     pub fn accept(&self, me: u32, other: u32) -> Result<bool, Error> {
         let mut db = self.lock();
         let tx = db.transaction()?;
-        if Self::state(&tx, other, me)? != Some(REQUEST) {
+        if Self::state(&tx, other, me)? != Some(REQUEST) || Self::state(&tx, me, other)? == Some(BLOCKED) {
             return Ok(false);
         }
         Self::befriend(&tx, me, other)?;
@@ -199,18 +201,14 @@ impl Friends {
         Self::state(&self.lock(), a, b).ok().flatten() == Some(FRIEND)
     }
 
-    /// Whether `a` blocked `b`.
-    pub fn blocked(&self, a: u32, b: u32) -> bool {
-        Self::state(&self.lock(), a, b).ok().flatten() == Some(BLOCKED)
-    }
-
     /// Everyone `me` has a relationship with, as the game shows them: friends, the requests
     /// others sent `me`, and whom `me` blocked. In the order they began.
     pub fn relationships(&self, me: u32) -> Result<Vec<(u32, u8)>, Error> {
         let db = self.lock();
         let mut query = db.prepare_cached(
             "SELECT b, state, since FROM relationships WHERE a = ?1 AND state IN (?2, ?3)
-             UNION ALL SELECT a, state, since FROM relationships WHERE b = ?1 AND state = ?4
+             UNION ALL SELECT r.a, r.state, r.since FROM relationships r WHERE r.b = ?1 AND r.state = ?4
+               AND NOT EXISTS (SELECT 1 FROM relationships x WHERE x.a = ?1 AND x.b = r.a AND x.state = ?3)
              ORDER BY since, 1",
         )?;
         let rows = query.query_map(params![me, FRIEND, BLOCKED, REQUEST], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -224,8 +222,10 @@ impl Friends {
             return Ok(vec![]);
         }
         let db = self.lock();
+        // Requests from players `me` blocked are never shown to `me`.
         let sql = if reversed {
-            "SELECT a FROM relationships WHERE b = ?1 AND state = ?2 ORDER BY since"
+            "SELECT r.a FROM relationships r WHERE r.b = ?1 AND r.state = ?2
+             AND NOT EXISTS (SELECT 1 FROM relationships x WHERE x.a = ?1 AND x.b = r.a AND x.state = 3) ORDER BY r.since"
         } else {
             "SELECT b FROM relationships WHERE a = ?1 AND state = ?2 ORDER BY since"
         };
@@ -254,7 +254,9 @@ impl Friends {
         let db = self.lock();
         let mut query = db.prepare_cached(
             "SELECT m.sender, m.body FROM friend_messages m JOIN relationships r ON r.a = m.sender AND r.b = m.recipient AND r.state = ?2
-             WHERE m.recipient = ?1 ORDER BY m.sender",
+             WHERE m.recipient = ?1
+             AND NOT EXISTS (SELECT 1 FROM relationships x WHERE x.a = ?1 AND x.b = m.sender AND x.state = 3)
+             ORDER BY m.sender",
         )?;
         let rows = query.query_map(params![recipient, REQUEST], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -309,11 +311,14 @@ mod tests {
         assert_eq!(f.relationships(2).unwrap(), vec![(1, BLOCKED)]);
         assert!(f.relationships(1).unwrap().is_empty());
         assert_eq!(f.request(1, 2), Ok(Requested::Dropped), "the protocol answers it as sent");
-        assert!(f.relationships(2).unwrap().iter().all(|&(_, r)| r == BLOCKED), "but isn't kept");
+        assert_eq!(f.list(1, REQUEST, false).unwrap(), vec![2], "the sender's list shows it as any other");
+        assert!(f.relationships(2).unwrap().iter().all(|&(_, r)| r == BLOCKED), "the one blocking never sees it");
+        assert!(f.list(2, REQUEST, true).unwrap().is_empty());
+        assert!(!f.accept(2, 1).unwrap(), "nor can accept it while blocking");
         assert!(f.list(1, BLOCKED, true).unwrap().is_empty());
         assert_eq!(f.request(2, 1), Err(Error::YouBlocked));
         assert!(f.unblock(2, 1).unwrap());
-        assert_eq!(f.request(2, 1), Ok(Requested::Sent));
+        assert_eq!(f.request(2, 1), Ok(Requested::Friends), "1's request still stood");
     }
 
     #[test]
