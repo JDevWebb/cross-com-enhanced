@@ -23,6 +23,8 @@ Future Soldier's PC version talks to Ubisoft's Quazal-based online services, the
 
 Matches themselves are still hosted by the players, as they always were.
 
+To run a server for your group, see [docs/hosting.md](docs/hosting.md).
+
 ## Standing on the shoulders of
 
 Cross-Com Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), as a sister project to [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) for Splinter Cell: Blacklist.

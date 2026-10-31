@@ -1,0 +1,41 @@
+# The Cross-Com server. Put CROSSCOM_PUBLIC_ADDRESS (and the sign-up settings)
+# in docker/.env, then from the repository root:
+#
+#   docker compose -f docker/compose.yaml up -d
+#
+# CROSSCOM_PUBLIC_ADDRESS is the address players connect to: the machine's
+# public IP (with the ports below open or forwarded), or its address on the
+# LAN or VPN you play over. See docs/hosting.md.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: crosscom-server
+    restart: unless-stopped
+    environment:
+      CROSSCOM_PUBLIC_ADDRESS: ${CROSSCOM_PUBLIC_ADDRESS:?set CROSSCOM_PUBLIC_ADDRESS to the address players connect to}
+      # Let players make their own accounts (the launcher), with a code you
+      # give them. Off unless set to true.
+      CROSSCOM_SIGNUP: ${CROSSCOM_SIGNUP:-false}
+      CROSSCOM_SIGNUP_CODE: ${CROSSCOM_SIGNUP_CODE:-}
+      CROSSCOM_LOG_LEVEL: ${CROSSCOM_LOG_LEVEL:-info}
+    ports:
+      - "80:80/tcp"          # online config (the game always asks on port 80), sign-up
+      - "21030:21030/udp"    # sign-in
+      - "21031:21031/udp"    # game services
+    # The server's own user may bind port 80; nothing else is needed.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 80
+    volumes:
+      - data:/srv/crosscom
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  data:

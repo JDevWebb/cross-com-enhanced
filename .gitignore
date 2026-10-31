@@ -11,6 +11,7 @@ dist/
 *.db
 *.sqlite
 service*.toml
+.env
 
 # Never commit game files, research output or captures
 *.big
