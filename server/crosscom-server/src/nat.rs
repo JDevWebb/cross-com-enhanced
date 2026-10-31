@@ -23,16 +23,11 @@ use grfs_protocols::nat_traversal::nat_traversal_protocol::RequestProbeInitiatio
 use grfs_protocols::nat_traversal::nat_traversal_protocol::RequestProbeInitiationRequest;
 use grfs_protocols::nat_traversal::nat_traversal_protocol::RequestProbeInitiationResponse;
 use grfs_protocols::nat_traversal::nat_traversal_protocol::NAT_TRAVERSAL_PROTOCOL_ID;
-use quazal::prudp::packet::PacketType;
-use quazal::prudp::packet::QPacket;
-use quazal::prudp::packet::StreamType;
-use quazal::prudp::packet::VPort;
 use quazal::prudp::ClientRegistry;
 use quazal::rmc::basic::ToStream;
 use quazal::rmc::types::StationURL;
 use quazal::rmc::Error;
 use quazal::rmc::Protocol;
-use quazal::rmc::Request;
 use quazal::ClientInfo;
 use quazal::Context;
 use slog::info;
@@ -120,31 +115,15 @@ impl NatTraversal {
             }
             let address = *target.address();
             for station in stations.iter().filter(|s| may_probe(s, seen, address.ip())) {
-                let payload = Request {
-                    protocol_id: NAT_TRAVERSAL_PROTOCOL_ID,
-                    call_id: rand::random(),
-                    method_id: NatTraversalProtocolMethod::InitiateProbe as u32,
-                    parameters: InitiateProbeRequest {
-                        url_station_to_probe: station.clone(),
-                    }
-                    .to_bytes(),
+                let parameters = InitiateProbeRequest {
+                    url_station_to_probe: station.clone(),
                 }
                 .to_bytes();
-                let packet = QPacket {
-                    source: VPort {
-                        port: 1,
-                        stream_type: StreamType::RVSec,
-                    },
-                    destination: VPort {
-                        port: 15,
-                        stream_type: StreamType::RVSec,
-                    },
-                    packet_type: PacketType::Data,
-                    payload,
-                    ..Default::default()
-                };
                 info!(logger, "{other:#x} probes {station} for {caller:#x}");
-                if let Err(e) = quazal::prudp::send_request(logger, ctx, &address, socket, packet, &mut target) {
+                // As the server's own call, numbered and signed as its answers are: a packet made
+                // as a client's request is dropped by the game.
+                let method = NatTraversalProtocolMethod::InitiateProbe as u32;
+                if let Err(e) = quazal::rmc::call_client(logger, ctx, socket, &mut target, NAT_TRAVERSAL_PROTOCOL_ID, method, parameters, true) {
                     warn!(logger, "Sending a probe request to {address} failed: {e}");
                 }
             }
