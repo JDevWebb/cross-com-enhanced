@@ -264,9 +264,10 @@ impl Sessions {
         found
     }
 
-    /// Whether `a` and `b` are in a session together.
+    /// Whether `a` and `b` joined a session together (or host it): a player a host merely added
+    /// doesn't count, or adding someone would be a way to make their game reach you.
     pub fn share(&self, a: u32, b: u32) -> bool {
-        self.lock().sessions.values().any(|s| s.has(a) && s.has(b))
+        self.lock().sessions.values().any(|s| s.joined(a) && s.joined(b))
     }
 
     /// Whether `pid` hosts a session a search may offer: anyone may be on their way into it.
@@ -408,6 +409,8 @@ mod tests {
         sessions.join(11, party).unwrap();
         assert!(sessions.share(10, 11) && sessions.share(11, 10));
         assert!(!sessions.share(10, 12));
+        sessions.add(party, &[12]).unwrap();
+        assert!(!sessions.share(10, 12), "added by the host, not joined");
         assert!(!sessions.hosts_public(10), "a party isn't public");
         sessions.create(20, 1, &QUICK_MATCH).unwrap();
         assert!(sessions.hosts_public(20));
