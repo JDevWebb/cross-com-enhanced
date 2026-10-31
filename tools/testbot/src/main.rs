@@ -3,7 +3,7 @@
 //! ticket, RegisterEx, and the privileges list. A wrong password must be refused.
 //!
 //! ```text
-//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]
+//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]
 //! ```
 //!
 //! With `--signup`, it first makes the account over HTTP, as the launcher does (with the server's
@@ -14,6 +14,10 @@
 //! a quick match as the game does, joins the first one found, asks for its host's addresses and
 //! for the host to probe it, and leaves. Two bots, or a bot and the game, test matchmaking
 //! with a single PC.
+//!
+//! With `--friend NAME SECONDS` it asks NAME to be friends, waits for the answer, then invites
+//! NAME into a party; with `--answer SECONDS` it waits for a friend request, accepts it, waits
+//! for the invitation and joins the party.
 
 // Shared with other tests; not every helper is used here.
 #[allow(dead_code)]
@@ -26,12 +30,15 @@ use eyre::bail;
 use eyre::eyre;
 use eyre::Result;
 use grfs_protocols::authentication_foundation::ticket_granting_protocol as tg;
+use grfs_protocols::friends_service::friends_protocol as friends;
 use grfs_protocols::game_session_service::game_session_protocol as gs;
 use grfs_protocols::game_session_service::types::GameSession;
+use grfs_protocols::game_session_service::types::GameSessionInvitation;
 use grfs_protocols::game_session_service::types::GameSessionKey;
 use grfs_protocols::game_session_service::types::GameSessionQuery;
 use grfs_protocols::nat_traversal::nat_traversal_protocol as nat;
 use grfs_protocols::privileges_service::privileges_protocol as privileges;
+use grfs_protocols::protocol_foundation::types::NotificationEvent;
 use grfs_protocols::secure_connection_service::secure_connection_protocol as secure;
 use grfs_protocols::ubi_authentication::types::UbiAuthenticationLoginCustomData;
 use md5::Digest;
@@ -167,7 +174,7 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [server, name, password, rest @ ..] = args.as_slice() else {
-        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]");
+        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]");
     };
     let server: IpAddr = server.parse()?;
     let mut rest = rest.iter().map(String::as_str).peekable();
@@ -187,7 +194,9 @@ async fn main() -> Result<()> {
         (None, _) => Mode::Check,
         (Some("--host"), Some(secs)) => Mode::Host(secs.parse()?),
         (Some("--join"), None) => Mode::Join,
-        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]"),
+        (Some("--friend"), Some(other)) => Mode::Friend(other.to_owned(), rest.next().unwrap_or("30").parse()?),
+        (Some("--answer"), Some(secs)) => Mode::Answer(secs.parse()?),
+        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]"),
     };
 
     let config = online_config(server, http_port).await?;
@@ -253,6 +262,8 @@ async fn main() -> Result<()> {
         Mode::Check => {}
         Mode::Host(secs) => host(&mut conn, pid, &registered, secs).await?,
         Mode::Join => join(&mut conn, pid).await?,
+        Mode::Friend(other, secs) => befriend(&mut conn, &other, secs).await?,
+        Mode::Answer(secs) => answer(&mut conn, secs).await?,
     }
 
     conn.disconnect().await?;
@@ -264,6 +275,8 @@ enum Mode {
     Check,
     Host(u64),
     Join,
+    Friend(String, u64),
+    Answer(u64),
 }
 
 /// What the game's quick match searches with, and the match it makes when it finds none.
@@ -435,5 +448,174 @@ async fn join(conn: &mut Conn, pid: u32) -> Result<()> {
     )
     .await?;
     println!("ok   left the match");
+    Ok(())
+}
+
+/// Waits for an event the server pushes (ProcessNotificationEvent) of a category.
+async fn event(conn: &mut Conn, category: u32, secs: u64) -> Result<NotificationEvent> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Some(request) = conn.wait_request(14, 1, left).await? else {
+            bail!("no event of category {category} in {secs} s");
+        };
+        let event: NotificationEvent = decode(&request.parameters)?;
+        println!(
+            "ok   event {} from {:#x} ({}, {}, {:?})",
+            event.ui_type, event.pid_source, event.ui_param_1, event.ui_param_2, event.str_param
+        );
+        if event.ui_type / 1000 == category {
+            return Ok(event);
+        }
+    }
+}
+
+async fn relationships(conn: &mut Conn) -> Result<()> {
+    let list: friends::GetRelationshipsResponse = decode(
+        &conn
+            .call(
+                friends::FRIENDS_PROTOCOL_ID,
+                friends::FriendsProtocolMethod::GetRelationships as u32,
+                friends::GetRelationshipsRequest {
+                    result_range: quazal::rmc::types::ResultRange { offset: 0, size: 100 },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    for r in &list.lst_relationships_list {
+        println!("ok   relationship: {} ({:#x}) {} online {}", r.str_name, r.pid, r.by_relationship, r.by_status);
+    }
+    Ok(())
+}
+
+async fn befriend(conn: &mut Conn, other: &str, secs: u64) -> Result<()> {
+    let added: friends::AddFriendByNameResponse = decode(
+        &conn
+            .call(
+                friends::FRIENDS_PROTOCOL_ID,
+                friends::FriendsProtocolMethod::AddFriendByName as u32,
+                friends::AddFriendByNameRequest {
+                    str_player_name: other.into(),
+                    ui_details: 0,
+                    str_message: "a bot would like to be friends".into(),
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    println!("ok   asked {other} to be friends: {}", added.return_value);
+    let accepted = event(conn, 1, secs).await?;
+    if accepted.ui_param_2 != 1 {
+        bail!("expected 'now friends', got relationship {}", accepted.ui_param_2);
+    }
+    relationships(conn).await?;
+    let created: gs::CreateSessionResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::CreateSession as u32,
+                gs::CreateSessionRequest {
+                    game_session: GameSession {
+                        type_id: 1,
+                        attributes: properties(&[(7, 1), (3, 6), (4, 0), (102, 0), (100, 1)]),
+                    },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    let key = created.game_session_key;
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::SendInvitation as u32,
+        gs::SendInvitationRequest {
+            invitation: GameSessionInvitation {
+                session_key: GameSessionKey { ..key },
+                recipient_pids: QList(vec![accepted.pid_source]),
+                message: "join my party".into(),
+            },
+        }
+        .to_bytes(),
+    )
+    .await?;
+    println!("ok   invited {other} into party {}", key.session_id);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let count: gs::GetParticipantCountResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::GetParticipantCount as u32,
+                gs::GetParticipantCountRequest {
+                    game_session_key: GameSessionKey { ..key },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    println!("ok   {} players in the party", count.count);
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::DeleteSession as u32,
+        gs::DeleteSessionRequest { game_session_key: key }.to_bytes(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn answer(conn: &mut Conn, secs: u64) -> Result<()> {
+    let request = event(conn, 1, secs).await?;
+    if request.ui_param_2 != 2 {
+        bail!("expected a friend request, got relationship {}", request.ui_param_2);
+    }
+    relationships(conn).await?;
+    let accepted: friends::AcceptFriendshipResponse = decode(
+        &conn
+            .call(
+                friends::FRIENDS_PROTOCOL_ID,
+                friends::FriendsProtocolMethod::AcceptFriendship as u32,
+                friends::AcceptFriendshipRequest { ui_player: request.pid_source }.to_bytes(),
+            )
+            .await?,
+    )?;
+    println!("ok   accepted: {}", accepted.return_value);
+    let invite = event(conn, 7, secs).await?;
+    let received: gs::GetInvitationsReceivedResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::GetInvitationsReceived as u32,
+                gs::GetInvitationsReceivedRequest {
+                    game_session_type_id: invite.ui_param_1,
+                    result_range: quazal::rmc::types::ResultRange { offset: 0, size: 10 },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    let Some(invitation) = received.invitations.0.into_iter().next() else {
+        bail!("told of an invitation, but none is listed");
+    };
+    println!(
+        "ok   invitation into {} from {:#x}: {:?}",
+        invitation.session_key.session_id, invitation.sender_pid, invitation.message
+    );
+    let key = GameSessionKey { ..invitation.session_key };
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::AcceptInvitation as u32,
+        gs::AcceptInvitationRequest {
+            game_session_invitation: invitation,
+        }
+        .to_bytes(),
+    )
+    .await?;
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::JoinSession as u32,
+        gs::JoinSessionRequest { game_session_key: key }.to_bytes(),
+    )
+    .await?;
+    println!("ok   accepted the invitation and joined the party");
     Ok(())
 }

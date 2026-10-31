@@ -79,7 +79,7 @@ impl<CI> Protocol<CI> for FixedProtocol {
 /// The time now, in Quazal's packed date-time: seconds in bits 0-5, minutes 6-11, hours 12-16,
 /// day 17-21, month 22-25 and the year from bit 26. Misc.1 answers it (an 8-byte value, worked
 /// out from the game's encoder); the game asks right after a match's map list.
-fn server_time() -> u64 {
+pub(crate) fn server_time() -> u64 {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     packed_date_time(secs)
 }

@@ -13,16 +13,20 @@
 mod accounts;
 mod config;
 mod fixed;
+mod friends;
 mod game_session;
+mod invitations;
 mod maps;
 mod menu;
 mod nat;
+mod notify;
 mod online_config;
 mod privileges;
 mod rate_limit;
 mod secure;
 mod sessions;
 mod signup;
+mod social;
 mod stats;
 mod ticket;
 
@@ -156,6 +160,13 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     if config.signup && config.signup_code.is_none() {
         info!(logger, "Sign-up is open to anyone who can reach this server (no signup_code)");
     }
+    let friends = match friends::Friends::open(&config.database) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            error!(logger, "couldn't open the friends in {}: {e}", config.database.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
         Err(e) => {
@@ -177,9 +188,10 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             run_server(&logger, &secure, |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
-                handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts)));
+                handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts), Arc::clone(&friends)));
                 handler.register_protocol(privileges::new_protocol());
-                for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
+                let social = social::protocols(Arc::clone(&friends), Arc::clone(&accounts));
+                for protocol in menu::protocols().into_iter().chain(fixed::protocols()).chain(social) {
                     handler.register_protocol(protocol);
                 }
                 handler.register_protocol(Box::new(stats::PlayerStatistics::new(Arc::clone(&stats))));

@@ -4,11 +4,14 @@
 use std::sync::Arc;
 
 use grfs_protocols::game_session_service::game_session_protocol::*;
+use grfs_protocols::game_session_service::types::GameSessionInvitationReceived;
+use grfs_protocols::game_session_service::types::GameSessionInvitationSent;
 use grfs_protocols::game_session_service::types::GameSessionKey;
 use grfs_protocols::game_session_service::types::GameSessionParticipant;
 use grfs_protocols::game_session_service::types::GameSessionSearchResult;
 use grfs_protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
 use quazal::prudp::ClientRegistry;
+use quazal::rmc::types::DateTime;
 use quazal::rmc::types::Property;
 use quazal::rmc::types::QList;
 use quazal::rmc::Error;
@@ -19,16 +22,22 @@ use slog::info;
 use slog::Logger;
 
 use crate::accounts::Accounts;
+use crate::friends::Friends;
+use crate::invitations::Invitations;
+use crate::notify;
 use crate::sessions;
 use crate::sessions::Sessions;
 use crate::ticket::player;
 
-/// Results a search returns at most.
+/// Results a search returns at most, and players one invitation may go to.
 const MAX_RESULTS: usize = 100;
+const MAX_RECIPIENTS: usize = 16;
 
 struct GameSessions {
     sessions: Arc<Sessions>,
     accounts: Arc<Accounts>,
+    friends: Arc<Friends>,
+    invitations: Invitations,
 }
 
 fn key(k: &GameSessionKey) -> sessions::Key {
@@ -193,6 +202,188 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         Ok(SearchSessionsResponse {
             search_results: QList(found.into_iter().filter(|(_, s)| s.host != pid).take(MAX_RESULTS).map(|r| self.result(r)).collect()),
         })
+    }
+
+    fn send_invitation(
+        &self,
+        logger: &Logger,
+        ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: SendInvitationRequest,
+        client_registry: &ClientRegistry<CI>,
+        socket: &std::net::UdpSocket,
+    ) -> Result<SendInvitationResponse, Error> {
+        let pid = player(ci)?;
+        let invitation = request.invitation;
+        let k = key(&invitation.session_key);
+        // Only into a session the sender is in, and only friends.
+        let session = self.sessions.get(k).filter(|s| s.joined(pid)).ok_or(Error::AccessDenied)?;
+        let now = std::time::Instant::now();
+        for &recipient in invitation.recipient_pids.0.iter().take(MAX_RECIPIENTS) {
+            if recipient == pid || session.joined(recipient) || !self.friends.are_friends(pid, recipient) {
+                info!(logger, "{pid:#x} can't invite {recipient:#x} into {k:?}: not a friend, or already in");
+                continue;
+            }
+            self.invitations
+                .send(k, pid, recipient, &invitation.message, crate::fixed::server_time(), now)
+                .map_err(|_| Error::AccessDenied)?;
+            let told = notify::send(
+                logger,
+                ctx,
+                socket,
+                client_registry,
+                recipient,
+                &notify::game_invitation(pid, k.0, k.1, &invitation.message),
+            );
+            info!(logger, "{pid:#x} invited {recipient:#x} into {k:?} (told: {told})");
+        }
+        Ok(SendInvitationResponse)
+    }
+
+    fn get_invitation_received_count(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: GetInvitationReceivedCountRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetInvitationReceivedCountResponse, Error> {
+        let pid = player(ci)?;
+        let live = |k| self.sessions.get(k).is_some();
+        let count = self.invitations.received(pid, request.game_session_type_id, live, std::time::Instant::now()).len();
+        Ok(GetInvitationReceivedCountResponse {
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+        })
+    }
+
+    fn get_invitations_received(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: GetInvitationsReceivedRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetInvitationsReceivedResponse, Error> {
+        let pid = player(ci)?;
+        let live = |k| self.sessions.get(k).is_some();
+        let range = request.result_range;
+        let found = self.invitations.received(pid, request.game_session_type_id, live, std::time::Instant::now());
+        Ok(GetInvitationsReceivedResponse {
+            invitations: QList(
+                found
+                    .into_iter()
+                    .skip(range.offset as usize)
+                    .take(range.size as usize)
+                    .map(|i| GameSessionInvitationReceived {
+                        session_key: GameSessionKey {
+                            type_id: i.key.0,
+                            session_id: i.key.1,
+                        },
+                        sender_pid: i.sender,
+                        message: i.message,
+                        creation_time: DateTime(i.created),
+                    })
+                    .collect(),
+            ),
+        })
+    }
+
+    fn get_invitation_sent_count(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: GetInvitationSentCountRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetInvitationSentCountResponse, Error> {
+        let pid = player(ci)?;
+        let live = |k| self.sessions.get(k).is_some();
+        let count = self.invitations.sent(pid, request.game_session_type_id, live, std::time::Instant::now()).len();
+        Ok(GetInvitationSentCountResponse {
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+        })
+    }
+
+    fn get_invitations_sent(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: GetInvitationsSentRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<GetInvitationsSentResponse, Error> {
+        let pid = player(ci)?;
+        let live = |k| self.sessions.get(k).is_some();
+        let range = request.result_range;
+        let found = self.invitations.sent(pid, request.game_session_type_id, live, std::time::Instant::now());
+        Ok(GetInvitationsSentResponse {
+            invitations: QList(
+                found
+                    .into_iter()
+                    .skip(range.offset as usize)
+                    .take(range.size as usize)
+                    .map(|i| GameSessionInvitationSent {
+                        session_key: GameSessionKey {
+                            type_id: i.key.0,
+                            session_id: i.key.1,
+                        },
+                        recipient_pid: i.recipient,
+                        message: i.message,
+                        creation_time: DateTime(i.created),
+                    })
+                    .collect(),
+            ),
+        })
+    }
+
+    /// The game joins the session itself next; accepting only answers the invitation.
+    fn accept_invitation(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: AcceptInvitationRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<AcceptInvitationResponse, Error> {
+        let pid = player(ci)?;
+        let i = request.game_session_invitation;
+        self.invitations.remove(key(&i.session_key), i.sender_pid, pid, std::time::Instant::now());
+        Ok(AcceptInvitationResponse)
+    }
+
+    fn decline_invitation(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: DeclineInvitationRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<DeclineInvitationResponse, Error> {
+        let pid = player(ci)?;
+        let i = request.game_session_invitation;
+        self.invitations.remove(key(&i.session_key), i.sender_pid, pid, std::time::Instant::now());
+        Ok(DeclineInvitationResponse)
+    }
+
+    fn cancel_invitation(
+        &self,
+        _logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: CancelInvitationRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<CancelInvitationResponse, Error> {
+        let pid = player(ci)?;
+        let i = request.game_session_invitation;
+        self.invitations.remove(key(&i.session_key), pid, i.recipient_pid, std::time::Instant::now());
+        Ok(CancelInvitationResponse)
     }
 
     fn add_participants(
@@ -460,11 +651,13 @@ impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
     }
 }
 
-pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>) -> Box<dyn Protocol<CI>> {
+pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>, friends: Arc<Friends>) -> Box<dyn Protocol<CI>> {
     Box::new(GameSessionProtocol {
         generated: Box::new(GameSessionProtocolServer::new(GameSessions {
             sessions: Arc::clone(&sessions),
             accounts,
+            friends,
+            invitations: Invitations::default(),
         })),
         sessions,
     })

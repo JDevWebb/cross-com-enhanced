@@ -101,6 +101,21 @@ impl Accounts {
         Ok(db.query_row("SELECT name FROM accounts WHERE pid = ?1", [pid], |r| r.get(0)).optional()?)
     }
 
+    /// The PID of the account with this name (in any case).
+    pub fn pid(&self, name: &str) -> Result<Option<u32>, Error> {
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(db.query_row("SELECT pid FROM accounts WHERE name = ?1", [name], |r| r.get(0)).optional()?)
+    }
+
+    /// Accounts whose names start with `part` (in any case), up to `limit`, by name.
+    pub fn search(&self, part: &str, limit: u32) -> Result<Vec<(u32, String)>, Error> {
+        let escaped: String = part.chars().flat_map(|c| if matches!(c, '%' | '_' | '\\') { vec!['\\', c] } else { vec![c] }).collect();
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut query = db.prepare_cached("SELECT pid, name FROM accounts WHERE name LIKE ?1 ESCAPE '\\' ORDER BY name LIMIT ?2")?;
+        let rows = query.query_map(params![format!("{escaped}%"), limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// The account's PID, if the name and password match one. An unknown name takes as long as a
     /// wrong password, so the time taken doesn't tell which names exist.
     pub fn verify(&self, name: &str, password: &str) -> Result<Option<u32>, Error> {
@@ -158,6 +173,22 @@ mod tests {
         assert_eq!(accounts.add("Kozak", "a").unwrap(), FIRST_PID);
         assert_eq!(accounts.add("Pepper", "b").unwrap(), FIRST_PID + 1);
         assert!(matches!(accounts.add("PEPPER", "c"), Err(Error::NameTaken)));
+    }
+
+    #[test]
+    fn finds_players_by_name() {
+        let accounts = Accounts::in_memory().unwrap();
+        let kozak = accounts.add("Kozak", "a").unwrap();
+        accounts.add("Kozlov", "a").unwrap();
+        accounts.add("Pepper", "a").unwrap();
+        accounts.add("ko_z", "a").unwrap();
+        assert_eq!(accounts.pid("KOZAK").unwrap(), Some(kozak));
+        assert_eq!(accounts.pid("nobody").unwrap(), None);
+        let names = |part: &str| accounts.search(part, 10).unwrap().into_iter().map(|(_, n)| n).collect::<Vec<_>>();
+        assert_eq!(names("koz"), vec!["Kozak", "Kozlov"]);
+        assert_eq!(names("ko_"), vec!["ko_z"], "_ is a letter here, not a wildcard");
+        assert_eq!(names("%"), Vec::<String>::new());
+        assert_eq!(accounts.search("", 2).unwrap().len(), 2);
     }
 
     #[test]
