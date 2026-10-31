@@ -1,0 +1,59 @@
+/* Cross-Com's look: the logo's HUD cyan on deep blue-grey panels. HUD labels in Plex Mono caps,
+   titles in Plex Sans Condensed, the rest in Plex Sans. */
+@font-face { font-family: Plex; src: url(/fonts/IBMPlexSans-Regular.ttf); font-weight: 400; }
+@font-face { font-family: Plex; src: url(/fonts/IBMPlexSans-SemiBold.ttf); font-weight: 600; }
+@font-face { font-family: PlexCond; src: url(/fonts/IBMPlexSansCondensed-Bold.ttf); font-weight: 700; }
+@font-face { font-family: PlexMono; src: url(/fonts/IBMPlexMono-Regular.ttf); }
+
+:root {
+  --bg: #0b1216; --rail: #081014; --surface: #0f181d; --sunken: #081014;
+  --control: #15232a; --control-hover: #1b2d36; --line: #1a2830; --control-line: #263540;
+  --fg: #e2edf1; --soft: #a6bbc4; --muted: #7f97a2;
+  --accent: #5fd0e6; --accent-dim: rgba(95, 208, 230, .35); --on-accent: #04161b;
+  --warn: #f0b44c; --bad: #ff7a6b; --good: #7fe0a8; --selected: #0e2129;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --page-max: 980px;
+}
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.45 Plex, system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input { font: inherit; color: var(--fg); user-select: text; }
+a { color: var(--accent); text-decoration: none; }
+svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.caps { font: 11.5px PlexMono, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.kicker { font: 11.5px PlexMono, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.title { margin: 2px 0 6px; font: 700 40px/1 PlexCond, sans-serif; letter-spacing: .01em; text-transform: uppercase; }
+.soft { color: var(--soft); }
+.muted { color: var(--muted); }
+.bad { color: var(--bad); }
+.good { color: var(--good); }
+
+.page { height: 100%; overflow: auto; padding: 28px 40px 32px; }
+.page > .inner { max-width: var(--page-max); }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+.btn { height: 38px; padding: 0 16px; border-radius: 4px; background: var(--control); border: 1px solid var(--control-line); transition: background .15s, border-color .15s, filter .15s; }
+.btn:hover { background: var(--control-hover); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.ghost { background: none; border-color: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.btn.ghost:hover { background: var(--selected); border-color: var(--accent); }
+
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field input { height: 40px; padding: 0 12px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--control-line); }
+.field input:focus { outline: none; border-color: var(--accent); }
+
+.spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.view-enter-active, .view-leave-active { transition: opacity .18s ease, transform .22s var(--ease); }
+.view-enter-from { opacity: 0; transform: translateY(6px); }
+.view-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -25,7 +25,11 @@ Matches themselves are still hosted by the players, as they always were.
 
 ## Playing
 
-Put `crosscom-launcher.exe` and the two client DLLs in one folder and run the launcher. It finds the game (Ubisoft Connect or Steam installs, or a folder you choose), checks the server, makes your account if the server allows sign-up, installs the client (keeping the game's own files, which *Restore the game's files* puts back) and starts the game.
+Download `crosscom-launcher.exe` and run it: that's the only file you need. It finds the game (Ubisoft Connect or Steam installs, or a folder you choose), checks your server, makes your account if the server allows sign-up, installs Cross-Com's client (which it carries; the game's own files are kept, and *Restore the game's own files* puts them back), and starts the game. When a newer launcher carries a newer client, Play brings the game up to date first.
+
+It needs Microsoft's WebView2 runtime, which comes with Windows 11 and Edge; on a PC without it, the launcher opens Microsoft's download page.
+
+Build it with `scripts/build-launcher.sh` (Docker): the client DLLs, the launcher's page (`launcher-tauri/ui`, Vue) and the launcher itself (`launcher-tauri/src-tauri`, Tauri) -> `dist/crosscom-launcher.exe`.
 
 To run a server for your group, see [docs/hosting.md](docs/hosting.md).
 

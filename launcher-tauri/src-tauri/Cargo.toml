@@ -1,0 +1,35 @@
+# The Cross-Com launcher: its screens as a web page (../ui, Vue) in a native window, with the
+# launcher library (../../launcher) behind them. Its own workspace, so the main workspace's tests
+# don't need WebKitGTK.
+[package]
+name = "crosscom-launcher-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "crosscom-launcher"
+path = "src/main.rs"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+crosscom-launcher = { path = "../../launcher" }
+crosscom-client-common = { path = "../../client/common" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# The client DLLs built in (scripts/build-launcher.sh sets CROSSCOM_CLIENT_DIR).
+embed-dlls = ["crosscom-launcher/embed-dlls"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

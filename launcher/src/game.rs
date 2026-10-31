@@ -1,11 +1,13 @@
 //! The game's folder: finding it, and putting Cross-Com's client DLLs into it.
 //!
 //! The game loads `ubiorbitapi_r2_loader.dll` and `uplay_r1_loader.dll` from its folder.
-//! Installing copies Cross-Com's over them, first keeping the game's own as `*.orig` (once: a
+//! Installing writes Cross-Com's over them, first keeping the game's own as `*.orig` (once: a
 //! later install never overwrites the originals). Restoring puts the originals back.
 
 use std::path::Path;
 use std::path::PathBuf;
+
+use crate::client::File;
 
 /// The DLLs Cross-Com replaces.
 pub const CLIENT_DLLS: [&str; 2] = ["ubiorbitapi_r2_loader.dll", "uplay_r1_loader.dll"];
@@ -36,6 +38,43 @@ pub fn usual_places(roots: &[PathBuf]) -> Vec<PathBuf> {
     roots.iter().flat_map(|root| UNDER.iter().map(move |u| root.join(u))).collect()
 }
 
+/// Where to look for the game on its own: the folders the Ubisoft launcher and Steam recorded,
+/// and Program Files. Not folders elsewhere on the drives: on a shared PC anyone could make one
+/// holding an exe the launcher would then start. Players choose any other folder themselves.
+#[cfg(windows)]
+#[must_use]
+pub fn candidates() -> Vec<PathBuf> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+    let mut found = Vec::new();
+    if let Ok(installs) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs") {
+        for id in installs.enum_keys().flatten() {
+            if let Ok(dir) = installs.open_subkey(&id).and_then(|k| k.get_value::<String, _>("InstallDir")) {
+                found.push(PathBuf::from(dir));
+            }
+        }
+    }
+    let mut roots: Vec<PathBuf> = ["ProgramFiles(x86)", "ProgramFiles"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
+    if let Ok(steam) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Valve\Steam")
+        .and_then(|k| k.get_value::<String, _>("SteamPath"))
+    {
+        if let Some(parent) = Path::new(&steam).parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    found.extend(usual_places(&roots));
+    found
+}
+
+/// Elsewhere there's nothing to look in.
+#[cfg(not(windows))]
+#[must_use]
+pub fn candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// The first of `candidates` that holds the game.
 #[must_use]
 pub fn find(candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -52,17 +91,14 @@ pub enum Installed {
     Other,
 }
 
-/// Whether Cross-Com's client is in `game`, compared with the DLLs in `client`.
+/// Whether Cross-Com's client is in `game`, compared with `client` (the DLLs to install).
 #[must_use]
-pub fn installed(game: &Path, client: &Path) -> Installed {
+pub fn installed(game: &Path, client: &[File]) -> Installed {
     let backed_up = CLIENT_DLLS.iter().all(|d| original(game, d).is_file());
     if !backed_up {
         return Installed::No;
     }
-    let same = CLIENT_DLLS.iter().all(|d| match (std::fs::read(game.join(d)), std::fs::read(client.join(d))) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    });
+    let same = client.iter().all(|(name, bytes)| std::fs::read(game.join(name)).is_ok_and(|b| b == *bytes));
     if same {
         Installed::Yes
     } else {
@@ -74,22 +110,17 @@ fn original(game: &Path, dll: &str) -> PathBuf {
     game.join(format!("{dll}{ORIGINAL_SUFFIX}"))
 }
 
-/// Copies Cross-Com's DLLs from `client` into `game`, keeping the game's own first.
-pub fn install(game: &Path, client: &Path) -> Result<(), String> {
+/// Writes Cross-Com's DLLs into `game`, keeping the game's own first.
+pub fn install(game: &Path, client: &[File]) -> Result<(), String> {
     if !is_game_dir(game) {
         return Err(format!("{} isn't the game's folder", game.display()));
     }
-    for dll in CLIENT_DLLS {
-        if !client.join(dll).is_file() {
-            return Err(format!("{dll} is missing next to the launcher"));
-        }
-    }
-    for dll in CLIENT_DLLS {
+    for (dll, bytes) in client {
         let (current, kept) = (game.join(dll), original(game, dll));
         if current.is_file() && !kept.exists() {
             std::fs::copy(&current, &kept).map_err(|e| format!("couldn't keep the game's {dll}: {e}"))?;
         }
-        std::fs::copy(client.join(dll), &current).map_err(|e| format!("couldn't install {dll}: {e} (is the game running?)"))?;
+        std::fs::write(&current, bytes).map_err(|e| format!("couldn't install {dll}: {e} (is the game running?)"))?;
     }
     Ok(())
 }
@@ -119,41 +150,34 @@ mod tests {
         dir
     }
 
-    fn client(contents: &[u8]) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        for dll in CLIENT_DLLS {
-            std::fs::write(dir.path().join(dll), contents).unwrap();
-        }
-        dir
+    fn client(contents: &'static [u8]) -> [File; 2] {
+        [(CLIENT_DLLS[0], contents), (CLIENT_DLLS[1], contents)]
     }
 
     #[test]
     fn installs_keeping_the_originals_once_and_restores_them() {
-        let (game, ours) = (game(), client(b"cross-com 1"));
-        assert_eq!(installed(game.path(), ours.path()), Installed::No);
-        install(game.path(), ours.path()).unwrap();
-        assert_eq!(installed(game.path(), ours.path()), Installed::Yes);
+        let game = game();
+        let ours = client(b"cross-com 1");
+        assert_eq!(installed(game.path(), &ours), Installed::No);
+        install(game.path(), &ours).unwrap();
+        assert_eq!(installed(game.path(), &ours), Installed::Yes);
         assert_eq!(std::fs::read(game.path().join(CLIENT_DLLS[0])).unwrap(), b"cross-com 1");
 
         // An update: the originals stay the game's.
         let newer = client(b"cross-com 2");
-        assert_eq!(installed(game.path(), newer.path()), Installed::Other);
-        install(game.path(), newer.path()).unwrap();
+        assert_eq!(installed(game.path(), &newer), Installed::Other);
+        install(game.path(), &newer).unwrap();
         assert_eq!(std::fs::read(original(game.path(), CLIENT_DLLS[1])).unwrap(), b"ubisoft");
 
         restore(game.path()).unwrap();
         assert_eq!(std::fs::read(game.path().join(CLIENT_DLLS[0])).unwrap(), b"ubisoft");
-        assert_eq!(installed(game.path(), newer.path()), Installed::No);
+        assert_eq!(installed(game.path(), &newer), Installed::No);
     }
 
     #[test]
-    fn refuses_what_isnt_the_game_or_a_client() {
+    fn refuses_what_isnt_the_game() {
         let not_game = tempfile::tempdir().unwrap();
-        assert!(install(not_game.path(), client(b"x").path()).is_err());
-        let empty = tempfile::tempdir().unwrap();
-        let game = game();
-        assert!(install(game.path(), empty.path()).is_err());
-        assert_eq!(std::fs::read(game.path().join(CLIENT_DLLS[0])).unwrap(), b"ubisoft", "nothing touched");
+        assert!(install(not_game.path(), &client(b"x")).is_err());
     }
 
     #[test]
