@@ -318,12 +318,14 @@ impl QPacket {
 
     /// Calculates the checksum of the packet.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn calc_checksum(&self, ctx: &Context) -> u8 {
         calc_checksum_from_data(ctx.key(self.destination.stream_type), &self.to_data_bytes(ctx))
     }
 
     /// Calculates the signature of the packet.
     #[must_use]
+    #[allow(dead_code)] // How a packet's signature is made, kept with the checksum for reference.
     pub(crate) fn calc_signature(&self, ctx: &Context, payload: &[u8]) -> u32 {
         match self.packet_type {
             PacketType::Data => {

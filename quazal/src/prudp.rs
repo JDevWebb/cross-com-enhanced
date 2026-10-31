@@ -249,7 +249,7 @@ impl Cookies {
         let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.key).expect("any key length");
         m.update(&address_bytes(client.ip()));
         m.update(&client.port().to_be_bytes());
-        m.update(&[session, generation as u8]);
+        m.update(&[session, generation.to_le_bytes()[0]]);
         let mac = m.finalize().into_bytes();
         let mac = u32::from_be_bytes([mac[0], mac[1], mac[2], mac[3]]);
         (mac & !0x3ff) | ((generation & 0x3) << 8) | u32::from(session)
@@ -423,6 +423,9 @@ impl<T> ClientRegistry<T> {
     }
 }
 
+/// Called with a client and how many of the server's reliable packets to it were given up on.
+pub type UnackedHandler<'a, T> = Box<dyn FnMut(&ClientInfo<T>, usize) + 'a>;
+
 /// A PRUDP server.
 pub struct Server<'a, ECH, DH, T = ()>
 where
@@ -452,7 +455,7 @@ where
     /// Called with a connection whose client kept sending but never acknowledged some of the
     /// server's reliable packets, and how many were given up on just now: the server's
     /// packets aren't reaching it (a game that closed, which sends nothing, isn't counted).
-    pub unacked_handler: Option<Box<dyn FnMut(&ClientInfo<T>, usize) + 'a>>,
+    pub unacked_handler: Option<UnackedHandler<'a, T>>,
     /// Whether a user's newest sign-in closes their connections from elsewhere (see
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
@@ -721,6 +724,7 @@ where
     }
 
     /// Handles a data packet.
+    #[allow(clippy::too_many_lines)]
     fn handle_data(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         #![allow(clippy::cast_possible_truncation)]
 
@@ -967,12 +971,14 @@ where
     /// Only while it's fresh (seen in the last few seconds): a game started again could, by
     /// chance, reuse the session number of its last connection, which lingers for a minute,
     /// and needs a handshake of its own.
+    #[allow(clippy::unused_self)]
     fn is_repeat(&self, ci: &RefCell<ClientInfo<T>>, client: SocketAddr, session: u8) -> bool {
         ci.try_borrow()
             .is_ok_and(|ci| *ci.address() == client && ci.client_session == session && ci.last_seen.elapsed() < REPEAT_WINDOW)
     }
 
     /// Handles a CONNECT packet.
+    #[allow(clippy::too_many_lines)]
     fn handle_connect(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling connect packet");
         let Some(signature) = packet.conn_signature else {
@@ -1187,7 +1193,9 @@ where
             self.client_registry.forget(ci);
         }
         if let Some(handler) = self.disconnect_handler.as_mut() {
-            stale.into_iter().take(1).for_each(|ci| handler(ci));
+            if let Some(ci) = stale.into_iter().next() {
+                handler(ci);
+            }
         }
     }
 
@@ -1357,6 +1365,7 @@ fn encode_packet(logger: &Logger, ctx: &Context, mut resp: QPacket) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unchecked_time_subtraction, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::type_complexity)]
 mod tests {
     use std::net::Ipv4Addr;
 

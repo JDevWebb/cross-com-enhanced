@@ -273,7 +273,7 @@ impl Response {
                 data.push(0);
                 data.append(&mut re.to_bytes());
             }
-        };
+        }
         #[allow(clippy::cast_possible_truncation)]
         let len = (data.len() - 4) as u32;
         let sz = &mut data[..4];
@@ -358,6 +358,7 @@ static NEXT_CALL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
 /// stream: a packet the client does not accept makes it wait on that sequence number and
 /// buffer everything after it, which stalls the connection. Sending unreliably costs no more
 /// than the failed attempt itself, and the signal that matters still arrives or does not.
+#[allow(clippy::too_many_arguments)]
 pub fn call_client<T>(
     logger: &Logger,
     ctx: &Context,
@@ -427,23 +428,14 @@ pub trait ClientProtocol<T> {
     /// Returns the name of a method.
     fn method_name(&self, method_id: u32) -> Option<String>;
 
-    /// Sends an RMC request.
-    fn send(&self, logger: &Logger, ctx: &Context, ci: &mut ClientInfo<T>, method_id: u32, parameters: Vec<u8>) {
-        let request = Request {
-            protocol_id: self.id(),
-            method_id,
-            parameters,
-            call_id: todo!(),
-        };
-        let req = QPacket {
-            payload: request.to_bytes(),
-            ..Default::default()
-        };
-        let _ = super::prudp::send_request(logger, ctx, todo!(), todo!(), req, ci);
+    /// Sends an RMC request to a client: not possible from here, which has no socket. The
+    /// generated protocol clients call it; a server calls a client with [`call_client`].
+    fn send(&self, logger: &Logger, _ctx: &Context, _ci: &mut ClientInfo<T>, method_id: u32, _parameters: Vec<u8>) {
+        error!(logger, "{}.{method_id} wasn't sent: Protocol::send can't send; use rmc::call_client", self.name());
     }
 }
 
-/// A handler for RVSec packets.
+/// A handler for `RVSec` packets.
 pub struct RVSecHandler<T> {
     logger: slog::Logger,
     rmc_registry: HashMap<u16, Box<dyn Protocol<T>>>,
@@ -467,6 +459,7 @@ impl<T> RVSecHandler<T> {
 }
 
 impl<T> StreamHandler<T> for RVSecHandler<T> {
+    #[allow(clippy::too_many_lines)]
     fn handle(
         &self,
         logger: &Logger,

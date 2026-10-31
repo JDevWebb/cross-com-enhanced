@@ -9,9 +9,9 @@ use num_enum::TryFromPrimitive;
 pub enum Error {
     /// Core error.
     Core(CoreError),
-    /// DDL error.
+    /// `DDL` error.
     DDL(DDLError),
-    /// RendezVous error.
+    /// `RendezVous` error.
     RendezVous(RendezVousError),
     /// Python core error.
     PythonCore(PythonCoreError),
@@ -151,7 +151,7 @@ pub enum DDLError {
     IncorrectVersion = 0x0002,
 }
 
-/// Represents a RendezVous error code.
+/// Represents a `RendezVous` error code.
 #[derive(TryFromPrimitive, IntoPrimitive, Debug, Clone, Copy)]
 #[repr(u16)]
 pub enum RendezVousError {

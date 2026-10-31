@@ -359,7 +359,7 @@ macro_rules! tuple_impls {
                     $(
                         let $name = stream.read()?;
                     )+
-                    Ok(($($name),+))
+                    Ok(($($name,)+))
                 }
             }
 

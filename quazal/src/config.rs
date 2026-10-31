@@ -447,7 +447,7 @@ impl Config {
         let Config { mut services, service } = self;
         let service_contexts = service
             .into_iter()
-            .filter_map(|(ref name, ctx)| if services.remove(name) { Some((name.to_string(), ctx)) } else { None })
+            .filter_map(|(ref name, ctx)| if services.remove(name) { Some((name.clone(), ctx)) } else { None })
             .collect();
         if services.is_empty() {
             Ok(service_contexts)
