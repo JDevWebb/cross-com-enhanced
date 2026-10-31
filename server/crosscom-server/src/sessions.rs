@@ -264,6 +264,16 @@ impl Sessions {
         found
     }
 
+    /// Whether `a` and `b` are in a session together.
+    pub fn share(&self, a: u32, b: u32) -> bool {
+        self.lock().sessions.values().any(|s| s.has(a) && s.has(b))
+    }
+
+    /// Whether `pid` hosts a session a search may offer: anyone may be on their way into it.
+    pub fn hosts_public(&self, pid: u32) -> bool {
+        self.lock().sessions.values().any(|s| s.host == pid && s.matches(&[]))
+    }
+
     /// Sessions of a type with any of `pids` in them.
     pub fn with_participants(&self, type_id: u32, pids: &[u32]) -> Vec<(Key, Session)> {
         self.lock()
@@ -389,5 +399,18 @@ mod tests {
         let found: Vec<Key> = sessions.find(1, &SEARCH, 10).into_iter().map(|(k, _)| k).collect();
         assert_eq!(found, vec![b, a]);
         assert_eq!(sessions.find(1, &SEARCH, 1).len(), 1);
+    }
+
+    #[test]
+    fn who_shares_a_session_and_who_hosts_a_public_one() {
+        let sessions = Sessions::default();
+        let party = sessions.create(10, 1, &[(7, 1), (3, 6)]).unwrap();
+        sessions.join(11, party).unwrap();
+        assert!(sessions.share(10, 11) && sessions.share(11, 10));
+        assert!(!sessions.share(10, 12));
+        assert!(!sessions.hosts_public(10), "a party isn't public");
+        sessions.create(20, 1, &QUICK_MATCH).unwrap();
+        assert!(sessions.hosts_public(20));
+        assert!(!sessions.hosts_public(21));
     }
 }

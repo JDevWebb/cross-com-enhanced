@@ -16,6 +16,7 @@ mod fixed;
 mod game_session;
 mod maps;
 mod menu;
+mod nat;
 mod online_config;
 mod privileges;
 mod rate_limit;
@@ -168,6 +169,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             let sessions = Arc::new(sessions::Sessions::default());
             run_server(&logger, &secure, |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
+                handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts)));
                 handler.register_protocol(privileges::new_protocol());
                 for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
