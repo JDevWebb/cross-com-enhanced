@@ -23,10 +23,10 @@ You need Docker with the compose plugin. In a copy of this repository, write the
 `docker/.env` (compose reads it for every command; it isn't committed):
 
 ```sh
-cat > docker/.env <<'END'
+cat > docker/.env <<END
 CROSSCOM_PUBLIC_ADDRESS=203.0.113.10
 CROSSCOM_SIGNUP=true
-CROSSCOM_SIGNUP_CODE=something-you-give-your-players
+CROSSCOM_SIGNUP_CODE=$(openssl rand -base64 12)
 END
 docker compose -f docker/compose.yaml up -d
 ```
@@ -47,7 +47,7 @@ In `docker/.env` (or the environment):
 |---|---|---|
 | `CROSSCOM_PUBLIC_ADDRESS` | (required) | The address players connect to |
 | `CROSSCOM_SIGNUP` | `false` | `true` lets players make their own accounts |
-| `CROSSCOM_SIGNUP_CODE` | (none) | A code players must give to sign up |
+| `CROSSCOM_SIGNUP_CODE` | (none) | A code players must give to sign up: at least 12 random characters |
 | `CROSSCOM_LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` or `trace` |
 
 Everything else can go in `crosscom-server.toml` in the volume (see below); the environment wins
@@ -68,7 +68,7 @@ public_address = "203.0.113.10"
 database = "crosscom.db"
 log_level = "info"
 # signup = true
-# signup_code = "something-you-give-your-players"
+# signup_code = "at least 12 random characters"
 ```
 
 and run `target/release/crosscom-server --config crosscom-server.toml`. Port 80 needs root or, on
@@ -103,7 +103,8 @@ those with the right code).
 
 Sign-up goes over plain HTTP, like the game's own sign-in to the server, so passwords cross the
 network unencrypted. Players should use a password they use nowhere else. If you leave sign-up
-open without a code, anyone who can reach the server can make accounts.
+open without a code, anyone who can reach the server can make accounts. The server refuses a code
+shorter than 12 characters; make it random (`openssl rand -base64 12`), not a word.
 
 ## Checking it works
 

@@ -80,7 +80,19 @@ impl Config {
         if let Some(code) = var("CROSSCOM_SIGNUP_CODE") {
             self.signup_code = Some(code);
         }
+        self.check()?;
         Ok(self)
+    }
+
+    /// Refuses a sign-up code short enough to guess.
+    fn check(&self) -> Result<(), String> {
+        match &self.signup_code {
+            Some(code) if !code.is_empty() && code.chars().count() < crate::signup::MIN_CODE_LEN => Err(format!(
+                "signup_code is too short to keep strangers out: use at least {} random characters",
+                crate::signup::MIN_CODE_LEN
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// The public address as an IP address, looking the name up if it is one. Station URLs need an
@@ -115,14 +127,15 @@ mod tests {
         let env = |name: &str| match name {
             "CROSSCOM_PUBLIC_ADDRESS" => Some(" 198.51.100.4 ".to_string()),
             "CROSSCOM_SIGNUP" => Some("true".to_string()),
-            "CROSSCOM_SIGNUP_CODE" => Some("ghosts".to_string()),
+            "CROSSCOM_SIGNUP_CODE" => Some("ghosts-in-the-machine".to_string()),
             "CROSSCOM_LOG_LEVEL" => Some(String::new()),
             _ => None,
         };
         let config = Config::default().with_env(env).unwrap();
         assert_eq!(config.public_address, "198.51.100.4");
         assert!(config.signup);
-        assert_eq!(config.signup_code.as_deref(), Some("ghosts"));
+        assert_eq!(config.signup_code.as_deref(), Some("ghosts-in-the-machine"));
+        assert!(Config::default().with_env(|n| (n == "CROSSCOM_SIGNUP_CODE").then(|| "ghosts".into())).is_err(), "too short");
         assert_eq!(config.log_level, "info", "empty values are ignored");
         assert!(Config::default().with_env(|n| (n == "CROSSCOM_SIGNUP").then(|| "maybe".into())).is_err());
         assert!(!Config::default().signup, "off by default");

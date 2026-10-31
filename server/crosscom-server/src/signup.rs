@@ -20,7 +20,6 @@ use serde_json::json;
 
 use crate::accounts;
 use crate::accounts::Accounts;
-use crate::rate_limit::address_key;
 
 pub const PATH: &str = "/accounts";
 /// The biggest request body taken: a name, a password and a code fit many times over.
@@ -30,8 +29,24 @@ const PER_ADDRESS: u32 = 10;
 const ADDRESS_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 const IN_ALL: u32 = 200;
 const ALL_WINDOW: Duration = Duration::from_secs(60 * 60);
-/// Addresses remembered at once; when full of live counts, new addresses wait.
+/// Addresses remembered at once; when full, the oldest count goes.
 const MAX_ADDRESSES: usize = 50_000;
+/// The shortest sign-up code a server may set: long enough that guessing it, a few tries a day
+/// from each address, is hopeless.
+pub const MIN_CODE_LEN: usize = 12;
+
+/// The key an address is counted under: an IPv4 address as itself (also when seen as
+/// `::ffff:a.b.c.d`), an IPv6 address by its /48, which one site usually has all of.
+fn address_key(address: IpAddr) -> IpAddr {
+    match address.to_canonical() {
+        address @ IpAddr::V4(_) => address,
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            segments[3..].fill(0);
+            IpAddr::from(segments)
+        }
+    }
+}
 
 pub struct SignUp {
     accounts: Arc<Accounts>,
@@ -52,7 +67,10 @@ impl Limits {
         if self.by_address.len() >= MAX_ADDRESSES && !self.by_address.contains_key(&key) {
             self.by_address.retain(|_, (since, _)| now.duration_since(*since) < ADDRESS_WINDOW);
             if self.by_address.len() >= MAX_ADDRESSES {
-                return false;
+                // Full of live counts: the oldest goes, rather than every new address waiting.
+                if let Some(oldest) = self.by_address.iter().min_by_key(|(_, (since, _))| *since).map(|(k, _)| *k) {
+                    self.by_address.remove(&oldest);
+                }
             }
         }
         let mine = match self.by_address.get(&key) {
@@ -213,5 +231,20 @@ mod tests {
         }
         let player: IpAddr = "203.0.113.7".parse().unwrap();
         assert_eq!(signup.handle(player, &body("Kozak", "pw", Some("ghosts"))).0 .0, "201 Created");
+    }
+
+    #[test]
+    fn a_full_table_makes_room_and_ipv6_counts_by_site() {
+        let mut limits = Limits::default();
+        let now = Instant::now();
+        for i in 0..MAX_ADDRESSES as u32 {
+            assert!(limits.allow_address(IpAddr::from(i.to_be_bytes()), now + Duration::from_millis(u64::from(i))));
+        }
+        assert!(
+            limits.allow_address("203.0.113.7".parse().unwrap(), now + Duration::from_secs(60)),
+            "a new address still gets in"
+        );
+        assert_eq!(limits.by_address.len(), MAX_ADDRESSES);
+        assert_eq!(address_key("2001:db8:1:2::5".parse().unwrap()), address_key("2001:db8:1:ffff::9".parse().unwrap()));
     }
 }
