@@ -63,8 +63,9 @@ fn prefs_path() -> PathBuf {
     base.join("Cross-Com").join("launcher.toml")
 }
 
-/// Where to look for the game: the Ubisoft launcher's and Steam's records, then the usual folders
-/// on every drive.
+/// Where to look for the game on its own: the folders the Ubisoft launcher and Steam recorded,
+/// and Program Files. Not folders elsewhere on the drives: on a shared PC anyone could make one
+/// holding an exe the launcher would then start. Players choose any other folder themselves.
 fn candidates() -> Vec<PathBuf> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::enums::HKEY_LOCAL_MACHINE;
@@ -86,7 +87,6 @@ fn candidates() -> Vec<PathBuf> {
             roots.push(parent.to_path_buf());
         }
     }
-    roots.extend((b'C'..=b'Z').map(|d| PathBuf::from(format!("{}:\\", d as char))).filter(|p| p.exists()));
     found.extend(game::usual_places(&roots));
     found
 }
