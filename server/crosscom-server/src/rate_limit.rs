@@ -45,7 +45,7 @@ struct Count {
 /// The key an address is counted under. An IPv4 address seen on an IPv6 socket
 /// (`::ffff:a.b.c.d`) counts as itself; real IPv6 addresses count by their /64, which one
 /// connection usually has all of.
-fn address_key(address: IpAddr) -> IpAddr {
+pub(crate) fn address_key(address: IpAddr) -> IpAddr {
     match address.to_canonical() {
         address @ IpAddr::V4(_) => address,
         IpAddr::V6(v6) => {

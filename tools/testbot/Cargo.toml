@@ -10,4 +10,5 @@ grfs_protocols = { path = "../../server/grfs_protocols" }
 md-5 = { workspace = true }
 quazal = { path = "../../quazal" }
 rand = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }

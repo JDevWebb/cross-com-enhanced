@@ -316,6 +316,7 @@ dependencies = [
  "md-5",
  "quazal",
  "rand",
+ "serde_json",
  "tokio",
 ]
 

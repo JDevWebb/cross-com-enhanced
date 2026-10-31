@@ -3,8 +3,11 @@
 //! ticket, RegisterEx, and the privileges list. A wrong password must be refused.
 //!
 //! ```text
-//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]
+//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]
 //! ```
+//!
+//! With `--signup`, it first makes the account over HTTP, as the launcher does (with the server's
+//! sign-up code, if it has one).
 //!
 //! With `--host`, it then hosts a quick match as the game does and waits that long for a player
 //! to come in: someone's probe request, passed on by the server. With `--join`, it searches for
@@ -79,6 +82,23 @@ async fn online_config(server: IpAddr, port: u16) -> Result<String> {
     Ok(body.to_owned())
 }
 
+/// Makes an account over HTTP, as the launcher does: the status line and the body.
+async fn sign_up(server: IpAddr, port: u16, name: &str, password: &str, code: Option<&str>) -> Result<(String, String)> {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    let body = serde_json::json!({ "name": name, "password": password, "code": code }).to_string();
+    let mut stream = tokio::net::TcpStream::connect((server, port)).await?;
+    let request = format!(
+        "POST /accounts HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+    let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| eyre!("no HTTP response"))?;
+    Ok((head.lines().next().unwrap_or_default().to_owned(), body.to_owned()))
+}
+
 /// The auth server: LoginEx, then a ticket for the secure server.
 async fn sign_in(auth: SocketAddr, name: &str, password: &str) -> Result<(u32, SocketAddr, Vec<u8>)> {
     let (mut conn, _) = Conn::connect(auth, vec![]).await?;
@@ -147,7 +167,7 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [server, name, password, rest @ ..] = args.as_slice() else {
-        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]");
+        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]");
     };
     let server: IpAddr = server.parse()?;
     let mut rest = rest.iter().map(String::as_str).peekable();
@@ -155,11 +175,19 @@ async fn main() -> Result<()> {
         Some(p) if !p.starts_with("--") => rest.next().unwrap_or_default().parse()?,
         _ => 80,
     };
+    let mut signup = None;
+    if rest.peek() == Some(&"--signup") {
+        rest.next();
+        signup = Some(match rest.peek() {
+            Some(code) if !code.starts_with("--") => rest.next().map(str::to_owned),
+            _ => None,
+        });
+    }
     let mode = match (rest.next(), rest.next()) {
         (None, _) => Mode::Check,
         (Some("--host"), Some(secs)) => Mode::Host(secs.parse()?),
         (Some("--join"), None) => Mode::Join,
-        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]"),
+        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join]"),
     };
 
     let config = online_config(server, http_port).await?;
@@ -171,6 +199,13 @@ async fn main() -> Result<()> {
         .and_then(|p| p.parse::<u16>().ok())
         .ok_or_else(|| eyre!("no SandboxUrl in the online config"))?;
     println!("ok   online config: sign in on port {auth_port}");
+    if let Some(code) = signup {
+        let (status, body) = sign_up(server, http_port, name, password, code.as_deref()).await?;
+        if !status.starts_with("HTTP/1.1 201") {
+            bail!("sign-up refused: {status} {body}");
+        }
+        println!("ok   signed up as {name}: {body}");
+    }
     let auth = SocketAddr::new(server, auth_port);
 
     if sign_in(auth, name, "not-the-password").await.is_ok() {

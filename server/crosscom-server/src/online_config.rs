@@ -1,5 +1,5 @@
-//! The online config service: the first thing the game asks, over HTTP. It answers with where
-//! to sign in.
+//! The HTTP server: the online config, the first thing the game asks (it answers with where to
+//! sign in), and account sign-up for the launcher when it's turned on (see `signup`).
 
 use std::io::Read;
 use std::io::Write;
@@ -17,6 +17,8 @@ use serde::Serialize;
 use slog::info;
 use slog::warn;
 use slog::Logger;
+
+use crate::signup::SignUp;
 
 const PATH: &str = "/OnlineConfigService.svc/GetOnlineConfig";
 /// How long one request may take in all, however slowly it arrives.
@@ -56,10 +58,14 @@ pub fn content(public_ip: IpAddr, auth_port: u16) -> String {
     serde_json::to_string(&items).unwrap_or_default()
 }
 
-/// Serves the online config until the process ends.
-pub fn serve(logger: &Logger, listen: SocketAddr, content: String) -> std::io::Result<()> {
+/// Serves the online config, and sign-up if given, until the process ends.
+pub fn serve(logger: &Logger, listen: SocketAddr, content: String, signup: Option<SignUp>) -> std::io::Result<()> {
     let listener = TcpListener::bind(listen)?;
     info!(logger, "Online config on http://{listen}{PATH}");
+    if signup.is_some() {
+        info!(logger, "Sign-up on http://{listen}{}", crate::signup::PATH);
+    }
+    let signup = signup.map(Arc::new);
     let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
@@ -69,8 +75,9 @@ pub fn serve(logger: &Logger, listen: SocketAddr, content: String) -> std::io::R
         let logger = logger.clone();
         let content = content.clone();
         let open = Arc::clone(&open);
+        let signup = signup.clone();
         std::thread::spawn(move || {
-            if let Err(e) = answer(&logger, stream, &content) {
+            if let Err(e) = answer(&logger, stream, &content, signup.as_deref()) {
                 warn!(logger, "online config request failed: {e}");
             }
             open.fetch_sub(1, Ordering::AcqRel);
@@ -79,15 +86,16 @@ pub fn serve(logger: &Logger, listen: SocketAddr, content: String) -> std::io::R
     Ok(())
 }
 
-fn answer(logger: &Logger, mut stream: TcpStream, content: &str) -> std::io::Result<()> {
+fn answer(logger: &Logger, mut stream: TcpStream, content: &str, signup: Option<&SignUp>) -> std::io::Result<()> {
     let deadline = Instant::now() + REQUEST_DEADLINE;
     stream.set_write_timeout(Some(REQUEST_DEADLINE))?;
     let peer = stream.peer_addr()?;
     let mut buf = [0u8; 4096];
     let mut len = 0;
-    // Only the request line matters; read until the headers end or the buffer is full, within
-    // one deadline for the whole request.
-    while len < buf.len() {
+    // Read until the headers end and any body has come (or the buffer is full), within one
+    // deadline for the whole request.
+    let mut wanted = None;
+    while len < buf.len() && wanted.is_none_or(|w| len < w) {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request too slow"));
@@ -98,15 +106,38 @@ fn answer(logger: &Logger, mut stream: TcpStream, content: &str) -> std::io::Res
             break;
         }
         len += n;
-        if buf[..len].windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
+        if wanted.is_none() {
+            if let Some(end) = buf[..len].windows(4).position(|w| w == b"\r\n\r\n") {
+                let body = content_length(&String::from_utf8_lossy(&buf[..end])).unwrap_or(0);
+                wanted = Some(end + 4 + body.min(buf.len()));
+            }
         }
     }
-    let request = String::from_utf8_lossy(&buf[..len]);
+    let head_end = buf[..len].windows(4).position(|w| w == b"\r\n\r\n");
+    let request = String::from_utf8_lossy(&buf[..head_end.unwrap_or(len)]);
     let line = request.lines().next().unwrap_or_default();
+    let declared = content_length(&request).unwrap_or(0);
+    let answered: String;
     let (status, body) = if is_online_config_request(line) {
         info!(logger, "Online config for {peer}");
         ("200 OK", content)
+    } else if let (Some(signup), true) = (signup, is_signup_request(line)) {
+        let start = head_end.map_or(len, |e| e + 4);
+        let body = &buf[start.min(len)..len];
+        if declared > crate::signup::MAX_BODY || body.len() < declared {
+            ("413 Content Too Large", "{\"error\":\"request too big\"}")
+        } else {
+            let ((status, json), made) = signup.handle(peer.ip(), &body[..declared]);
+            match made {
+                Some(name) => info!(logger, "{peer} signed up as {name}"),
+                None => info!(logger, "{peer}: sign-up refused, {status}"),
+            }
+            answered = json;
+            (status, answered.as_str())
+        }
+    } else if line.is_empty() {
+        // A connection that sends nothing, such as the container's health check.
+        return Ok(());
     } else {
         warn!(logger, "{peer} asked for something else: {line:?}");
         ("404 Not Found", "")
@@ -116,6 +147,19 @@ fn answer(logger: &Logger, mut stream: TcpStream, content: &str) -> std::io::Res
         body.len()
     );
     stream.write_all(response.as_bytes())
+}
+
+/// The request's Content-Length, if it gives one.
+fn content_length(head: &str) -> Option<usize> {
+    head.lines().skip(1).find_map(|l| {
+        let (name, value) = l.split_once(':')?;
+        name.trim().eq_ignore_ascii_case("content-length").then(|| value.trim().parse().ok())?
+    })
+}
+
+fn is_signup_request(request_line: &str) -> bool {
+    let mut parts = request_line.split(' ');
+    parts.next() == Some("POST") && parts.next() == Some(crate::signup::PATH)
 }
 
 fn is_online_config_request(request_line: &str) -> bool {
@@ -144,5 +188,9 @@ mod tests {
         ));
         assert!(!is_online_config_request("GET /other HTTP/1.1"));
         assert!(!is_online_config_request("POST /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1"));
+        assert!(is_signup_request("POST /accounts HTTP/1.1"));
+        assert!(!is_signup_request("GET /accounts HTTP/1.1"));
+        assert_eq!(content_length("POST /accounts HTTP/1.1\r\nHost: x\r\ncontent-length: 42"), Some(42));
+        assert_eq!(content_length("GET / HTTP/1.1\r\nHost: x"), None);
     }
 }

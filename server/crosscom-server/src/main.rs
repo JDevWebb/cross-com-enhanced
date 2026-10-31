@@ -22,6 +22,7 @@ mod privileges;
 mod rate_limit;
 mod secure;
 mod sessions;
+mod signup;
 mod stats;
 mod ticket;
 
@@ -93,7 +94,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let config = match Config::load(&config_path) {
+    let config = match Config::load(&config_path).and_then(|c| c.with_env(|name| std::env::var(name).ok())) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("{e}");
@@ -151,6 +152,10 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     let secure = context(config.secure_port);
     let http_listen = SocketAddr::new(config.listen_ip, config.http_port);
     let online_config = online_config::content(public_ip, config.auth_port);
+    let signup = config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone()));
+    if config.signup && config.signup_code.is_none() {
+        info!(logger, "Sign-up is open to anyone who can reach this server (no signup_code)");
+    }
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
         Err(e) => {
@@ -160,7 +165,9 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     };
 
     let threads = [
-        spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, online_config)),
+        spawn("online config", logger.clone(), move |logger| {
+            online_config::serve(&logger, http_listen, online_config, signup)
+        }),
         spawn("auth", logger.clone(), {
             let accounts = Arc::clone(&accounts);
             move |logger| run_server(&logger, &auth, |handler| handler.register_protocol(ticket::new_protocol(accounts)))
