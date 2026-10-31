@@ -3,9 +3,17 @@
 //! ticket, RegisterEx, and the privileges list. A wrong password must be refused.
 //!
 //! ```text
-//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT]
+//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]
 //! ```
+//!
+//! With `--host`, it then hosts a quick match as the game does and waits that long for a player
+//! to come in: someone's probe request, passed on by the server. With `--join`, it searches for
+//! a quick match as the game does, joins the first one found, asks for its host's addresses and
+//! for the host to probe it, and leaves. Two bots, or a bot and the game, test matchmaking
+//! with a single PC.
 
+// Shared with other tests; not every helper is used here.
+#[allow(dead_code)]
 mod conn;
 
 use std::net::IpAddr;
@@ -15,6 +23,11 @@ use eyre::bail;
 use eyre::eyre;
 use eyre::Result;
 use grfs_protocols::authentication_foundation::ticket_granting_protocol as tg;
+use grfs_protocols::game_session_service::game_session_protocol as gs;
+use grfs_protocols::game_session_service::types::GameSession;
+use grfs_protocols::game_session_service::types::GameSessionKey;
+use grfs_protocols::game_session_service::types::GameSessionQuery;
+use grfs_protocols::nat_traversal::nat_traversal_protocol as nat;
 use grfs_protocols::privileges_service::privileges_protocol as privileges;
 use grfs_protocols::secure_connection_service::secure_connection_protocol as secure;
 use grfs_protocols::ubi_authentication::types::UbiAuthenticationLoginCustomData;
@@ -25,6 +38,8 @@ use quazal::rmc::basic::FromStream;
 use quazal::rmc::basic::ReadStream;
 use quazal::rmc::basic::ToStream;
 use quazal::rmc::types::Any;
+use quazal::rmc::types::Property;
+use quazal::rmc::types::QList;
 use quazal::rmc::types::StationURL;
 
 use crate::conn::Conn;
@@ -132,10 +147,20 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [server, name, password, rest @ ..] = args.as_slice() else {
-        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT]");
+        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]");
     };
     let server: IpAddr = server.parse()?;
-    let http_port = rest.first().map(|p| p.parse()).transpose()?.unwrap_or(80);
+    let mut rest = rest.iter().map(String::as_str).peekable();
+    let http_port = match rest.peek() {
+        Some(p) if !p.starts_with("--") => rest.next().unwrap_or_default().parse()?,
+        _ => 80,
+    };
+    let mode = match (rest.next(), rest.next()) {
+        (None, _) => Mode::Check,
+        (Some("--host"), Some(secs)) => Mode::Host(secs.parse()?),
+        (Some("--join"), None) => Mode::Join,
+        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--host SECONDS | --join]"),
+    };
 
     let config = online_config(server, http_port).await?;
     let auth_port = config
@@ -189,7 +214,191 @@ async fn main() -> Result<()> {
     }
     println!("ok   {} privileges, including playing online", privileges.privileges_ex.0.len());
 
+    match mode {
+        Mode::Check => {}
+        Mode::Host(secs) => host(&mut conn, pid, &registered, secs).await?,
+        Mode::Join => join(&mut conn, pid).await?,
+    }
+
     conn.disconnect().await?;
     println!("all good");
+    Ok(())
+}
+
+enum Mode {
+    Check,
+    Host(u64),
+    Join,
+}
+
+/// What the game's quick match searches with, and the match it makes when it finds none.
+const QUICK_MATCH_SEARCH: [(u32, u32); 8] = [(3, 1), (100, 1), (101, 2), (116, 2), (105, 16), (103, 0), (115, 0), (114, 12)];
+const QUICK_MATCH: [(u32, u32); 14] = [
+    (7, 0),
+    (3, 12),
+    (4, 0),
+    (100, 1),
+    (101, 2),
+    (116, 2),
+    (105, 16),
+    (115, 0),
+    (103, 0),
+    (113, 10),
+    (114, 12),
+    (112, 3),
+    (117, 0),
+    (102, 3),
+];
+
+fn properties(list: &[(u32, u32)]) -> QList<Property> {
+    QList(list.iter().map(|&(id, value)| Property { id, value }).collect())
+}
+
+/// Registers this bot's peer-to-peer station as the game does: at its public address, with its
+/// connection's RVCID, so others can have it probe them.
+async fn register_urls(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse) -> Result<()> {
+    let port = conn.local_addr()?.port();
+    let url = format!(
+        "udp:/address={};port={port};PID={pid};RVCID={}",
+        registered.url_public.address, registered.pid_connection_id
+    );
+    let station: StationURL = url.parse().map_err(|e| eyre!("{e:?}"))?;
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::RegisterUrLs as u32,
+        gs::RegisterUrLsRequest {
+            station_urls: QList(vec![station]),
+        }
+        .to_bytes(),
+    )
+    .await?;
+    println!("ok   registered {url}");
+    Ok(())
+}
+
+async fn host(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, secs: u64) -> Result<()> {
+    register_urls(conn, pid, registered).await?;
+    let created: gs::CreateSessionResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::CreateSession as u32,
+                gs::CreateSessionRequest {
+                    game_session: GameSession {
+                        type_id: 1,
+                        attributes: properties(&QUICK_MATCH),
+                    },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    let key = created.game_session_key;
+    println!("ok   hosting quick match {}; waiting {secs} s for a player", key.session_id);
+    let probe = conn
+        .wait_request(
+            nat::NAT_TRAVERSAL_PROTOCOL_ID,
+            nat::NatTraversalProtocolMethod::InitiateProbe as u32,
+            std::time::Duration::from_secs(secs),
+        )
+        .await?;
+    match probe {
+        Some(request) => {
+            let probe: nat::InitiateProbeRequest = decode(&request.parameters)?;
+            println!("ok   asked to probe {}: a player is on the way in", probe.url_station_to_probe);
+        }
+        None => println!("--   no player came in {secs} s"),
+    }
+    let count: gs::GetParticipantCountResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::GetParticipantCount as u32,
+                gs::GetParticipantCountRequest {
+                    game_session_key: GameSessionKey { ..key },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    println!("ok   {} players in the match", count.count);
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::DeleteSession as u32,
+        gs::DeleteSessionRequest { game_session_key: key }.to_bytes(),
+    )
+    .await?;
+    println!("ok   match ended");
+    Ok(())
+}
+
+async fn join(conn: &mut Conn, pid: u32) -> Result<()> {
+    let found: gs::SearchSessionsResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::SearchSessions as u32,
+                gs::SearchSessionsRequest {
+                    game_session_query: GameSessionQuery {
+                        type_id: 1,
+                        query_id: 2,
+                        parameters: properties(&QUICK_MATCH_SEARCH),
+                    },
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    let Some(session) = found.search_results.0.into_iter().next() else {
+        bail!("no quick match found");
+    };
+    let key = session.session_key;
+    println!(
+        "ok   found quick match {} hosted by {:#x} at {}",
+        key.session_id,
+        session.host_pid,
+        session.host_urls.0.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    );
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::JoinSession as u32,
+        gs::JoinSessionRequest {
+            game_session_key: GameSessionKey { ..key },
+        }
+        .to_bytes(),
+    )
+    .await?;
+    println!("ok   joined");
+    let urls: gs::GetParticipantsUrLsResponse = decode(
+        &conn
+            .call(
+                gs::GAME_SESSION_PROTOCOL_ID,
+                gs::GameSessionProtocolMethod::GetParticipantsUrLs as u32,
+                gs::GetParticipantsUrLsRequest {
+                    game_session_key: GameSessionKey { ..key },
+                    participant_ids: QList(vec![session.host_pid, pid]),
+                }
+                .to_bytes(),
+            )
+            .await?,
+    )?;
+    println!("ok   participants' addresses: {:?}", urls);
+    conn.call(
+        nat::NAT_TRAVERSAL_PROTOCOL_ID,
+        nat::NatTraversalProtocolMethod::RequestProbeInitiation as u32,
+        nat::RequestProbeInitiationRequest {
+            url_target_list: QList(session.host_urls.0),
+        }
+        .to_bytes(),
+    )
+    .await?;
+    println!("ok   asked the host to probe this bot");
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::AbandonSession as u32,
+        gs::AbandonSessionRequest { game_session_key: key }.to_bytes(),
+    )
+    .await?;
+    println!("ok   left the match");
     Ok(())
 }

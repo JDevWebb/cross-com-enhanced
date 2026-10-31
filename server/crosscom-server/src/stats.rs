@@ -282,6 +282,10 @@ fn reply_size(request: &ReadRequest, value_len: usize) -> usize {
 /// What a player has stored of a board: (keys, column, value), in keys order.
 pub(crate) type Stored = Vec<(Vec<u32>, u8, Vec<u8>)>;
 
+/// A row of a read's reply: the board's query, the row's keys and its values, in the query's
+/// column order.
+type ReplyRow<'a> = (&'a BoardQuery, &'a [u32], Vec<&'a [u8]>);
+
 fn matches(query: &[u32], keys: &[u32]) -> bool {
     query.len() == keys.len() && query.iter().zip(keys).all(|(&q, &k)| q == u32::MAX || q == k)
 }
@@ -298,7 +302,7 @@ fn read_reply(request: &ReadRequest, zero: &[u8], mut stored: impl FnMut(u32, u8
     let mut out = Vec::new();
     out.write_u32::<LittleEndian>(len(request.players.len())).ok();
     for &pid in &request.players {
-        let mut rows: Vec<(&BoardQuery, &[u32], Vec<&[u8]>)> = Vec::new();
+        let mut rows: Vec<ReplyRow> = Vec::new();
         // Each board once, however often it's asked for; and no more than a reply can carry.
         let mut loaded: Vec<(u8, Stored)> = Vec::new();
         let mut bytes = 0;
@@ -505,10 +509,10 @@ mod tests {
             req.write_u8(1).unwrap();
             req.write_u32::<LittleEndian>(0).unwrap();
             req.write_u32::<LittleEndian>(MAX_COLUMNS).unwrap();
-            req.extend(std::iter::repeat(1).take(MAX_COLUMNS as usize));
+            req.extend(std::iter::repeat_n(1, MAX_COLUMNS as usize));
         }
         req.write_u32::<LittleEndian>(MAX_PLAYERS).unwrap();
-        req.extend(std::iter::repeat(7).take(4 * MAX_PLAYERS as usize));
+        req.extend(std::iter::repeat_n(7, 4 * MAX_PLAYERS as usize));
         let read = parse_read(&req).unwrap();
         assert!(read_reply(&read, &zero_value(7).unwrap(), none).is_err());
     }
