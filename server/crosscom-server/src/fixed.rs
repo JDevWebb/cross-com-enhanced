@@ -120,11 +120,20 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
             id: 110,
             name: "ClansProtocol",
             // The player's clan: none (0). With 1 the game went on to ask for that clan's details.
-            methods: &[Method {
-                id: 13,
-                name: "GetCurUserClan",
-                answer: |_| 0u32.to_bytes(),
-            }],
+            // Method 28 (asked with a 0 as the menus load) answers a list and a u32 (from the
+            // game's codec): none.
+            methods: &[
+                Method {
+                    id: 13,
+                    name: "GetCurUserClan",
+                    answer: |_| 0u32.to_bytes(),
+                },
+                Method {
+                    id: 28,
+                    name: "Method28",
+                    answer: |_| [EMPTY_LIST, [0; 4]].concat(),
+                },
+            ],
         },
         FixedProtocol {
             id: 111,
@@ -193,6 +202,16 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                 id: 1,
                 name: "GetIsVIP",
                 answer: |_| true.to_bytes(),
+            }],
+        },
+        FixedProtocol {
+            id: 5002,
+            name: "OverlordNewsProtocol",
+            // GetNews(predicate, result range) answers one list (from the game's call): no news.
+            methods: &[Method {
+                id: 1,
+                name: "GetNews",
+                answer: |_| EMPTY_LIST.to_vec(),
             }],
         },
         FixedProtocol {
