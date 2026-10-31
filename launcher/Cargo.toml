@@ -1,0 +1,27 @@
+[package]
+name = "crosscom-launcher"
+version = "0.1.0"
+edition = "2021"
+description = "Sets Future Soldier up for a Cross-Com server: finds the game, installs the client, makes your account, and starts the game"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "crosscom-launcher"
+path = "src/main.rs"
+
+[dependencies]
+crosscom-client-common = { path = "../client/common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+ureq = { version = "3.4", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.15"
+winreg = "0.56"
+
+[dev-dependencies]
+tempfile = "3"

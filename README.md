@@ -23,6 +23,10 @@ Future Soldier's PC version talks to Ubisoft's Quazal-based online services, the
 
 Matches themselves are still hosted by the players, as they always were.
 
+## Playing
+
+Put `crosscom-launcher.exe` and the two client DLLs in one folder and run the launcher. It finds the game (Ubisoft Connect or Steam installs, or a folder you choose), checks the server, makes your account if the server allows sign-up, installs the client (keeping the game's own files, which *Restore the game's files* puts back) and starts the game.
+
 To run a server for your group, see [docs/hosting.md](docs/hosting.md).
 
 ## Standing on the shoulders of

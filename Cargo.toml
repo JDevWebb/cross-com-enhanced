@@ -3,6 +3,7 @@ members = [
   "client/common",
   "client/orbit",
   "client/uplay",
+  "launcher",
   "quazal",
   "quazal/quazal-macros",
   "server/crosscom-server",

@@ -6,6 +6,7 @@ use std::fmt;
 use std::path::Path;
 
 use serde::Deserialize;
+use serde::Serialize;
 
 /// The settings file's name, in the game's folder.
 pub const FILE_NAME: &str = "crosscom.toml";
@@ -17,7 +18,7 @@ pub const ONLINE_CONFIG_HOST: &str = "onlineconfigservice.ubi.com";
 /// with its terminating NUL, and a longer one stops the game.
 pub const MAX_LOGIN_FIELD_LEN: usize = 79;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The Cross-Com server, a host name or an address. Without it the game talks to Ubisoft's
