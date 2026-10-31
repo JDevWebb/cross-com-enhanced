@@ -150,6 +150,13 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     let secure = context(config.secure_port);
     let http_listen = SocketAddr::new(config.listen_ip, config.http_port);
     let online_config = online_config::content(public_ip, config.auth_port);
+    let stats = match stats::Store::open(&config.database) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            error!(logger, "couldn't open the statistics in {}: {e}", config.database.display());
+            return ExitCode::FAILURE;
+        }
+    };
 
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, online_config)),
@@ -166,7 +173,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                 for protocol in menu::protocols().into_iter().chain(fixed::protocols()) {
                     handler.register_protocol(protocol);
                 }
-                handler.register_protocol(Box::new(stats::PlayerStatistics));
+                handler.register_protocol(Box::new(stats::PlayerStatistics::new(Arc::clone(&stats))));
             })
         }),
     ];
