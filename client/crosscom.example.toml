@@ -11,3 +11,6 @@ cd_key = "your-cd-key"
 
 # error, warn, info (the default), debug or trace. The log is crosscom.log, next to this file.
 log_level = "info"
+
+# Skip the three splash videos the game plays as it starts (true or false).
+skip_intro_videos = false

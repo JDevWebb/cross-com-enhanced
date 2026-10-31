@@ -30,6 +30,18 @@ pub struct Config {
     pub cd_key: String,
     /// `error`, `warn`, `info` (the default), `debug` or `trace`.
     pub log_level: Option<String>,
+    /// Skip the splash videos the game plays as it starts.
+    pub skip_intro_videos: bool,
+}
+
+/// The splash videos the game plays as it starts, in its `Video` folder.
+pub const INTRO_VIDEOS: [&str; 3] = ["SPL_ESRB_UBI_CLANCY.bik", "SPL_RSE_Logo_fade.bik", "SPL_Intro_Trailer.bik"];
+
+/// Whether `path` is one of the splash videos (by file name, in any case, after `/` or `\\`).
+#[must_use]
+pub fn is_intro_video(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    INTRO_VIDEOS.iter().any(|v| v.eq_ignore_ascii_case(name))
 }
 
 #[derive(Debug)]
@@ -158,6 +170,18 @@ mod tests {
         assert!(matches!(Config::parse(&format!("password = \"{long}\"")), Err(Error::Invalid(_))));
         let longest = "x".repeat(MAX_LOGIN_FIELD_LEN);
         assert!(Config::parse(&format!("password = \"{longest}\"")).is_ok());
+    }
+
+    #[test]
+    fn knows_the_intro_videos_by_name() {
+        assert!(is_intro_video("Video\\SPL_Intro_Trailer.bik"));
+        assert!(is_intro_video("C:/Games/GRFS/video/spl_esrb_ubi_clancy.BIK"));
+        assert!(is_intro_video("SPL_RSE_Logo_fade.bik"));
+        assert!(!is_intro_video("Video\\MP_Intro.bik"));
+        assert!(!is_intro_video("Video\\SPL_Intro_Trailer.bik.bak"));
+        let config = Config::parse("skip_intro_videos = true").unwrap();
+        assert!(config.skip_intro_videos);
+        assert!(!Config::default().skip_intro_videos);
     }
 
     #[test]

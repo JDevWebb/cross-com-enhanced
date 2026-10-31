@@ -13,6 +13,8 @@ mod dll;
 mod net;
 #[cfg(all(windows, target_arch = "x86"))]
 mod orbit;
+#[cfg(windows)]
+mod video;
 
 use std::ffi::CString;
 use std::sync::OnceLock;
@@ -72,6 +74,9 @@ fn start() {
         Err(e) => log::error!("{e}"),
     }
     net::install();
+    if CONFIG.get().is_some_and(|c| c.skip_intro_videos) {
+        video::install();
+    }
 }
 
 #[cfg(test)]
