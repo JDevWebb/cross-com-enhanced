@@ -14,6 +14,7 @@ mod accounts;
 mod config;
 mod fixed;
 mod game_session;
+mod maps;
 mod menu;
 mod online_config;
 mod privileges;
