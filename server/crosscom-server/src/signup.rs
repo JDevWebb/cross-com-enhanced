@@ -29,7 +29,7 @@ const PER_ADDRESS: u32 = 10;
 const ADDRESS_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 const IN_ALL: u32 = 200;
 const ALL_WINDOW: Duration = Duration::from_secs(60 * 60);
-/// Addresses remembered at once; when full, the oldest count goes.
+/// Addresses remembered at once; when full, the count with the fewest attempts goes.
 const MAX_ADDRESSES: usize = 50_000;
 /// The shortest sign-up code a server may set: long enough that guessing it, a few tries a day
 /// from each address, is hopeless.
@@ -67,9 +67,11 @@ impl Limits {
         if self.by_address.len() >= MAX_ADDRESSES && !self.by_address.contains_key(&key) {
             self.by_address.retain(|_, (since, _)| now.duration_since(*since) < ADDRESS_WINDOW);
             if self.by_address.len() >= MAX_ADDRESSES {
-                // Full of live counts: the oldest goes, rather than every new address waiting.
-                if let Some(oldest) = self.by_address.iter().min_by_key(|(_, (since, _))| *since).map(|(k, _)| *k) {
-                    self.by_address.remove(&oldest);
+                // Full of live counts: the one with the fewest attempts goes (the oldest of those),
+                // rather than every new address waiting. An address at its limit only goes once
+                // every other one is too, so filling the table doesn't give it fresh tries.
+                if let Some(least) = self.by_address.iter().min_by_key(|(_, &(since, n))| (n, since)).map(|(k, _)| *k) {
+                    self.by_address.remove(&least);
                 }
             }
         }
@@ -245,6 +247,15 @@ mod tests {
             "a new address still gets in"
         );
         assert_eq!(limits.by_address.len(), MAX_ADDRESSES);
+
+        // An address at its limit isn't pushed out by others that tried once.
+        let mut limits = Limits::default();
+        let guesser: IpAddr = "198.51.100.1".parse().unwrap();
+        while limits.allow_address(guesser, now) {}
+        for i in 0..MAX_ADDRESSES as u32 + 10 {
+            limits.allow_address(IpAddr::from((i | 0x0a00_0000).to_be_bytes()), now);
+        }
+        assert!(!limits.allow_address(guesser, now), "still over its limit");
         assert_eq!(address_key("2001:db8:1:2::5".parse().unwrap()), address_key("2001:db8:1:ffff::9".parse().unwrap()));
     }
 }
