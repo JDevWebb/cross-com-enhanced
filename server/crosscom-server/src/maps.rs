@@ -2,8 +2,8 @@
 //!
 //! Each adversarial map has one world per game mode, and the game loads the world it is given,
 //! so a world key also picks the mode. The game asks GetMapList with the player's match
-//! preferences: a bit per game mode it wants (1 << mode), and a bit per map pack (worked out from
-//! how the game builds the value). A player who asked for Stockade and Team Deathmatch with the
+//! preferences: a bit per game mode it wants (1 << mode; 8 is Guerrilla), and a bit per map pack
+//! (worked out from how the game builds the value). A player who asked for Stockade and Team Deathmatch with the
 //! Arctic Strike maps sends 0x4042. The answer is every world of those modes on those maps.
 
 /// Game modes, as the game numbers them.
@@ -16,6 +16,8 @@ pub mod mode {
     pub const SIEGE: u32 = 5;
     pub const TEAM_DEATHMATCH: u32 = 6;
     pub const TOUCHDOWN: u32 = 7;
+    /// Co-op against waves of enemies: one world per map.
+    pub const GUERRILLA: u32 = 8;
 }
 
 /// Map packs, as bits of the category. The base maps are always offered.
@@ -24,8 +26,10 @@ const ARCTIC: u32 = 0x4000;
 const RAVEN: u32 = 0x8000;
 const KHYBER: u32 = 0x1_0000;
 const PACKS: u32 = ARCTIC | RAVEN | KHYBER;
-/// The mode bits.
-const MODES: u32 = 0xfe;
+/// The mode bits: adversarial (1-7) and Guerrilla (8). Asking for none means every adversarial
+/// mode.
+const MODES: u32 = 0x1fe;
+const ADVERSARIAL: u32 = 0xfe;
 
 pub struct Map {
     /// For reading the table; the game shows its own names.
@@ -57,12 +61,19 @@ pub const MAPS: &[Map] = &[
     Map { name: "Transit", pack: RAVEN, worlds: &[(1, 0xab31_4a2e), (2, 0xab31_491e), (3, 0xab31_4954), (4, 0xab31_4971), (5, 0xab31_4a08), (6, 0xab31_4a46)] },
     Map { name: "Market (Night)", pack: KHYBER, worlds: &[(1, 0xa110_fe1f), (2, 0xa110_fd2e), (3, 0xa110_fd62), (4, 0xa110_fd7f), (5, 0xa110_fdc5), (6, 0xa110_fde8), (7, 0xa110_fe01)] },
     Map { name: "Harbor (Night)", pack: KHYBER, worlds: &[(1, 0xa112_0b05), (2, 0xa112_0a47), (3, 0xa112_0a77), (4, 0xa112_0a95), (5, 0xa112_0aeb), (6, 0xa112_0b1d), (7, 0xa112_0b46)] },
+    // Guerrilla: one world each (which pack Village and Sawmill came with is a guess).
+    Map { name: "Shanty Town", pack: BASE, worlds: &[(8, 0x9f2a_ad81)] },
+    Map { name: "Mansion", pack: BASE, worlds: &[(8, 0x9f2a_e9dd)] },
+    Map { name: "Drilling Ship", pack: BASE, worlds: &[(8, 0x9f2b_a4e9)] },
+    Map { name: "Arctic Base", pack: ARCTIC, worlds: &[(8, 0x9f2e_1b5b)] },
+    Map { name: "Village", pack: RAVEN, worlds: &[(8, 0x9f2e_7cf4)] },
+    Map { name: "Sawmill", pack: KHYBER, worlds: &[(8, 0x5d28_13a3)] },
 ];
 
 /// The worlds a category covers: those of its modes (every mode when it names none) on the base
 /// maps and the packs it names.
 pub fn worlds(category: u32) -> Vec<u32> {
-    let modes = if category & MODES == 0 { MODES } else { category & MODES };
+    let modes = if category & MODES == 0 { ADVERSARIAL } else { category & MODES };
     MAPS.iter()
         .filter(|m| m.pack == BASE || category & PACKS & m.pack != 0)
         .flat_map(|m| m.worlds.iter())
@@ -100,8 +111,20 @@ mod tests {
     }
 
     #[test]
+    fn guerrilla_has_its_own_worlds() {
+        assert_eq!(worlds(1 << mode::GUERRILLA), vec![0x9f2a_ad81, 0x9f2a_e9dd, 0x9f2b_a4e9]);
+        assert_eq!(worlds((1 << mode::GUERRILLA) | ARCTIC).len(), 4);
+        assert!(!worlds(0).contains(&0x9f2a_ad81), "not unless asked for");
+    }
+
+    #[test]
     fn no_modes_means_every_mode_and_the_answer_is_a_list() {
-        let base: usize = MAPS.iter().filter(|m| m.pack == BASE).map(|m| m.worlds.len()).sum();
+        let base: usize = MAPS
+            .iter()
+            .filter(|m| m.pack == BASE)
+            .flat_map(|m| m.worlds)
+            .filter(|(mode, _)| *mode != mode::GUERRILLA)
+            .count();
         assert_eq!(worlds(0).len(), base);
         let reply = map_list(&0x2u32.to_le_bytes());
         assert_eq!(u32::from_le_bytes(reply[..4].try_into().unwrap()) as usize * 4 + 4, reply.len());
