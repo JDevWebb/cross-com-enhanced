@@ -419,7 +419,9 @@ impl<CI> Protocol<CI> for PlayerStatistics {
         };
         let read = parse_read(&request.parameters)?;
         debug!(logger, "PlayerStatistics.{method} {read:?}");
-        read_reply(&read, &zero, |player, board| self.store.rows(player, method - 5, board))
+        let reply = read_reply(&read, &zero, |player, board| self.store.rows(player, method - 5, board))?;
+        debug!(logger, "PlayerStatistics.{method}: replied {} bytes", reply.len());
+        Ok(reply)
     }
 
     fn method_name(&self, method_id: u32) -> Option<String> {
