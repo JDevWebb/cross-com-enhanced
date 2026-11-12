@@ -62,7 +62,7 @@ impl GameSessions {
             session_key: GameSessionKey { type_id: k.0, session_id: k.1 },
             host_pid: session.host,
             host_urls: QList(self.sessions.urls(session.host)),
-            attributes: QList(session.attributes.iter().map(|&(id, value)| Property { id, value }).collect()),
+            attributes: QList(session.properties().into_iter().map(|(id, value)| Property { id, value }).collect()),
         }
     }
 
@@ -400,8 +400,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         if !self.sessions.is_host(pid, k) {
             return Err(Error::AccessDenied);
         }
-        let pids: Vec<u32> = request.public_participant_ids.0.iter().chain(&request.private_participant_ids.0).copied().collect();
-        self.sessions.add(k, &pids).map_err(error)?;
+        self.sessions.add(k, &request.public_participant_ids.0, &request.private_participant_ids.0).map_err(error)?;
         Ok(AddParticipantsResponse)
     }
 

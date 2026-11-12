@@ -26,6 +26,8 @@ pub struct Session {
     /// (id, value), in the order first set.
     pub attributes: Vec<(u32, u32)>,
     pub participants: Vec<u32>,
+    /// Participants in private (invite-only) slots; the rest are in public ones.
+    pub private: Vec<u32>,
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
@@ -37,6 +39,10 @@ pub struct Session {
 /// the session wasn't made by matchmaking (a party, or a custom match).
 pub const PUBLIC_SLOTS: u32 = 3;
 pub const NOT_MATCHMADE: u32 = 7;
+/// Session properties the service keeps: how many public and private slots are taken. A game
+/// joining a session reads both (with 3 and 4), and crashed on a search result without them.
+pub const PUBLIC_TAKEN: u32 = 5;
+pub const PRIVATE_TAKEN: u32 = 6;
 
 impl Session {
     pub fn attribute(&self, id: u32) -> Option<u32> {
@@ -52,7 +58,8 @@ impl Session {
         if self.attribute(NOT_MATCHMADE).unwrap_or(0) != 0 || public == 0 {
             return false;
         }
-        let free = public.saturating_sub(u32::try_from(self.participants.len()).unwrap_or(u32::MAX));
+        let taken = self.participants.iter().filter(|p| !self.private.contains(p)).count();
+        let free = public.saturating_sub(u32::try_from(taken).unwrap_or(u32::MAX));
         parameters.iter().all(|&(id, value)| match id {
             PUBLIC_SLOTS => free >= value.max(1),
             _ => self.attribute(id) == Some(value),
@@ -61,6 +68,18 @@ impl Session {
 
     pub fn has(&self, pid: u32) -> bool {
         self.participants.contains(&pid)
+    }
+
+    /// The properties as the game is given them: the host's, with the taken slots (5 and 6) as
+    /// they are now.
+    pub fn properties(&self) -> Vec<(u32, u32)> {
+        let private = self.participants.iter().filter(|p| self.private.contains(p)).count();
+        let public = self.participants.len() - private;
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let mut properties: Vec<(u32, u32)> = self.attributes.iter().copied().filter(|(id, _)| *id != PUBLIC_TAKEN && *id != PRIVATE_TAKEN).collect();
+        properties.push((PUBLIC_TAKEN, count(public)));
+        properties.push((PRIVATE_TAKEN, count(private)));
+        properties
     }
 
     pub fn joined(&self, pid: u32) -> bool {
@@ -98,7 +117,8 @@ pub struct Sessions {
 struct Inner {
     created: u64,
     sessions: BTreeMap<Key, Session>,
-    urls: HashMap<u32, Vec<StationURL>>,
+    /// Per player: where the server sees it, and the URLs it registered that may be passed on.
+    urls: HashMap<u32, (StationURL, Vec<StationURL>)>,
 }
 
 fn set_attributes(into: &mut Vec<(u32, u32)>, from: &[(u32, u32)]) {
@@ -116,17 +136,39 @@ impl Sessions {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Where `pid` can be reached: first the address the server sees it at, then those it claims
-    /// that may be passed on (see [`claimable`]).
+    /// Where `pid` can be reached: the address the server sees it at, and those it registered that
+    /// may be passed on (see [`claimable`]).
     pub fn set_urls(&self, pid: u32, observed: StationURL, claimed: Vec<StationURL>) {
         let seen: Option<IpAddr> = observed.address.parse().ok();
-        let mut urls = vec![observed];
-        urls.extend(claimed.into_iter().filter(|u| seen.is_some_and(|ip| claimable(u, ip))).take(MAX_URLS - 1));
-        self.lock().urls.insert(pid, urls);
+        let first = claimed.first().cloned();
+        let mut kept: Vec<StationURL> = claimed.into_iter().filter(|u| seen.is_some_and(|ip| claimable(u, ip))).take(MAX_URLS).collect();
+        // None that may be passed on (a player behind a NAT whose public address the game
+        // didn't register): its first URL at the address the server sees, so it keeps the
+        // game's scheme, peer-to-peer port and parameters.
+        if kept.is_empty() {
+            if let Some(mut url) = first {
+                url.address.clone_from(&observed.address);
+                kept.push(url);
+            }
+        }
+        self.lock().urls.insert(pid, (observed, kept));
     }
 
+    /// The URLs other players are given for `pid`: those it registered, as the game wrote them.
+    /// The game reads each one's parameters (`PID`, `RVCID`): a bare address there (the server's
+    /// view of its connection, which used to come first) crashed a joining game. With nothing
+    /// registered, the address the server sees.
     pub fn urls(&self, pid: u32) -> Vec<StationURL> {
-        self.lock().urls.get(&pid).cloned().unwrap_or_default()
+        match self.lock().urls.get(&pid) {
+            Some((_, kept)) if !kept.is_empty() => kept.clone(),
+            Some((observed, _)) => vec![observed.clone()],
+            None => Vec::new(),
+        }
+    }
+
+    /// The URLs `pid` registered that may be passed on, without the server's view.
+    pub fn registered(&self, pid: u32) -> Vec<StationURL> {
+        self.lock().urls.get(&pid).map(|(_, kept)| kept.clone()).unwrap_or_default()
     }
 
     /// A new session hosted by `host`, who is its first participant. A host's oldest sessions
@@ -159,6 +201,7 @@ impl Sessions {
                 host,
                 attributes: attrs,
                 participants: vec![host],
+                private: Vec::new(),
                 joined: vec![host],
                 created,
             },
@@ -187,7 +230,7 @@ impl Sessions {
     }
 
     pub fn join(&self, pid: u32, key: Key) -> Result<(), Error> {
-        self.add(key, &[pid])?;
+        self.add(key, &[pid], &[])?;
         let mut inner = self.lock();
         if let Some(session) = inner.sessions.get_mut(&key) {
             if !session.joined.contains(&pid) {
@@ -197,15 +240,21 @@ impl Sessions {
         Ok(())
     }
 
-    pub fn add(&self, key: Key, pids: &[u32]) -> Result<(), Error> {
+    /// Adds players to public slots (`public`) or private ones (`private`). A player already in
+    /// takes the kind of slot named now.
+    pub fn add(&self, key: Key, public: &[u32], private: &[u32]) -> Result<(), Error> {
         let mut inner = self.lock();
         let session = inner.sessions.get_mut(&key).ok_or(Error::NotFound)?;
-        for &pid in pids {
+        for (&pid, is_private) in public.iter().map(|p| (p, false)).chain(private.iter().map(|p| (p, true))) {
             if !session.participants.contains(&pid) {
                 if session.participants.len() >= MAX_PARTICIPANTS {
                     return Err(Error::Full);
                 }
                 session.participants.push(pid);
+            }
+            session.private.retain(|&p| p != pid);
+            if is_private {
+                session.private.push(pid);
             }
         }
         Ok(())
@@ -217,6 +266,7 @@ impl Sessions {
         let mut inner = self.lock();
         let session = inner.sessions.get_mut(&key).ok_or(Error::NotFound)?;
         session.participants.retain(|p| !pids.contains(p));
+        session.private.retain(|p| !pids.contains(p));
         session.joined.retain(|p| !pids.contains(p));
         match session.participants.first() {
             None => {
@@ -319,19 +369,61 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_seen_address_first_and_only_claims_that_can_be_passed_on() {
+    fn hands_out_only_claims_that_can_be_passed_on() {
         let sessions = Sessions::default();
         let claimed = vec![url("192.168.1.20"), url("100.111.224.124"), url("8.8.8.8"), url("203.0.113.7"), url("not-an-ip")];
         sessions.set_urls(10, url("203.0.113.7"), claimed);
         let kept: Vec<String> = sessions.urls(10).iter().map(|u| u.address.clone()).collect();
-        assert_eq!(kept, vec!["203.0.113.7", "192.168.1.20", "100.111.224.124", "203.0.113.7"]);
+        assert_eq!(kept, vec!["192.168.1.20", "100.111.224.124", "203.0.113.7"]);
+    }
+
+    #[test]
+    fn the_games_urls_keep_their_parameters() {
+        let sessions = Sessions::default();
+        let game: StationURL = "udp:/address=192.168.0.11;port=2346;PID=1048576;RVCID=984263342".parse().unwrap();
+        sessions.set_urls(10, "prudp:/address=192.168.0.11;port=2347".parse().unwrap(), vec![game.clone()]);
+        assert_eq!(sessions.urls(10).iter().map(ToString::to_string).collect::<Vec<_>>(), vec![game.to_string()]);
+    }
+
+    #[test]
+    fn a_player_behind_a_nat_gets_its_url_at_the_address_seen() {
+        let sessions = Sessions::default();
+        let game: StationURL = "udp:/address=8.8.8.8;port=2346;PID=7;RVCID=9".parse().unwrap();
+        sessions.set_urls(10, "prudp:/address=203.0.113.7;port=40000".parse().unwrap(), vec![game]);
+        let urls = sessions.urls(10);
+        assert_eq!(urls.len(), 1);
+        assert_eq!((urls[0].scheme.as_str(), urls[0].address.as_str(), urls[0].port), ("udp", "203.0.113.7", 2346));
+        assert_eq!(urls[0].params.get("RVCID").map(String::as_str), Some("9"));
+    }
+
+    #[test]
+    fn nothing_registered_gives_the_address_seen() {
+        let sessions = Sessions::default();
+        sessions.set_urls(10, url("203.0.113.7"), vec![]);
+        assert_eq!(sessions.urls(10).iter().map(ToString::to_string).collect::<Vec<_>>(), vec![url("203.0.113.7").to_string()]);
+        assert!(sessions.registered(10).is_empty());
+        assert!(sessions.urls(11).is_empty());
+    }
+
+    #[test]
+    fn taken_slots_are_counted_by_kind() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[(3, 12), (4, 0), (5, 99)]).unwrap();
+        sessions.add(key, &[11, 12], &[13]).unwrap();
+        let props = sessions.get(key).unwrap().properties();
+        assert_eq!(props, vec![(3, 12), (4, 0), (5, 3), (6, 1)]);
+        // The host moved to a private slot, and a player leaving frees theirs.
+        sessions.add(key, &[], &[10]).unwrap();
+        sessions.remove(key, &[13]).unwrap();
+        let props = sessions.get(key).unwrap().properties();
+        assert_eq!(&props[2..], &[(5, 2), (6, 1)]);
     }
 
     #[test]
     fn only_players_who_joined_count_as_joined() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[]).unwrap();
-        sessions.add(key, &[11]).unwrap();
+        sessions.add(key, &[11], &[]).unwrap();
         sessions.join(12, key).unwrap();
         let session = sessions.get(key).unwrap();
         assert!(session.has(11) && !session.joined(11), "added by the host only");
@@ -409,7 +501,7 @@ mod tests {
         sessions.join(11, party).unwrap();
         assert!(sessions.share(10, 11) && sessions.share(11, 10));
         assert!(!sessions.share(10, 12));
-        sessions.add(party, &[12]).unwrap();
+        sessions.add(party, &[12], &[]).unwrap();
         assert!(!sessions.share(10, 12), "added by the host, not joined");
         assert!(!sessions.hosts_public(10), "a party isn't public");
         sessions.create(20, 1, &QUICK_MATCH).unwrap();

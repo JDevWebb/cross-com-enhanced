@@ -67,8 +67,15 @@ impl<CI> Protocol<CI> for FixedProtocol {
             );
             return Err(Error::UnknownMethod);
         };
-        debug!(logger, "{}.{}: fixed answer", self.name, method.name);
-        Ok((method.answer)(&request.parameters))
+        let answer = (method.answer)(&request.parameters);
+        // Small requests and answers in full (a map category and its worlds, a dare request):
+        // what the game asked for is how the answers are checked.
+        if request.parameters.len() <= 64 && answer.len() <= 512 {
+            debug!(logger, "{}.{}: fixed answer to {} is {}", self.name, method.name, hex(&request.parameters), hex(&answer));
+        } else {
+            debug!(logger, "{}.{}: fixed answer ({} bytes)", self.name, method.name, answer.len());
+        }
+        Ok(answer)
     }
 
     fn method_name(&self, method_id: u32) -> Option<String> {

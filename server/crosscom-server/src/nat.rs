@@ -51,7 +51,7 @@ struct NatTraversal {
 /// socket), else the address and port the server sees.
 fn own_stations(registered: &[StationURL], observed: &StationURL) -> Vec<StationURL> {
     let mut stations: Vec<StationURL> = Vec::new();
-    for url in registered.iter().skip(1).filter(|u| u.address == observed.address) {
+    for url in registered.iter().filter(|u| u.address == observed.address) {
         if stations.len() < MAX_STATIONS && !stations.iter().any(|s| s.address == url.address && s.port == url.port) {
             stations.push(url.clone());
         }
@@ -146,7 +146,7 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
         let observed: StationURL = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
             .parse()
             .map_err(|_| Error::InternalError)?;
-        let stations = own_stations(&self.sessions.urls(pid), &observed);
+        let stations = own_stations(&self.sessions.registered(pid), &observed);
         self.probe(logger, ctx, pid, ci.address().ip(), &request.url_target_list.0, &stations, client_registry, socket)?;
         Ok(RequestProbeInitiationResponse)
     }
@@ -187,9 +187,8 @@ mod tests {
     #[test]
     fn a_plain_request_has_the_callers_public_stations_probed() {
         let observed = url("prudp:/address=203.0.113.7;port=19259");
-        // As kept: the address seen first, then what the game registered that may be passed on.
+        // As kept: what the game registered that may be passed on.
         let registered = vec![
-            observed.clone(),
             url("udp:/address=203.0.113.7;port=22014;PID=1048577;RVCID=1"),
             url("udp:/address=192.168.1.110;port=2346;PID=1048577;RVCID=1"),
             url("udp:/address=203.0.113.7;port=22014;PID=1048577;RVCID=1"),
@@ -197,7 +196,7 @@ mod tests {
         let stations = own_stations(&registered, &observed);
         assert_eq!(stations.len(), 1);
         assert_eq!((stations[0].address.as_str(), stations[0].port), ("203.0.113.7", 22014));
-        let none = own_stations(std::slice::from_ref(&observed), &observed);
+        let none = own_stations(&[], &observed);
         assert_eq!(none.iter().map(ToString::to_string).collect::<Vec<_>>(), vec![observed.to_string()]);
     }
     #[test]
