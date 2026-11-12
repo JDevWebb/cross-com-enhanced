@@ -803,13 +803,13 @@ where
         match resp {
             Some(Ok(payload)) => {
                 let chunks = payload.chunks(MAX_PAYLOAD_SIZE);
-                for (fid, chunk) in (0..chunks.len()).rev().zip(chunks) {
+                for (fid, chunk) in fragment_ids(chunks.len()).zip(chunks) {
                     let resp = QPacket {
                         source: packet.destination,
                         destination: packet.source,
                         packet_type: PacketType::Data,
                         payload: chunk.to_vec(),
-                        fragment_id: Some(fid as u8),
+                        fragment_id: Some(fid),
                         ..Default::default()
                     };
                     if let Err(e) = self.send_response(&logger, &client, resp, ci) {
@@ -1349,6 +1349,16 @@ pub fn send_packet(logger: &Logger, ctx: &Context, src: &SocketAddr, socket: &Ud
     Ok(sz)
 }
 
+/// The fragment ids of a message sent in `count` packets, in order: 1, 2, 3, ... for the leading
+/// ones and 0 for the last (a message in one packet is just 0). They count on past 255 from 1
+/// again. Numbering them the other way (..., 3, 2, 1, 0) only looks right up to two packets:
+/// Future Soldier drops a reply of more than two numbered so (a player's statistics, 11 packets,
+/// left it waiting on its title screen).
+fn fragment_ids(count: usize) -> impl Iterator<Item = u8> {
+    #[allow(clippy::cast_possible_truncation)] // i % 255 < 255
+    (0..count).map(move |i| if i + 1 == count { 0 } else { (i % 255) as u8 + 1 })
+}
+
 /// Encodes a packet the server sends.
 fn encode_packet(logger: &Logger, ctx: &Context, mut resp: QPacket) -> Vec<u8> {
     if matches!(resp.packet_type, PacketType::Data) {
@@ -1385,6 +1395,16 @@ mod tests {
             payload: data.to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn fragments_are_numbered_up_and_the_last_is_zero() {
+        assert_eq!(fragment_ids(1).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(fragment_ids(2).collect::<Vec<_>>(), vec![1, 0]);
+        assert_eq!(fragment_ids(4).collect::<Vec<_>>(), vec![1, 2, 3, 0]);
+        let many: Vec<u8> = fragment_ids(258).collect();
+        assert_eq!(&many[253..], &[254, 255, 1, 2, 0]);
+        assert!(!many[..257].contains(&0));
     }
 
     fn whole(a: Assembled) -> Option<(u16, Vec<u8>, usize)> {
