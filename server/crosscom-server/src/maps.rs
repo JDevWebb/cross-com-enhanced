@@ -1,10 +1,15 @@
 //! The map list (protocol 121): which worlds a hosted match may vote between.
 //!
 //! Each adversarial map has one world per game mode, and the game loads the world it is given,
-//! so a world key also picks the mode. The game asks GetMapList with the player's match
-//! preferences: a bit per game mode it wants (1 << mode; 8 is Guerrilla), and a bit per map pack
-//! (worked out from how the game builds the value). A player who asked for Stockade and Team Deathmatch with the
-//! Arctic Strike maps sends 0x4042. The answer is every world of those modes on those maps.
+//! so a world key also picks the mode. The game asks GetMapList with a category: a bit per game
+//! mode, `1 << (mode + 2)`, and a bit per map pack. Seen from the game (2026-11-13): Conflict
+//! sends 0x4012 and Decoy 0x4022 (their session property 116 is the same mode number, 2 and 3);
+//! bit 1 is always set and isn't a mode. The answer is every world of those modes on the base
+//! maps and those packs.
+//!
+//! Stockade came with Arctic Strike, base maps included (the pack's config lists every base
+//! map's `_gSTO` world): offered from the base maps, a host without the pack's content was
+//! kicked from its own match ("content that you have not yet downloaded").
 
 /// Game modes, as the game numbers them.
 #[allow(dead_code)]
@@ -26,10 +31,14 @@ const ARCTIC: u32 = 0x4000;
 const RAVEN: u32 = 0x8000;
 const KHYBER: u32 = 0x1_0000;
 const PACKS: u32 = ARCTIC | RAVEN | KHYBER;
+/// A mode's bit in a category.
+const fn mode_bit(mode: u32) -> u32 {
+    1 << (mode + 2)
+}
 /// The mode bits: adversarial (1-7) and Guerrilla (8). Asking for none means every adversarial
 /// mode.
-const MODES: u32 = 0x1fe;
-const ADVERSARIAL: u32 = 0xfe;
+const MODES: u32 = 0x7f8;
+const ADVERSARIAL: u32 = 0x3f8;
 
 pub struct Map {
     /// For reading the table; the game shows its own names.
@@ -74,11 +83,15 @@ pub const MAPS: &[Map] = &[
 /// maps and the packs it names.
 pub fn worlds(category: u32) -> Vec<u32> {
     let modes = if category & MODES == 0 { ADVERSARIAL } else { category & MODES };
+    let has = |pack: u32| pack == BASE || category & PACKS & pack != 0;
     MAPS.iter()
-        .filter(|m| m.pack == BASE || category & PACKS & m.pack != 0)
-        .flat_map(|m| m.worlds.iter())
-        .filter(|(mode, _)| modes & (1 << mode) != 0)
-        .map(|&(_, key)| key)
+        .flat_map(|m| m.worlds.iter().map(move |w| (m.pack, w)))
+        .filter(|&(pack, &(mode, _))| {
+            // Stockade is Arctic Strike's, on every map.
+            let pack = if mode == mode::STOCKADE && pack == BASE { ARCTIC } else { pack };
+            has(pack) && modes & mode_bit(mode) != 0
+        })
+        .map(|(_, &(_, key))| key)
         .collect()
 }
 
@@ -98,22 +111,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_preferences_seen_give_stockade_and_deathmatch_with_arctic_strike() {
-        let worlds = worlds(0x4042);
-        // Pipeline and Harbor's Stockade worlds, and Riot's: the game's vote showed the first two.
-        for key in [0x222a_c79a, 0x222a_cb1f, 0xa033_3e99, 0x3220_cd9f] {
-            assert!(worlds.contains(&key), "{key:#x}");
-        }
-        // Conflict worlds, and maps of packs not asked for, are left out.
-        assert!(!worlds.contains(&0x3220_f4de));
-        assert!(!worlds.contains(&0x3220_f29c));
-        assert_eq!(worlds.len(), 10 + 10 + 3 * 2);
+    fn conflict_as_the_game_asks_gives_conflict_worlds() {
+        let worlds = worlds(0x4012);
+        // Pipeline's and Riot's Conflict worlds.
+        assert!(worlds.contains(&0xa921_1863));
+        assert!(worlds.contains(&0x3220_f4de));
+        // No Stockade or Saboteur worlds, and no packs not asked for.
+        assert!(!worlds.contains(&0x222a_c79a));
+        assert!(!worlds.contains(&0xa920_bdb8));
+        assert!(!worlds.contains(&0x3221_04af));
+        // 9 base maps have a Conflict world (not Rig), and Arctic Strike's 3.
+        assert_eq!(worlds.len(), 9 + 3);
+        assert_eq!(super::worlds(0x4022).len(), 8 + 3, "Decoy: not on Rig or Sand Storm");
+    }
+
+    #[test]
+    fn stockade_needs_arctic_strike_even_on_base_maps() {
+        let stockade = mode_bit(mode::STOCKADE);
+        assert!(worlds(stockade).is_empty());
+        let with_pack = worlds(stockade | ARCTIC);
+        assert!(with_pack.contains(&0x222a_c79a), "Pipeline's Stockade world");
+        assert_eq!(with_pack.len(), 10 + 3);
     }
 
     #[test]
     fn guerrilla_has_its_own_worlds() {
-        assert_eq!(worlds(1 << mode::GUERRILLA), vec![0x9f2a_ad81, 0x9f2a_e9dd, 0x9f2b_a4e9]);
-        assert_eq!(worlds((1 << mode::GUERRILLA) | ARCTIC).len(), 4);
+        let guerrilla = mode_bit(mode::GUERRILLA);
+        assert_eq!(worlds(guerrilla), vec![0x9f2a_ad81, 0x9f2a_e9dd, 0x9f2b_a4e9]);
+        assert_eq!(worlds(guerrilla | ARCTIC).len(), 4);
         assert!(!worlds(0).contains(&0x9f2a_ad81), "not unless asked for");
     }
 
@@ -123,7 +148,7 @@ mod tests {
             .iter()
             .filter(|m| m.pack == BASE)
             .flat_map(|m| m.worlds)
-            .filter(|(mode, _)| *mode != mode::GUERRILLA)
+            .filter(|(mode, _)| *mode != mode::GUERRILLA && *mode != mode::STOCKADE)
             .count();
         assert_eq!(worlds(0).len(), base);
         let reply = map_list(&0x2u32.to_le_bytes());
