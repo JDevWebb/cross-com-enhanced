@@ -14,6 +14,14 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
 /// How the game numbers relationships.
+/// A relationship as the game's friends lists show it (Friends' `by_relationship`): a friend, a
+/// request the player sent (shown on no tab), or one sent to them (Invitations).
+pub mod shown {
+    pub const FRIEND: u8 = 1;
+    pub const SENT: u8 = 2;
+    pub const RECEIVED: u8 = 3;
+}
+
 pub const FRIEND: u8 = 1;
 pub const REQUEST: u8 = 2;
 pub const BLOCKED: u8 = 3;
@@ -201,17 +209,22 @@ impl Friends {
         Self::state(&self.lock(), a, b).ok().flatten() == Some(FRIEND)
     }
 
-    /// Everyone `me` has a relationship with, as the game shows them: friends, the requests
-    /// others sent `me`, and whom `me` blocked. In the order they began.
+    /// Everyone `me` has a relationship with, as the game's GetRelationships lists them, with
+    /// the game's codes (see [`shown`]): friends, the requests `me` sent, and those sent to
+    /// `me` (but not from players `me` blocked). Blocks aren't listed here: the game would show
+    /// them as invitations; they come with GetDetailedList. In the order they began.
     pub fn relationships(&self, me: u32) -> Result<Vec<(u32, u8)>, Error> {
         let db = self.lock();
         let mut query = db.prepare_cached(
-            "SELECT b, state, since FROM relationships WHERE a = ?1 AND state IN (?2, ?3)
-             UNION ALL SELECT r.a, r.state, r.since FROM relationships r WHERE r.b = ?1 AND r.state = ?4
-               AND NOT EXISTS (SELECT 1 FROM relationships x WHERE x.a = ?1 AND x.b = r.a AND x.state = ?3)
+            "SELECT b, ?5, since FROM relationships WHERE a = ?1 AND state = ?2
+             UNION ALL SELECT b, ?6, since FROM relationships WHERE a = ?1 AND state = ?3
+             UNION ALL SELECT r.a, ?7, r.since FROM relationships r WHERE r.b = ?1 AND r.state = ?3
+               AND NOT EXISTS (SELECT 1 FROM relationships x WHERE x.a = ?1 AND x.b = r.a AND x.state = ?4)
              ORDER BY since, 1",
         )?;
-        let rows = query.query_map(params![me, FRIEND, BLOCKED, REQUEST], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = query.query_map(params![me, FRIEND, REQUEST, BLOCKED, shown::FRIEND, shown::SENT, shown::RECEIVED], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -294,14 +307,14 @@ mod tests {
         let f = Friends::in_memory().unwrap();
         assert_eq!(f.request(1, 2), Ok(Requested::Sent));
         assert_eq!(f.request(1, 2), Ok(Requested::Already));
-        assert_eq!(f.relationships(2).unwrap(), vec![(1, REQUEST)], "2 sees 1's request");
-        assert!(f.relationships(1).unwrap().is_empty(), "1 doesn't see its own request as a relationship");
+        assert_eq!(f.relationships(2).unwrap(), vec![(1, shown::RECEIVED)], "2 sees 1's request as sent to it");
+        assert_eq!(f.relationships(1).unwrap(), vec![(2, shown::SENT)], "1 sees its own as sent");
         assert_eq!(f.list(1, REQUEST, false).unwrap(), vec![2]);
         assert_eq!(f.list(2, REQUEST, true).unwrap(), vec![1]);
         assert!(!f.accept(1, 2).unwrap(), "only the one asked can accept");
         assert!(f.accept(2, 1).unwrap());
         assert!(f.are_friends(1, 2) && f.are_friends(2, 1));
-        assert_eq!(f.relationships(1).unwrap(), vec![(2, FRIEND)]);
+        assert_eq!(f.relationships(1).unwrap(), vec![(2, shown::FRIEND)]);
         assert!(f.clear(1, 2).unwrap());
         assert!(!f.are_friends(2, 1));
     }
@@ -324,11 +337,12 @@ mod tests {
         f.accept(2, 1).unwrap();
         f.block(2, 1).unwrap();
         assert!(!f.are_friends(1, 2), "a block ends the friendship");
-        assert_eq!(f.relationships(2).unwrap(), vec![(1, BLOCKED)]);
+        assert!(f.relationships(2).unwrap().is_empty(), "blocks come with GetDetailedList, not here");
+        assert_eq!(f.list(2, BLOCKED, false).unwrap(), vec![1]);
         assert!(f.relationships(1).unwrap().is_empty());
         assert_eq!(f.request(1, 2), Ok(Requested::Dropped), "the protocol answers it as sent");
         assert_eq!(f.list(1, REQUEST, false).unwrap(), vec![2], "the sender's list shows it as any other");
-        assert!(f.relationships(2).unwrap().iter().all(|&(_, r)| r == BLOCKED), "the one blocking never sees it");
+        assert!(f.relationships(2).unwrap().is_empty(), "the one blocking never sees it");
         assert!(f.list(2, REQUEST, true).unwrap().is_empty());
         assert!(!f.accept(2, 1).unwrap(), "nor can accept it while blocking");
         assert!(f.list(1, BLOCKED, true).unwrap().is_empty());

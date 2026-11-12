@@ -136,7 +136,7 @@ impl Social {
             str_name: self.name(pid),
             by_relationship: relationship,
             ui_details: 0,
-            by_status: u8::from(relationship == friends::FRIEND && registry.client_by_user_id(pid).is_some()),
+            by_status: u8::from(relationship == friends::shown::FRIEND && registry.client_by_user_id(pid).is_some()),
         }
     }
 }
