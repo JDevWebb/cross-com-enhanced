@@ -227,6 +227,12 @@ impl Sessions {
             return Err(Error::NotHost);
         }
         set_attributes(&mut session.attributes, attributes);
+        // No longer one a search may offer (made invite-only, or full of private slots): the
+        // players it was offered to, or who chose it, lose that.
+        if !session.matches(&[]) {
+            session.offered.clear();
+            session.wanting.clear();
+        }
         Ok(())
     }
 
@@ -266,7 +272,12 @@ impl Sessions {
     /// chosen that one. Its other offers go, so one player wants one session at a time.
     pub fn choose(&self, pid: u32, host: u32) {
         let mut inner = self.lock();
-        let Some(chosen) = inner.sessions.iter().find(|(_, s)| s.host == host && s.offered.contains(&pid)).map(|(k, _)| *k) else {
+        let Some(chosen) = inner
+            .sessions
+            .iter()
+            .find(|(_, s)| s.host == host && s.offered.contains(&pid) && s.matches(&[]))
+            .map(|(k, _)| *k)
+        else {
             return;
         };
         for (k, session) in &mut inner.sessions {
@@ -365,8 +376,13 @@ impl Sessions {
     /// to make their game reach you.
     pub fn share(&self, a: u32, b: u32) -> bool {
         self.lock().sessions.values().any(|s| {
-            let member = |p: u32| s.joined(p) || s.wanting.contains(&p);
-            member(a) && member(b) && (s.joined(a) || s.joined(b))
+            if s.joined(a) && s.joined(b) {
+                return true;
+            }
+            // A player who chose the session but isn't in yet reaches only its public members,
+            // and only while a search could still offer it.
+            let reaches = |w: u32, m: u32| s.wanting.contains(&w) && s.joined(m) && !s.private.contains(&m) && s.matches(&[]);
+            reaches(a, b) || reaches(b, a)
         })
     }
 
@@ -497,6 +513,29 @@ mod tests {
         sessions.add(key, &[13], &[]).unwrap();
         sessions.remove(key, &[10]).unwrap();
         assert!(sessions.share(12, 13));
+    }
+
+    #[test]
+    fn a_choice_reaches_only_public_members_of_a_session_still_offered() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        sessions.offer(key, 14);
+        sessions.choose(14, 10);
+        sessions.add(key, &[11], &[12]).unwrap();
+        sessions.offer(key, 11);
+        sessions.choose(11, 10);
+        sessions.add(key, &[11], &[]).unwrap();
+        assert!(sessions.share(14, 11), "a public member");
+        sessions.offer(key, 12);
+        sessions.choose(12, 10);
+        sessions.add(key, &[], &[12]).unwrap();
+        assert!(!sessions.share(14, 12), "a private member");
+        // Made invite-only: the choice goes, and an old offer can't be chosen.
+        sessions.offer(key, 15);
+        sessions.update(10, key, &[(3, 0)]).unwrap();
+        assert!(!sessions.share(14, 10));
+        sessions.choose(15, 10);
+        assert!(!sessions.share(15, 10));
     }
 
     #[test]
