@@ -4,8 +4,7 @@
 //! to the online service. This library gives it the ones in `crosscom.toml`. It also sends the
 //! game's lookup of Ubisoft's online config service to the Cross-Com server (`net`).
 //!
-//! Orbit's cloud saves aren't provided: the savegame calls are accepted and do nothing, and the
-//! game carries on without them.
+//! Orbit's cloud saves are kept on this PC instead (`crosscom_client_common::saves`).
 
 #[cfg(windows)]
 mod dll;
