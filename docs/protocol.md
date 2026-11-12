@@ -38,7 +38,7 @@ The game declares 27 protocols with full method signatures; methods are numbered
 | 11 | SecureConnection | sign-in (`RegisterEx`) |
 | 14 | Notification | events the server pushes (section 8) |
 | 20 | Friends | the friends list, requests, blocking (section 8) |
-| 35 | Privileges | what the player may do, including owning each DLC (3000, 3010, 3020) |
+| 35 | Privileges | what the player may do, including owning each DLC pack (9001-9003; 3000, 3010 and 3020 are only trials) |
 | 36 | Tracking (v3) | its tracking configuration and tags |
 | 39 | Localization | the locale |
 | 42 | GameSession | parties, matches and invitations (section 6) |

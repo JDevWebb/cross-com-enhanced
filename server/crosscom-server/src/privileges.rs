@@ -54,11 +54,16 @@ const PRIVILEGES: &[(u32, &str)] = &[
     (0x13C4, "Unlock a Tom Clancy weapon skin"),
     (0x13CE, "Unlock a Splinter Cell weapon skin"),
     (0x13D6, "Unknown privilege"),
-    // The DLC packs, as each one's dlc.ini names its privilege: Arctic Strike, then the second
-    // and third packs. Without them the game treats the DLC as not owned.
-    (3000, "DLC 1: Arctic Strike"),
-    (3010, "DLC 2"),
-    (3020, "DLC 3"),
+    // The DLC packs. The game mounts a pack only when it holds the pack's ownership privilege,
+    // 9001-9003 by the pack's index; without one, a match on that pack's maps (and Stockade,
+    // Arctic Strike's mode, on any map) gets its host kicked for content it hasn't downloaded.
+    (9001, "DLC 1 owned: Arctic Strike"),
+    (9002, "DLC 2 owned"),
+    (9003, "DLC 3 owned"),
+    // Each dlc.ini's TrialPrivilegeID: trials only, they don't make a pack owned.
+    (3000, "DLC 1 trial: Arctic Strike"),
+    (3010, "DLC 2 trial"),
+    (3020, "DLC 3 trial"),
 ];
 
 struct Privileges;

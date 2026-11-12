@@ -156,9 +156,16 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     name: "GetGenericSettings",
                     answer: |_| EMPTY_LIST.to_vec(),
                 },
+                // Both take one privilege ID and answer nothing; succeeding is the answer. 4
+                // unlocks a reward or weapon skin, 5 a trial (IDs 3000-3499).
                 Method {
                     id: 4,
-                    name: "Method4",
+                    name: "UnlockPrivilege",
+                    answer: |_| Vec::new(),
+                },
+                Method {
+                    id: 5,
+                    name: "UnlockPrivilegeTrial",
                     answer: |_| Vec::new(),
                 },
             ],
