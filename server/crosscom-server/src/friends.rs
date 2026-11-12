@@ -234,12 +234,28 @@ impl Friends {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Keeps the message `sender` sent with their open request to `recipient` (the latest one);
-    /// false when there's no such request.
+    /// Keeps the message `sender` sends with their request to `recipient` (the latest one). The
+    /// game sends the message just before the request itself, so it's kept either way; it's only
+    /// shown while a request goes with it (see [`Self::messages`]). False when the sender has
+    /// as many kept as open requests allowed and this would be another.
     pub fn set_message(&self, sender: u32, recipient: u32, body: &str) -> Result<bool, Error> {
         let db = self.lock();
-        if Self::state(&db, sender, recipient)? != Some(REQUEST) {
-            return Ok(false);
+        let (kept, this): (i64, i64) = db.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(recipient = ?2), 0) FROM friend_messages WHERE sender = ?1",
+            params![sender, recipient],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if this == 0 && kept >= MAX_OPEN_REQUESTS {
+            // Those no request went with (refused, cancelled, never sent) make room first.
+            db.execute(
+                "DELETE FROM friend_messages WHERE sender = ?1 AND NOT EXISTS
+                 (SELECT 1 FROM relationships r WHERE r.a = ?1 AND r.b = friend_messages.recipient AND r.state = ?2)",
+                params![sender, REQUEST],
+            )?;
+            let kept: i64 = db.query_row("SELECT COUNT(*) FROM friend_messages WHERE sender = ?1", [sender], |r| r.get(0))?;
+            if kept >= MAX_OPEN_REQUESTS {
+                return Ok(false);
+            }
         }
         let body: String = body.chars().take(MAX_MESSAGE_LEN).collect();
         db.execute(
@@ -333,8 +349,11 @@ mod tests {
     #[test]
     fn messages_go_with_open_requests_only() {
         let f = Friends::in_memory().unwrap();
-        assert!(!f.set_message(1, 2, "hi").unwrap(), "no request");
+        // The game sends the message first, then the request: hidden until the request comes.
+        assert!(f.set_message(1, 2, "hi").unwrap());
+        assert!(f.messages(2).unwrap().is_empty(), "no request yet");
         f.request(1, 2).unwrap();
+        assert_eq!(f.messages(2).unwrap(), vec![(1, "hi".to_string())]);
         assert!(f.set_message(1, 2, &"x".repeat(1000)).unwrap());
         let messages = f.messages(2).unwrap();
         assert_eq!(messages.len(), 1);
@@ -345,5 +364,16 @@ mod tests {
         f.set_message(3, 2, "hello").unwrap();
         f.remove_message(2, 3).unwrap();
         assert!(f.messages(2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sender_keeps_a_bounded_number_of_messages() {
+        let f = Friends::in_memory().unwrap();
+        for to in 0..MAX_OPEN_REQUESTS {
+            assert!(f.set_message(1, 1000 + u32::try_from(to).unwrap(), "hi").unwrap());
+        }
+        // Full of messages no request went with: they make room.
+        assert!(f.set_message(1, 5000, "hi").unwrap());
+        assert!(f.set_message(1, 5000, "again").unwrap(), "replacing one is fine");
     }
 }

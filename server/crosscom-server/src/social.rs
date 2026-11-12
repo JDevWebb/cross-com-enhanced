@@ -507,8 +507,8 @@ impl<CI> messages::FriendMessagesExtensionServiceProtocolServerTrait<CI> for Soc
         _socket: &std::net::UdpSocket,
     ) -> Result<messages::SendFriendInvitationMessageResponse, Error> {
         let me = player(ci)?;
-        // Kept only with an open request from the sender; otherwise quietly dropped, so a
-        // block isn't told.
+        // Kept for the request that follows it, and only shown with one; the answer is the same
+        // either way, so a block isn't told.
         self.friends.set_message(me, request.receipt_pid, &request.message_body).map_err(error)?;
         Ok(messages::SendFriendInvitationMessageResponse)
     }
