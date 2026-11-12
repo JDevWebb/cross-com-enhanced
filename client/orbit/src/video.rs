@@ -1,7 +1,9 @@
 //! Skips the splash videos the game plays as it starts, when `skip_intro_videos` is set.
 //!
-//! The game plays its videos with Bink. Its `BinkOpen` is hooked: for the splash videos it answers
-//! as for a missing file (no movie), and the game goes on to its menus.
+//! The game plays its videos with Bink. Its `BinkOpen` is hooked: a splash video is opened as usual,
+//! then moved to its last frame (`BinkGoto`), so the game sees it end at once and goes on to its
+//! menus. The game can't do without them: answering "no movie" (or the files missing) leaves it
+//! retrying the first video forever on a black screen.
 
 use std::ffi::c_char;
 use std::ffi::c_void;
@@ -14,6 +16,14 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 
 type BinkOpenFn = unsafe extern "stdcall" fn(*const c_char, u32) -> *mut c_void;
+type BinkGotoFn = unsafe extern "stdcall" fn(*mut c_void, u32, i32);
+
+/// binkw32's `BinkGoto`, found when the hook is installed.
+static BINK_GOTO: std::sync::OnceLock<BinkGotoFn> = std::sync::OnceLock::new();
+
+/// Where an open movie's frame count is: the third `u32` of Bink's movie structure (after the
+/// width and height).
+const FRAMES_INDEX: usize = 2;
 
 /// `BinkOpen`'s flag for "the name is an open file handle".
 const BINK_FILE_HANDLE: u32 = 0x0080_0000;
@@ -34,6 +44,11 @@ pub(crate) fn install() {
             error!("binkw32.dll has no BinkOpen; the intro videos will play");
             return;
         };
+        let Some(goto) = GetProcAddress(module, c"_BinkGoto@12".as_ptr().cast()) else {
+            error!("binkw32.dll has no BinkGoto; the intro videos will play");
+            return;
+        };
+        let _ = BINK_GOTO.set(std::mem::transmute::<unsafe extern "system" fn() -> isize, BinkGotoFn>(goto));
         std::mem::transmute::<unsafe extern "system" fn() -> isize, BinkOpenFn>(proc)
     };
     let result = unsafe { BinkOpen.initialize(target, |name, flags| open(name, flags)).and_then(|hook| hook.enable()) };
@@ -44,12 +59,17 @@ pub(crate) fn install() {
 }
 
 fn open(name: *const c_char, flags: u32) -> *mut c_void {
-    if !name.is_null() && flags & BINK_FILE_HANDLE == 0 {
-        let path = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        if crosscom_client_common::config::is_intro_video(&path) {
-            info!("Skipped {path}");
-            return std::ptr::null_mut();
+    let movie = unsafe { BinkOpen.call(name, flags) };
+    if movie.is_null() || name.is_null() || flags & BINK_FILE_HANDLE != 0 {
+        return movie;
+    }
+    let path = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    if crosscom_client_common::config::is_intro_video(&path) {
+        if let Some(goto) = BINK_GOTO.get() {
+            let frames = unsafe { movie.cast::<u32>().add(FRAMES_INDEX).read() };
+            unsafe { goto(movie, frames, 0) };
+            info!("Skipped {path} (to frame {frames})");
         }
     }
-    unsafe { BinkOpen.call(name, flags) }
+    movie
 }
