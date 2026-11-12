@@ -93,6 +93,18 @@ impl NatTraversal {
         if targets.len() > MAX_TARGETS {
             return Err(Error::AccessDenied);
         }
+        // Asking to reach a host whose session a search offered: the caller chose it. Noted for
+        // every target first, as the game asks for the session's members and its host at once.
+        for url in targets {
+            let target = url
+                .params
+                .get("RVCID")
+                .and_then(|c| c.parse::<quazal::ConnectionID>().ok())
+                .and_then(|c| client_registry.client_by_connection_id(c));
+            if let Some(other) = target.and_then(|t| t.try_borrow().ok().and_then(|t| t.user_id)).filter(|&p| p != caller) {
+                self.sessions.choose(caller, other);
+            }
+        }
         for url in targets {
             let Some(connection_id) = url.params.get("RVCID").and_then(|c| c.parse::<quazal::ConnectionID>().ok()) else {
                 warn!(logger, "Not probing {url}: it has no RVCID");

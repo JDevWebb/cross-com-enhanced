@@ -205,8 +205,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .filter(|(_, s)| s.host != pid)
             .take(MAX_RESULTS)
             .collect();
-        // The game joins a session it found by asking its host, who then adds it: being offered
-        // the session is the player's half of joining.
+        // The game joins a session it found by reaching its host (a NAT probe), who then adds
+        // it. Being offered a session gives nothing yet; reaching for its host is the choice
+        // (see `Sessions::choose`).
         for (k, _) in &found {
             self.sessions.offer(*k, pid);
         }

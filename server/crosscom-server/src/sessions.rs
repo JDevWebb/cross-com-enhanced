@@ -28,9 +28,13 @@ pub struct Session {
     pub participants: Vec<u32>,
     /// Participants in private (invite-only) slots; the rest are in public ones.
     pub private: Vec<u32>,
-    /// Players a search offered this session to (the most recent [`MAX_OFFERED`]): the host
-    /// adding one of them is that player joining.
+    /// Players a search offered this session to (the most recent [`MAX_OFFERED`]). Being offered
+    /// gives nothing by itself: a search offers several sessions.
     offered: Vec<u32>,
+    /// Players who then chose this session, by asking to reach its host (the game's next step
+    /// after a search). They may reach its members, and the host adding one is that player
+    /// joining.
+    wanting: Vec<u32>,
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
@@ -208,6 +212,7 @@ impl Sessions {
                 participants: vec![host],
                 private: Vec::new(),
                 offered: Vec::new(),
+                wanting: Vec::new(),
                 joined: vec![host],
                 created,
             },
@@ -257,6 +262,22 @@ impl Sessions {
         }
     }
 
+    /// `pid` asks to reach `host`: if a search offered `pid` a session `host` hosts, `pid` has
+    /// chosen that one. Its other offers go, so one player wants one session at a time.
+    pub fn choose(&self, pid: u32, host: u32) {
+        let mut inner = self.lock();
+        let Some(chosen) = inner.sessions.iter().find(|(_, s)| s.host == host && s.offered.contains(&pid)).map(|(k, _)| *k) else {
+            return;
+        };
+        for (k, session) in &mut inner.sessions {
+            session.offered.retain(|&p| p != pid);
+            session.wanting.retain(|&p| p != pid);
+            if *k == chosen {
+                session.wanting.push(pid);
+            }
+        }
+    }
+
     /// Adds players to public slots (`public`) or private ones (`private`). A player already in
     /// takes the kind of slot named now.
     pub fn add(&self, key: Key, public: &[u32], private: &[u32]) -> Result<(), Error> {
@@ -273,8 +294,11 @@ impl Sessions {
             if is_private {
                 session.private.push(pid);
             }
-            if session.offered.contains(&pid) && !session.joined.contains(&pid) {
-                session.joined.push(pid);
+            if session.wanting.contains(&pid) {
+                session.wanting.retain(|&p| p != pid);
+                if !session.joined.contains(&pid) {
+                    session.joined.push(pid);
+                }
             }
         }
         Ok(())
@@ -287,6 +311,8 @@ impl Sessions {
         let session = inner.sessions.get_mut(&key).ok_or(Error::NotFound)?;
         session.participants.retain(|p| !pids.contains(p));
         session.private.retain(|p| !pids.contains(p));
+        session.offered.retain(|p| !pids.contains(p));
+        session.wanting.retain(|p| !pids.contains(p));
         session.joined.retain(|p| !pids.contains(p));
         match session.participants.first() {
             None => {
@@ -334,10 +360,14 @@ impl Sessions {
         found
     }
 
-    /// Whether `a` and `b` joined a session together (or host it): a player a host merely added
-    /// doesn't count, or adding someone would be a way to make their game reach you.
+    /// Whether `a` and `b` joined a session together (or host it), or one chose a session the
+    /// other joined: a player a host merely added doesn't count, or adding someone would be a way
+    /// to make their game reach you.
     pub fn share(&self, a: u32, b: u32) -> bool {
-        self.lock().sessions.values().any(|s| s.joined(a) && s.joined(b))
+        self.lock().sessions.values().any(|s| {
+            let member = |p: u32| s.joined(p) || s.wanting.contains(&p);
+            member(a) && member(b) && (s.joined(a) || s.joined(b))
+        })
     }
 
     /// Whether `pid` hosts a session a search may offer: anyone may be on their way into it.
@@ -440,19 +470,44 @@ mod tests {
     }
 
     #[test]
-    fn a_player_offered_the_session_and_added_by_its_host_has_joined() {
+    fn a_player_joins_by_choosing_an_offered_session_and_being_added() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        let other = sessions.create(20, 1, &[(3, 12)]).unwrap();
+        // Added without asking: nothing.
         sessions.add(key, &[11], &[]).unwrap();
-        assert!(!sessions.share(10, 11), "added without asking");
+        assert!(!sessions.share(10, 11));
+        // Offered both by a search: still nothing, and neither host may add them in.
         sessions.offer(key, 12);
-        sessions.add(key, &[12], &[]).unwrap();
+        sessions.offer(other, 12);
+        sessions.add(other, &[12], &[]).unwrap();
+        assert!(!sessions.share(20, 12));
+        // Choosing one (asking to reach its host) lets it reach that session's members only.
+        sessions.choose(12, 10);
         assert!(sessions.share(10, 12));
+        assert!(!sessions.share(20, 12));
+        // A host it wasn't offered can't be chosen.
+        sessions.choose(12, 30);
+        assert!(sessions.share(10, 12));
+        sessions.add(key, &[12], &[]).unwrap();
+        assert!(sessions.get(key).unwrap().joined(12));
         // After the host leaves, the players who joined still share it.
         sessions.offer(key, 13);
+        sessions.choose(13, 10);
         sessions.add(key, &[13], &[]).unwrap();
         sessions.remove(key, &[10]).unwrap();
         assert!(sessions.share(12, 13));
+    }
+
+    #[test]
+    fn two_players_merely_wanting_a_session_dont_share_it() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        for p in [12, 13] {
+            sessions.offer(key, p);
+            sessions.choose(p, 10);
+        }
+        assert!(!sessions.share(12, 13));
     }
 
     #[test]
