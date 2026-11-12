@@ -28,6 +28,9 @@ pub struct Session {
     pub participants: Vec<u32>,
     /// Participants in private (invite-only) slots; the rest are in public ones.
     pub private: Vec<u32>,
+    /// Players a search offered this session to (the most recent [`MAX_OFFERED`]): the host
+    /// adding one of them is that player joining.
+    offered: Vec<u32>,
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
@@ -41,6 +44,8 @@ pub const PUBLIC_SLOTS: u32 = 3;
 pub const NOT_MATCHMADE: u32 = 7;
 /// Session properties the service keeps: how many public and private slots are taken. A game
 /// joining a session reads both (with 3 and 4), and crashed on a search result without them.
+/// How many players a session remembers having been offered to.
+const MAX_OFFERED: usize = 64;
 pub const PUBLIC_TAKEN: u32 = 5;
 pub const PRIVATE_TAKEN: u32 = 6;
 
@@ -202,6 +207,7 @@ impl Sessions {
                 attributes: attrs,
                 participants: vec![host],
                 private: Vec::new(),
+                offered: Vec::new(),
                 joined: vec![host],
                 created,
             },
@@ -240,6 +246,17 @@ impl Sessions {
         Ok(())
     }
 
+    /// Notes that a search offered the session to `pid`.
+    pub fn offer(&self, key: Key, pid: u32) {
+        if let Some(session) = self.lock().sessions.get_mut(&key) {
+            session.offered.retain(|&p| p != pid);
+            if session.offered.len() >= MAX_OFFERED {
+                session.offered.remove(0);
+            }
+            session.offered.push(pid);
+        }
+    }
+
     /// Adds players to public slots (`public`) or private ones (`private`). A player already in
     /// takes the kind of slot named now.
     pub fn add(&self, key: Key, public: &[u32], private: &[u32]) -> Result<(), Error> {
@@ -255,6 +272,9 @@ impl Sessions {
             session.private.retain(|&p| p != pid);
             if is_private {
                 session.private.push(pid);
+            }
+            if session.offered.contains(&pid) && !session.joined.contains(&pid) {
+                session.joined.push(pid);
             }
         }
         Ok(())
@@ -417,6 +437,22 @@ mod tests {
         sessions.remove(key, &[13]).unwrap();
         let props = sessions.get(key).unwrap().properties();
         assert_eq!(&props[2..], &[(5, 2), (6, 1)]);
+    }
+
+    #[test]
+    fn a_player_offered_the_session_and_added_by_its_host_has_joined() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        sessions.add(key, &[11], &[]).unwrap();
+        assert!(!sessions.share(10, 11), "added without asking");
+        sessions.offer(key, 12);
+        sessions.add(key, &[12], &[]).unwrap();
+        assert!(sessions.share(10, 12));
+        // After the host leaves, the players who joined still share it.
+        sessions.offer(key, 13);
+        sessions.add(key, &[13], &[]).unwrap();
+        sessions.remove(key, &[10]).unwrap();
+        assert!(sessions.share(12, 13));
     }
 
     #[test]

@@ -198,9 +198,20 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<SearchSessionsResponse, Error> {
         let pid = player(ci)?;
         let query = &request.game_session_query;
-        let found = self.sessions.find(query.type_id, &properties(&query.parameters), MAX_RESULTS + 1);
+        let found: Vec<_> = self
+            .sessions
+            .find(query.type_id, &properties(&query.parameters), MAX_RESULTS + 1)
+            .into_iter()
+            .filter(|(_, s)| s.host != pid)
+            .take(MAX_RESULTS)
+            .collect();
+        // The game joins a session it found by asking its host, who then adds it: being offered
+        // the session is the player's half of joining.
+        for (k, _) in &found {
+            self.sessions.offer(*k, pid);
+        }
         Ok(SearchSessionsResponse {
-            search_results: QList(found.into_iter().filter(|(_, s)| s.host != pid).take(MAX_RESULTS).map(|r| self.result(r)).collect()),
+            search_results: QList(found.into_iter().map(|r| self.result(r)).collect()),
         })
     }
 
