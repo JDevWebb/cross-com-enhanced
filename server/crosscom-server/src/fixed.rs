@@ -107,6 +107,28 @@ fn packed_date_time(unix: u64) -> u64 {
     second | minute << 6 | hour << 12 | day << 17 | month << 22 | year << 26
 }
 
+/// The most players one per-player answer covers (the game asks about a lobby or a page of
+/// search results).
+const MAX_PLAYERS: usize = 256;
+
+/// A list with one entry per player in a request that is a list<u32> of PIDs.
+fn per_player(parameters: &[u8], entry: impl Fn(u32) -> Vec<u8>) -> Vec<u8> {
+    let count = parameters.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
+    let pids: Vec<u32> = parameters
+        .get(4..)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .take(count.min(MAX_PLAYERS))
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    #[allow(clippy::cast_possible_truncation)] // at most MAX_PLAYERS
+    let mut out = (pids.len() as u32).to_le_bytes().to_vec();
+    for pid in pids {
+        out.extend(entry(pid));
+    }
+    out
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -117,11 +139,23 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
         FixedProtocol {
             id: 109,
             name: "RichPresenceProtocol",
-            methods: &[Method {
-                id: 1,
-                name: "StartPresence",
-                answer: |_| Vec::new(),
-            }],
+            methods: &[
+                Method {
+                    id: 1,
+                    name: "StartPresence",
+                    answer: |_| Vec::new(),
+                },
+                // GetPresence(list<pid>) answers list<{ pid, connected: u8, phrase: u32, data:
+                // u16-length bytes }>, matched by pid (from the game's decoder). Asked about
+                // strangers too (Find Friends' results), so everyone shows as offline here;
+                // friends' status comes with the friends list. The data stays empty: the game
+                // copies it unchecked into a fixed buffer.
+                Method {
+                    id: 2,
+                    name: "GetPresence",
+                    answer: |parameters| per_player(parameters, |pid| [&pid.to_le_bytes()[..], &[0], &[0; 4], &[0; 2]].concat()),
+                },
+            ],
         },
         FixedProtocol {
             id: 110,
@@ -134,6 +168,13 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     id: 13,
                     name: "GetCurUserClan",
                     answer: |_| 0u32.to_bytes(),
+                },
+                // GetClanIds(list<pid>) answers one clan ID per player, in order (from the
+                // game's decoder): 0, no clan, so it never asks for tags (method 27).
+                Method {
+                    id: 26,
+                    name: "GetClanIds",
+                    answer: |parameters| per_player(parameters, |_| 0u32.to_le_bytes().to_vec()),
                 },
                 Method {
                     id: 28,
@@ -261,6 +302,16 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
 #[cfg(test)]
 mod tests {
     use super::packed_date_time;
+    use super::per_player;
+
+    #[test]
+    fn per_player_answers_one_entry_per_pid_asked() {
+        let asked = [2u32, 0x10_0000, 0x10_0003].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        assert_eq!(per_player(&asked, |_| vec![0; 4]), [vec![2, 0, 0, 0], vec![0; 8]].concat());
+        // As many as are really there, whatever the count says.
+        assert_eq!(per_player(&[9, 0, 0, 0, 1, 0, 0, 0], |p| vec![p as u8]), vec![1, 0, 0, 0, 1]);
+        assert_eq!(per_player(&[], |_| vec![1]), vec![0, 0, 0, 0]);
+    }
 
     #[test]
     fn packs_a_date_the_quazal_way() {
