@@ -11,21 +11,28 @@
 //! map's `_gSTO` world): offered from the base maps, a host without the pack's content was
 //! kicked from its own match ("content that you have not yet downloaded").
 
-/// Game modes, as the game numbers them.
+/// Game modes, as the game numbers them (its world list and the category agree: Stockade
+/// asks with mode 6 and gets Stockade worlds).
 #[allow(dead_code)]
 pub mod mode {
-    pub const STOCKADE: u32 = 1;
+    /// Worlds named `_gSTO`, listed by Arctic Strike's config; no category seen asks for them.
+    pub const STO_WORLDS: u32 = 1;
     pub const CONFLICT: u32 = 2;
     pub const DECOY: u32 = 3;
-    pub const SAFEHOUSE: u32 = 4;
+    pub const SABOTEUR: u32 = 4;
     pub const SIEGE: u32 = 5;
-    pub const TEAM_DEATHMATCH: u32 = 6;
-    pub const TOUCHDOWN: u32 = 7;
+    /// Downloadable: on every map.
+    pub const STOCKADE: u32 = 6;
+    /// Downloadable: on the night maps only.
+    pub const TAKEOVER: u32 = 7;
     /// Co-op against waves of enemies: one world per map.
     pub const GUERRILLA: u32 = 8;
 }
 
-/// Map packs, as bits of the category. The base maps are always offered.
+/// Map packs, as bits of the category. The base maps are always offered. Which pack a world
+/// came with is read from the game's data: Arctic Strike's config lists its worlds, and each
+/// pack's bigfile carries the world list as it stood with that pack (the night maps are in the
+/// first pack's, Switchback, Palace and Transit only from the second's).
 const BASE: u32 = 0;
 const ARCTIC: u32 = 0x4000;
 const RAVEN: u32 = 0x8000;
@@ -68,8 +75,8 @@ pub const MAPS: &[Map] = &[
     Map { name: "Switchback", pack: RAVEN, worlds: &[(1, 0x3220_f29c), (2, 0x3221_04af), (3, 0x3221_050c), (4, 0x3221_053c), (5, 0x3221_0559), (6, 0x3220_f094)] },
     Map { name: "Palace", pack: RAVEN, worlds: &[(1, 0x3220_f0e6), (2, 0x3221_0604), (3, 0x3221_0661), (4, 0x3221_0691), (5, 0x3221_06ae), (6, 0x3220_f0ab)] },
     Map { name: "Transit", pack: RAVEN, worlds: &[(1, 0xab31_4a2e), (2, 0xab31_491e), (3, 0xab31_4954), (4, 0xab31_4971), (5, 0xab31_4a08), (6, 0xab31_4a46)] },
-    Map { name: "Market (Night)", pack: KHYBER, worlds: &[(1, 0xa110_fe1f), (2, 0xa110_fd2e), (3, 0xa110_fd62), (4, 0xa110_fd7f), (5, 0xa110_fdc5), (6, 0xa110_fde8), (7, 0xa110_fe01)] },
-    Map { name: "Harbor (Night)", pack: KHYBER, worlds: &[(1, 0xa112_0b05), (2, 0xa112_0a47), (3, 0xa112_0a77), (4, 0xa112_0a95), (5, 0xa112_0aeb), (6, 0xa112_0b1d), (7, 0xa112_0b46)] },
+    Map { name: "Market (Night)", pack: ARCTIC, worlds: &[(1, 0xa110_fe1f), (2, 0xa110_fd2e), (3, 0xa110_fd62), (4, 0xa110_fd7f), (5, 0xa110_fdc5), (6, 0xa110_fde8), (7, 0xa110_fe01)] },
+    Map { name: "Harbor (Night)", pack: ARCTIC, worlds: &[(1, 0xa112_0b05), (2, 0xa112_0a47), (3, 0xa112_0a77), (4, 0xa112_0a95), (5, 0xa112_0aeb), (6, 0xa112_0b1d), (7, 0xa112_0b46)] },
     // Guerrilla: one world each (which pack Village and Sawmill came with is a guess).
     Map { name: "Shanty Town", pack: BASE, worlds: &[(8, 0x9f2a_ad81)] },
     Map { name: "Mansion", pack: BASE, worlds: &[(8, 0x9f2a_e9dd)] },
@@ -79,6 +86,9 @@ pub const MAPS: &[Map] = &[
     Map { name: "Sawmill", pack: KHYBER, worlds: &[(8, 0x5d28_13a3)] },
 ];
 
+/// Worlds of a base map that came with a later pack (from the second pack's world list).
+const SECOND_PACK_WORLDS: &[u32] = &[0x3220_c22c];
+
 /// The worlds a category covers: those of its modes (every mode when it names none) on the base
 /// maps and the packs it names.
 pub fn worlds(category: u32) -> Vec<u32> {
@@ -86,9 +96,10 @@ pub fn worlds(category: u32) -> Vec<u32> {
     let has = |pack: u32| pack == BASE || category & PACKS & pack != 0;
     MAPS.iter()
         .flat_map(|m| m.worlds.iter().map(move |w| (m.pack, w)))
-        .filter(|&(pack, &(mode, _))| {
-            // Stockade is Arctic Strike's, on every map.
-            let pack = if mode == mode::STOCKADE && pack == BASE { ARCTIC } else { pack };
+        .filter(|&(pack, &(mode, key))| {
+            let pack = if SECOND_PACK_WORLDS.contains(&key) { RAVEN } else { pack };
+            // Arctic Strike's `_gSTO` worlds are on every map.
+            let pack = if mode == mode::STO_WORLDS && pack == BASE { ARCTIC } else { pack };
             has(pack) && modes & mode_bit(mode) != 0
         })
         .map(|(_, &(_, key))| key)
@@ -120,18 +131,31 @@ mod tests {
         assert!(!worlds.contains(&0x222a_c79a));
         assert!(!worlds.contains(&0xa920_bdb8));
         assert!(!worlds.contains(&0x3221_04af));
-        // 9 base maps have a Conflict world (not Rig), and Arctic Strike's 3.
-        assert_eq!(worlds.len(), 9 + 3);
-        assert_eq!(super::worlds(0x4022).len(), 8 + 3, "Decoy: not on Rig or Sand Storm");
+        // 9 base maps have a Conflict world (not Rig), Arctic Strike's 3 and the 2 night maps.
+        assert_eq!(worlds.len(), 9 + 3 + 2);
+        assert_eq!(super::worlds(0x4022).len(), 8 + 3 + 2, "Decoy: not on Rig or Sand Storm");
     }
 
     #[test]
-    fn stockade_needs_arctic_strike_even_on_base_maps() {
-        let stockade = mode_bit(mode::STOCKADE);
-        assert!(worlds(stockade).is_empty());
-        let with_pack = worlds(stockade | ARCTIC);
-        assert!(with_pack.contains(&0x222a_c79a), "Pipeline's Stockade world");
-        assert_eq!(with_pack.len(), 10 + 3);
+    fn stockade_and_takeover_as_the_game_asks() {
+        // Seen from the game: Stockade 0xc102, Takeover 0xc202 (Arctic and the second pack).
+        let stockade = worlds(0xc102);
+        assert!(stockade.contains(&0x3220_cd6e), "Pipeline's Stockade world");
+        assert!(stockade.contains(&0x3220_c22c), "Overpass's, from the second pack");
+        assert!(stockade.contains(&0xab31_4a46), "Transit's");
+        // 10 base maps, 3 Arctic Strike, 3 second-pack and the 2 night maps.
+        assert_eq!(stockade.len(), 10 + 3 + 3 + 2);
+        assert_eq!(worlds(0xc202), vec![0xa110_fe01, 0xa112_0b46], "Takeover: the night maps");
+        assert!(!worlds(mode_bit(mode::STOCKADE) | ARCTIC).contains(&0x3220_c22c));
+    }
+
+    #[test]
+    fn the_sto_worlds_need_arctic_strike_even_on_base_maps() {
+        let sto = mode_bit(mode::STO_WORLDS);
+        assert!(worlds(sto).is_empty());
+        let with_pack = worlds(sto | ARCTIC);
+        assert!(with_pack.contains(&0x222a_c79a), "Pipeline's");
+        assert_eq!(with_pack.len(), 10 + 3 + 2);
     }
 
     #[test]
@@ -148,7 +172,7 @@ mod tests {
             .iter()
             .filter(|m| m.pack == BASE)
             .flat_map(|m| m.worlds)
-            .filter(|(mode, _)| *mode != mode::GUERRILLA && *mode != mode::STOCKADE)
+            .filter(|(mode, key)| *mode != mode::GUERRILLA && *mode != mode::STO_WORLDS && !SECOND_PACK_WORLDS.contains(key))
             .count();
         assert_eq!(worlds(0).len(), base);
         let reply = map_list(&0x2u32.to_le_bytes());
