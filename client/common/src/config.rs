@@ -33,7 +33,14 @@ pub struct Config {
     pub log_level: Option<String>,
     /// Skip the splash videos the game plays as it starts.
     pub skip_intro_videos: bool,
+    /// The fewest players a Quick Match (ranked) lobby needs before it starts. The game's own
+    /// data asks for 8 (6 in the smaller modes), which a small community rarely reaches; unset
+    /// keeps the game's numbers.
+    pub quick_match_min_players: Option<u8>,
 }
+
+/// The fewest players a match can be played with.
+pub const MIN_QUICK_MATCH_PLAYERS: u8 = 2;
 
 /// The splash videos the game plays as it starts, in its `Video` folder.
 pub const INTRO_VIDEOS: [&str; 3] = ["SPL_ESRB_UBI_CLANCY.bik", "SPL_RSE_Logo_fade.bik", "SPL_Intro_Trailer.bik"];
@@ -88,6 +95,11 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        if let Some(n) = self.quick_match_min_players {
+            if !(MIN_QUICK_MATCH_PLAYERS..=12).contains(&n) {
+                return Err(Error::Invalid(format!("quick_match_min_players is {MIN_QUICK_MATCH_PLAYERS} to 12, not {n}")));
+            }
+        }
         for (name, value) in [("username", &self.username), ("password", &self.password), ("cd_key", &self.cd_key)] {
             if value.len() > MAX_LOGIN_FIELD_LEN {
                 return Err(Error::Invalid(format!("{name} is longer than {MAX_LOGIN_FIELD_LEN} characters")));
@@ -195,5 +207,13 @@ mod tests {
         assert_eq!(config.redirect("OnlineConfigService.Ubi.com"), Some("10.0.0.5"));
         assert_eq!(config.redirect("www.ubi.com"), None);
         assert_eq!(Config::default().redirect(ONLINE_CONFIG_HOST), None);
+    }
+
+    #[test]
+    fn the_quick_match_minimum_is_two_to_twelve() {
+        assert_eq!(Config::parse("quick_match_min_players = 2").unwrap().quick_match_min_players, Some(2));
+        assert!(Config::parse("quick_match_min_players = 1").is_err());
+        assert!(Config::parse("quick_match_min_players = 13").is_err());
+        assert_eq!(Config::parse("").unwrap().quick_match_min_players, None);
     }
 }

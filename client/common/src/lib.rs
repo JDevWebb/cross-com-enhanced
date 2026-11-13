@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod logging;
+pub mod quick_match;
 pub mod saves;
 
 use std::path::PathBuf;

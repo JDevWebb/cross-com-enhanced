@@ -13,6 +13,8 @@ mod net;
 #[cfg(all(windows, target_arch = "x86"))]
 mod orbit;
 #[cfg(windows)]
+mod quick_match;
+#[cfg(windows)]
 mod video;
 
 use std::ffi::CString;
@@ -75,6 +77,9 @@ fn start() {
     net::install();
     if CONFIG.get().is_some_and(|c| c.skip_intro_videos) {
         video::install();
+    }
+    if let Some(players) = CONFIG.get().and_then(|c| c.quick_match_min_players) {
+        quick_match::install(players);
     }
 }
 
