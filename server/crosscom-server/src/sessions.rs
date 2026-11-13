@@ -35,6 +35,9 @@ pub struct Session {
     /// after a search). They may reach its members, and the host adding one is that player
     /// joining.
     wanting: Vec<u32>,
+    /// Players a member invited (friends only, see `game_session`), until they answer or are
+    /// added: they may reach the session's members, and the host adding one is them joining.
+    invited: Vec<u32>,
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
@@ -213,6 +216,7 @@ impl Sessions {
                 private: Vec::new(),
                 offered: Vec::new(),
                 wanting: Vec::new(),
+                invited: Vec::new(),
                 joined: vec![host],
                 created,
             },
@@ -255,6 +259,17 @@ impl Sessions {
             }
         }
         Ok(())
+    }
+
+    /// Notes that a member invited `pid` into the session (or, with `invited` false, that the
+    /// invitation was declined or cancelled).
+    pub fn invite(&self, key: Key, pid: u32, invited: bool) {
+        if let Some(session) = self.lock().sessions.get_mut(&key) {
+            session.invited.retain(|&p| p != pid);
+            if invited && session.invited.len() < MAX_OFFERED {
+                session.invited.push(pid);
+            }
+        }
     }
 
     /// Notes that a search offered the session to `pid`.
@@ -305,8 +320,9 @@ impl Sessions {
             if is_private {
                 session.private.push(pid);
             }
-            if session.wanting.contains(&pid) {
+            if session.wanting.contains(&pid) || session.invited.contains(&pid) {
                 session.wanting.retain(|&p| p != pid);
+                session.invited.retain(|&p| p != pid);
                 if !session.joined.contains(&pid) {
                     session.joined.push(pid);
                 }
@@ -324,6 +340,7 @@ impl Sessions {
         session.private.retain(|p| !pids.contains(p));
         session.offered.retain(|p| !pids.contains(p));
         session.wanting.retain(|p| !pids.contains(p));
+        session.invited.retain(|p| !pids.contains(p));
         session.joined.retain(|p| !pids.contains(p));
         match session.participants.first() {
             None => {
@@ -382,7 +399,9 @@ impl Sessions {
             // A player who chose the session but isn't in yet reaches only its public members,
             // and only while a search could still offer it.
             let reaches = |w: u32, m: u32| s.wanting.contains(&w) && s.joined(m) && !s.private.contains(&m) && s.matches(&[]);
-            reaches(a, b) || reaches(b, a)
+            // An invited player reaches the members who are in already.
+            let invited = |w: u32, m: u32| s.invited.contains(&w) && s.joined(m);
+            reaches(a, b) || reaches(b, a) || invited(a, b) || invited(b, a)
         })
     }
 
@@ -536,6 +555,23 @@ mod tests {
         assert!(!sessions.share(14, 10));
         sessions.choose(15, 10);
         assert!(!sessions.share(15, 10));
+    }
+
+    #[test]
+    fn an_invited_player_reaches_the_members_until_it_declines() {
+        let sessions = Sessions::default();
+        let party = sessions.create(10, 1, &[(7, 1), (3, 0), (4, 6)]).unwrap();
+        assert!(!sessions.share(10, 11));
+        sessions.invite(party, 11, true);
+        assert!(sessions.share(11, 10), "an invitation into a party, not matchmade");
+        sessions.add(party, &[], &[11]).unwrap();
+        assert!(sessions.get(party).unwrap().joined(11));
+        sessions.invite(party, 12, true);
+        sessions.invite(party, 12, false);
+        assert!(!sessions.share(12, 10), "declined");
+        sessions.invite(party, 13, true);
+        sessions.invite(party, 14, true);
+        assert!(!sessions.share(13, 14), "two invited players don't reach each other");
     }
 
     #[test]
