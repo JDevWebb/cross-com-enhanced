@@ -29,6 +29,15 @@ use crate::sessions;
 use crate::sessions::Sessions;
 use crate::ticket::player;
 
+/// How long a player's game has been silent when it counts as gone: each of its connections
+/// pings every 10 seconds.
+const GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Whether `pid`'s game has gone (not heard from for [`GONE_AFTER`], or never).
+fn gone(pid: u32) -> bool {
+    quazal::last_heard(pid).is_none_or(|t| t.elapsed() > GONE_AFTER)
+}
+
 /// Results a search returns at most, and players one invitation may go to.
 const MAX_RESULTS: usize = 100;
 const MAX_RECIPIENTS: usize = 16;
@@ -142,15 +151,25 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
 
     fn migrate_session(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: MigrateSessionRequest,
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<MigrateSessionResponse, Error> {
-        // The session stays where it is; its new host takes it over.
-        player(ci)?;
+        // The session keeps its key; the player asking hosts it from now on, if it joined it and
+        // its host has gone (the game's players choose a new host among themselves when theirs
+        // drops). While the host is still there, nothing changes.
+        let pid = player(ci)?;
+        let k = key(&request.game_session_key);
+        if self.sessions.take_over(k, pid, gone) {
+            info!(logger, "{pid:#x} hosts session {k:?} now");
+        } else if self.sessions.is_member(pid, k) {
+            info!(logger, "{pid:#x} asked to host session {k:?}, whose host is still there");
+        } else {
+            return Err(Error::AccessDenied);
+        }
         Ok(MigrateSessionResponse {
             game_session_key_migrated: request.game_session_key,
         })
@@ -432,8 +451,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<RemoveParticipantsResponse, Error> {
         let pid = player(ci)?;
         let k = key(&request.game_session_key);
-        let only_self = request.participant_ids.0.iter().all(|&p| p == pid);
-        if !only_self && !self.sessions.is_host(pid, k) {
+        // The host, a player taking themself out, or a member clearing out players who have gone
+        // (after a host drops, its successor takes it out, maybe before it is the host here).
+        let ids = &request.participant_ids.0;
+        let only_self = ids.iter().all(|&p| p == pid);
+        let only_gone = self.sessions.is_member(pid, k) && ids.iter().all(|&p| p != pid && gone(p));
+        if !only_self && !only_gone && !self.sessions.is_host(pid, k) {
             return Err(Error::AccessDenied);
         }
         self.sessions.remove(k, &request.participant_ids.0).map_err(error)?;

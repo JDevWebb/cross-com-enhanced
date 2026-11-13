@@ -392,6 +392,28 @@ impl Sessions {
         Ok(())
     }
 
+    /// `pid` takes over hosting `key` (the game's host migration): only a player who joined it,
+    /// and only when `gone(host)` says the host has gone. True if `pid` hosts it now (or did).
+    pub fn take_over(&self, key: Key, pid: u32, gone: impl Fn(u32) -> bool) -> bool {
+        let mut inner = self.lock();
+        let Some(session) = inner.sessions.get_mut(&key) else {
+            return false;
+        };
+        if session.host == pid {
+            return true;
+        }
+        if !session.joined(pid) || !gone(session.host) {
+            return false;
+        }
+        session.host = pid;
+        true
+    }
+
+    /// Whether `pid` joined the session (or hosts it).
+    pub fn is_member(&self, pid: u32, key: Key) -> bool {
+        self.lock().sessions.get(&key).is_some_and(|s| s.joined(pid))
+    }
+
     /// Whether `pid` may change who is in the session: its host, or a player taking themself out.
     pub fn is_host(&self, pid: u32, key: Key) -> bool {
         self.lock().sessions.get(&key).is_some_and(|s| s.host == pid)
@@ -480,6 +502,22 @@ mod tests {
         assert_eq!(sessions.get(key).unwrap().host, 11, "the next player hosts");
         sessions.remove(key, &[11]).unwrap();
         assert!(sessions.get(key).is_none(), "the last one out ends it");
+    }
+
+    #[test]
+    fn a_joined_player_takes_over_only_from_a_host_who_has_gone() {
+        let sessions = Sessions::default();
+        let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        sessions.join(11, key).unwrap();
+        sessions.add(key, &[12], &[]).unwrap(); // added by the host, not joined
+        assert!(!sessions.take_over(key, 11, |_| false), "the host is still there");
+        assert!(!sessions.take_over(key, 12, |_| true), "only a player who joined");
+        assert!(!sessions.take_over(key, 13, |_| true), "nor an outsider");
+        assert!(sessions.take_over(key, 11, |p| p == 10));
+        assert_eq!(sessions.get(key).unwrap().host, 11);
+        assert!(sessions.take_over(key, 11, |_| false), "the host asking again");
+        assert!(!sessions.take_over((1, 999), 11, |_| true));
+        assert!(sessions.is_member(11, key) && !sessions.is_member(12, key));
     }
 
     #[test]
