@@ -343,6 +343,11 @@ pub trait Protocol<T> {
 /// cannot collide with the client's.
 static NEXT_CALL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x8000_0000);
 
+/// Whether `call` is the id of a call the server made (see `NEXT_CALL_ID`).
+fn answers_our_call(call: u32) -> bool {
+    (0x8000_0000..NEXT_CALL_ID.load(std::sync::atomic::Ordering::Relaxed)).contains(&call)
+}
+
 /// Sends an RMC request **to a client** without the client having asked for anything.
 ///
 /// `ClientProtocol::send` was a stub with `todo!()`, so the server could never push anything
@@ -500,6 +505,12 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
                     Err(e) => (None, e.call_id, format!("error {:#010x}", e.error_code)),
                 };
                 let what = format!("protocol {}, method {method:?}, call {call}, {result}; {} bytes", r.protocol_id, data.len());
+                // The answer to one of the server's own calls (`call_client`, such as asking a
+                // game to probe another): expected, and nothing to do with it.
+                if ci.user_id.is_some() && answers_our_call(call) {
+                    debug!(logger, "Answer to the server's call ({what})");
+                    return Ok(Vec::new());
+                }
                 if ci.user_id.is_some() {
                     error!(logger, "RMC response not supported here ({what})");
                 } else {
@@ -601,6 +612,14 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_ids_the_server_handed_out_count_as_its_calls() {
+        let next = NEXT_CALL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(answers_our_call(next));
+        assert!(!answers_our_call(5), "a client's own call id");
+        assert!(!answers_our_call(u32::MAX), "not handed out yet");
+    }
 
     #[test]
     fn test_response() {
