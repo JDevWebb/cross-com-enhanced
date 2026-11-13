@@ -35,9 +35,12 @@ pub struct Session {
     /// after a search). They may reach its members, and the host adding one is that player
     /// joining.
     wanting: Vec<u32>,
-    /// Players a member invited (friends only, see `game_session`), until they answer or are
-    /// added: they may reach the session's members, and the host adding one is them joining.
-    invited: Vec<u32>,
+    /// Players a member invited (friends only, see `game_session`), with who invited them and
+    /// when, until they answer, are added or the invitation is old: they may reach the
+    /// session's members (not the other way), and nothing more until they accept.
+    invited: Vec<Invited>,
+    /// Invited players who accepted: the host adding one of them is them joining.
+    accepted: Vec<u32>,
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
@@ -51,6 +54,17 @@ pub const PUBLIC_SLOTS: u32 = 3;
 pub const NOT_MATCHMADE: u32 = 7;
 /// Session properties the service keeps: how many public and private slots are taken. A game
 /// joining a session reads both (with 3 and 4), and crashed on a search result without them.
+/// One invitation into a session, as the session keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Invited {
+    pid: u32,
+    sender: u32,
+    at: std::time::Instant,
+}
+
+/// As long as an invitation lasts (see `invitations`).
+const INVITED_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// How many players a session remembers having been offered to.
 const MAX_OFFERED: usize = 64;
 pub const PUBLIC_TAKEN: u32 = 5;
@@ -217,6 +231,7 @@ impl Sessions {
                 offered: Vec::new(),
                 wanting: Vec::new(),
                 invited: Vec::new(),
+                accepted: Vec::new(),
                 joined: vec![host],
                 created,
             },
@@ -261,14 +276,37 @@ impl Sessions {
         Ok(())
     }
 
-    /// Notes that a member invited `pid` into the session (or, with `invited` false, that the
-    /// invitation was declined or cancelled).
-    pub fn invite(&self, key: Key, pid: u32, invited: bool) {
+    /// Notes that `sender`, a member, invited `pid` into the session.
+    pub fn invite(&self, key: Key, sender: u32, pid: u32) {
         if let Some(session) = self.lock().sessions.get_mut(&key) {
-            session.invited.retain(|&p| p != pid);
-            if invited && session.invited.len() < MAX_OFFERED {
-                session.invited.push(pid);
+            session.invited.retain(|i| i.pid != pid && i.at.elapsed() < INVITED_FOR);
+            if session.invited.len() < MAX_OFFERED {
+                session.invited.push(Invited {
+                    pid,
+                    sender,
+                    at: std::time::Instant::now(),
+                });
             }
+        }
+    }
+
+    /// `pid` answered its invitation into the session: accepted (the host may now add it in) or
+    /// not. Accepting counts only with an invitation still open.
+    pub fn answer(&self, key: Key, pid: u32, accepted: bool) {
+        if let Some(session) = self.lock().sessions.get_mut(&key) {
+            let open = session.invited.iter().any(|i| i.pid == pid && i.at.elapsed() < INVITED_FOR);
+            session.invited.retain(|i| i.pid != pid);
+            session.accepted.retain(|&p| p != pid);
+            if accepted && open && session.accepted.len() < MAX_OFFERED {
+                session.accepted.push(pid);
+            }
+        }
+    }
+
+    /// `sender` took back its invitation of `pid`.
+    pub fn uninvite(&self, key: Key, sender: u32, pid: u32) {
+        if let Some(session) = self.lock().sessions.get_mut(&key) {
+            session.invited.retain(|i| !(i.pid == pid && i.sender == sender));
         }
     }
 
@@ -320,9 +358,10 @@ impl Sessions {
             if is_private {
                 session.private.push(pid);
             }
-            if session.wanting.contains(&pid) || session.invited.contains(&pid) {
+            if session.wanting.contains(&pid) || session.accepted.contains(&pid) {
                 session.wanting.retain(|&p| p != pid);
-                session.invited.retain(|&p| p != pid);
+                session.invited.retain(|i| i.pid != pid);
+                session.accepted.retain(|&p| p != pid);
                 if !session.joined.contains(&pid) {
                     session.joined.push(pid);
                 }
@@ -340,7 +379,8 @@ impl Sessions {
         session.private.retain(|p| !pids.contains(p));
         session.offered.retain(|p| !pids.contains(p));
         session.wanting.retain(|p| !pids.contains(p));
-        session.invited.retain(|p| !pids.contains(p));
+        session.invited.retain(|i| !pids.contains(&i.pid) && !pids.contains(&i.sender));
+        session.accepted.retain(|p| !pids.contains(p));
         session.joined.retain(|p| !pids.contains(p));
         match session.participants.first() {
             None => {
@@ -391,6 +431,9 @@ impl Sessions {
     /// Whether `a` and `b` joined a session together (or host it), or one chose a session the
     /// other joined: a player a host merely added doesn't count, or adding someone would be a way
     /// to make their game reach you.
+    ///
+    /// `a` is the one asking to reach `b`: an invited player may reach the members, while they
+    /// may not reach it until it's in.
     pub fn share(&self, a: u32, b: u32) -> bool {
         self.lock().sessions.values().any(|s| {
             if s.joined(a) && s.joined(b) {
@@ -399,9 +442,8 @@ impl Sessions {
             // A player who chose the session but isn't in yet reaches only its public members,
             // and only while a search could still offer it.
             let reaches = |w: u32, m: u32| s.wanting.contains(&w) && s.joined(m) && !s.private.contains(&m) && s.matches(&[]);
-            // An invited player reaches the members who are in already.
-            let invited = |w: u32, m: u32| s.invited.contains(&w) && s.joined(m);
-            reaches(a, b) || reaches(b, a) || invited(a, b) || invited(b, a)
+            let invited = s.invited.iter().any(|i| i.pid == a && i.at.elapsed() < INVITED_FOR) && s.joined(b);
+            reaches(a, b) || reaches(b, a) || invited
         })
     }
 
@@ -558,20 +600,34 @@ mod tests {
     }
 
     #[test]
-    fn an_invited_player_reaches_the_members_until_it_declines() {
+    fn an_invited_player_reaches_the_members_and_joins_only_once_it_accepts() {
         let sessions = Sessions::default();
         let party = sessions.create(10, 1, &[(7, 1), (3, 0), (4, 6)]).unwrap();
-        assert!(!sessions.share(10, 11));
-        sessions.invite(party, 11, true);
-        assert!(sessions.share(11, 10), "an invitation into a party, not matchmade");
+        assert!(!sessions.share(11, 10));
+        sessions.invite(party, 10, 11);
+        assert!(sessions.share(11, 10), "the invited player reaches the members");
+        assert!(!sessions.share(10, 11), "but not the other way");
+        // Added before accepting: a participant, not a member.
+        sessions.add(party, &[], &[11]).unwrap();
+        assert!(!sessions.get(party).unwrap().joined(11));
+        sessions.answer(party, 11, true);
         sessions.add(party, &[], &[11]).unwrap();
         assert!(sessions.get(party).unwrap().joined(11));
-        sessions.invite(party, 12, true);
-        sessions.invite(party, 12, false);
-        assert!(!sessions.share(12, 10), "declined");
-        sessions.invite(party, 13, true);
-        sessions.invite(party, 14, true);
-        assert!(!sessions.share(13, 14), "two invited players don't reach each other");
+        // Declined, or taken back: nothing.
+        sessions.invite(party, 10, 12);
+        sessions.answer(party, 12, false);
+        assert!(!sessions.share(12, 10));
+        sessions.invite(party, 10, 13);
+        sessions.uninvite(party, 10, 13);
+        assert!(!sessions.share(13, 10));
+        // Accepting without an invitation does nothing.
+        sessions.answer(party, 14, true);
+        sessions.add(party, &[14], &[]).unwrap();
+        assert!(!sessions.get(party).unwrap().joined(14));
+        // The inviter leaving takes its invitations with it.
+        sessions.invite(party, 11, 15);
+        sessions.remove(party, &[11]).unwrap();
+        assert!(!sessions.share(15, 10));
     }
 
     #[test]

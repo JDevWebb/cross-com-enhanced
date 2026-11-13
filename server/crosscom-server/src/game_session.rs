@@ -240,7 +240,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
                 .send(k, pid, recipient, &invitation.message, crate::fixed::server_time(), now)
                 .map_err(|_| Error::AccessDenied)?;
             // The game reaches the members (a NAT probe) before it accepts.
-            self.sessions.invite(k, recipient, true);
+            self.sessions.invite(k, pid, recipient);
             let told = notify::send(
                 logger,
                 ctx,
@@ -367,6 +367,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let pid = player(ci)?;
         let i = request.game_session_invitation;
         self.invitations.remove(key(&i.session_key), i.sender_pid, pid, std::time::Instant::now());
+        self.sessions.answer(key(&i.session_key), pid, true);
         Ok(AcceptInvitationResponse)
     }
 
@@ -382,7 +383,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let pid = player(ci)?;
         let i = request.game_session_invitation;
         self.invitations.remove(key(&i.session_key), i.sender_pid, pid, std::time::Instant::now());
-        self.sessions.invite(key(&i.session_key), pid, false);
+        self.sessions.answer(key(&i.session_key), pid, false);
         Ok(DeclineInvitationResponse)
     }
 
@@ -397,9 +398,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<CancelInvitationResponse, Error> {
         let pid = player(ci)?;
         let i = request.game_session_invitation;
-        if self.invitations.remove(key(&i.session_key), pid, i.recipient_pid, std::time::Instant::now()) {
-            self.sessions.invite(key(&i.session_key), i.recipient_pid, false);
-        }
+        self.invitations.remove(key(&i.session_key), pid, i.recipient_pid, std::time::Instant::now());
+        self.sessions.uninvite(key(&i.session_key), pid, i.recipient_pid);
         Ok(CancelInvitationResponse)
     }
 
