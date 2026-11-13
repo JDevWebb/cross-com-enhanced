@@ -17,6 +17,9 @@ const MAX_PARTICIPANTS: usize = 64;
 const MAX_PROPERTIES: usize = 64;
 const MAX_URLS: usize = 8;
 
+/// How long a player refused hosting a session waits before it may ask again.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A session's key: its type and its ID.
 pub type Key = (u32, u32);
 
@@ -44,8 +47,8 @@ pub struct Session {
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
-    /// The host before the last migration: its players may take it out.
-    pub migrated_from: Option<u32>,
+    /// Players refused hosting it (see [`Sessions::take_over`]), and when.
+    refused: Vec<(u32, std::time::Instant)>,
     /// When it was made, in order: IDs are random, so they don't tell.
     created: u64,
 }
@@ -235,7 +238,7 @@ impl Sessions {
                 invited: Vec::new(),
                 accepted: Vec::new(),
                 joined: vec![host],
-                migrated_from: None,
+                refused: Vec::new(),
                 created,
             },
         );
@@ -395,12 +398,13 @@ impl Sessions {
         Ok(())
     }
 
-    /// `pid` takes over hosting `key` (the game's host migration): any player who joined it. The
-    /// game's players notice a lost host (about 10 s) before the server can (it pings every
-    /// 10 s), and the first to ask carries on as host; the others ask too and accept it. Only
-    /// players in the match may, and hosting here gives them no more than being in it does.
-    /// True if `pid` hosts it now (or did); false if it isn't a member.
-    pub fn take_over(&self, key: Key, pid: u32) -> bool {
+    /// `pid` takes over hosting `key` (the game's host migration): a player who joined it, once
+    /// `gone(host)` says its host has gone. The game's players ask about 10 s after losing their
+    /// host, so `gone` must say so sooner than that while a live host is never silent that long
+    /// (see `game_session`). A player refused may not ask again for [`RETRY_AFTER`], so it
+    /// can't keep asking until a live host happens to have been quiet long enough.
+    /// True if `pid` hosts it now (or did).
+    pub fn take_over(&self, key: Key, pid: u32, gone: impl Fn(u32) -> bool) -> bool {
         let mut inner = self.lock();
         let Some(session) = inner.sessions.get_mut(&key) else {
             return false;
@@ -408,10 +412,16 @@ impl Sessions {
         if session.host == pid {
             return true;
         }
-        if !session.joined(pid) {
+        session.refused.retain(|(_, at)| at.elapsed() < RETRY_AFTER);
+        if !session.joined(pid) || session.refused.iter().any(|(p, _)| *p == pid) {
             return false;
         }
-        session.migrated_from = Some(session.host);
+        if !gone(session.host) {
+            if session.refused.len() < MAX_PARTICIPANTS {
+                session.refused.push((pid, std::time::Instant::now()));
+            }
+            return false;
+        }
         session.host = pid;
         true
     }
@@ -512,18 +522,20 @@ mod tests {
     }
 
     #[test]
-    fn a_joined_player_takes_over_hosting() {
+    fn a_joined_player_takes_over_only_from_a_host_who_has_gone() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
         sessions.join(11, key).unwrap();
         sessions.add(key, &[12], &[]).unwrap(); // added by the host, not joined
-        assert!(!sessions.take_over(key, 12), "only a player who joined");
-        assert!(!sessions.take_over(key, 13), "nor an outsider");
-        assert!(sessions.take_over(key, 11));
-        let session = sessions.get(key).unwrap();
-        assert_eq!((session.host, session.migrated_from), (11, Some(10)));
-        assert!(sessions.take_over(key, 11), "the host asking again");
-        assert!(!sessions.take_over((1, 999), 11));
+        assert!(!sessions.take_over(key, 12, |_| true), "only a player who joined");
+        assert!(!sessions.take_over(key, 13, |_| true), "nor an outsider");
+        assert!(!sessions.take_over(key, 11, |_| false), "the host is still there");
+        assert!(!sessions.take_over(key, 11, |_| true), "and it may not ask again straight away");
+        sessions.join(14, key).unwrap();
+        assert!(sessions.take_over(key, 14, |p| p == 10), "another player, once the host has gone");
+        assert_eq!(sessions.get(key).unwrap().host, 14);
+        assert!(sessions.take_over(key, 14, |_| false), "the host asking again");
+        assert!(!sessions.take_over((1, 999), 14, |_| true));
         assert!(sessions.is_member(11, key) && !sessions.is_member(12, key));
     }
 
