@@ -2,30 +2,37 @@
 //!
 //! Each adversarial map has one world per game mode, and the game loads the world it is given,
 //! so a world key also picks the mode. The game asks GetMapList with a category: a bit per game
-//! mode, `1 << (mode + 2)`, and a bit per map pack. Seen from the game (2026-11-13): Conflict
-//! sends 0x4012 and Decoy 0x4022 (their session property 116 is the same mode number, 2 and 3);
-//! bit 1 is always set and isn't a mode. The answer is every world of those modes on the base
-//! maps and those packs.
+//! mode and a bit per map pack; bit 1 is always set and isn't a mode. The answer is every world
+//! of those modes on the base maps and those packs.
 //!
-//! Stockade came with Arctic Strike, base maps included (the pack's config lists every base
-//! map's `_gSTO` world): offered from the base maps, a host without the pack's content was
-//! kicked from its own match ("content that you have not yet downloaded").
+//! Two numberings meet here. A world's mode is the game's mode list: 1 Stockade, 2 Conflict,
+//! 3 Decoy, 4 Saboteur, 5 Siege, 6 Takeover, 7 Team Deathmatch. The category uses the menu's
+//! numbering (the session's property 116), `1 << (n + 2)`: 2 Conflict, 3 Decoy, 4 Saboteur,
+//! 5 Siege, 6 Stockade, 7 Takeover, 8 Guerrilla. Seen from the game (2026-11-13): Conflict 0x10,
+//! Decoy 0x20, Stockade 0x100, Takeover 0x200.
+//!
+//! Team Deathmatch worlds exist only for the two night maps and the game has no rules for the
+//! mode: loading one hangs, so they are never offered.
+//!
+//! The downloadable modes need their pack even on the base maps: Stockade came with Arctic
+//! Strike (its config lists every base map's Stockade world; offered without it, a host was
+//! kicked from its own match for "content that you have not yet downloaded"), Takeover with the
+//! second pack (Overpass's Takeover world first appears in that pack's world list, and the game
+//! asks for Takeover with that pack's bit).
 
-/// Game modes, as the game numbers them (its world list and the category agree: Stockade
-/// asks with mode 6 and gets Stockade worlds).
+/// Game modes, as a world records them.
 #[allow(dead_code)]
 pub mod mode {
-    /// Worlds named `_gSTO`, listed by Arctic Strike's config; no category seen asks for them.
-    pub const STO_WORLDS: u32 = 1;
+    pub const STOCKADE: u32 = 1;
     pub const CONFLICT: u32 = 2;
     pub const DECOY: u32 = 3;
     pub const SABOTEUR: u32 = 4;
     pub const SIEGE: u32 = 5;
-    /// Downloadable: on every map.
-    pub const STOCKADE: u32 = 6;
-    /// Downloadable: on the night maps only.
-    pub const TAKEOVER: u32 = 7;
-    /// Co-op against waves of enemies: one world per map.
+    pub const TAKEOVER: u32 = 6;
+    /// Not shipped: never offered (see the module's notes).
+    pub const TEAM_DEATHMATCH: u32 = 7;
+    /// Co-op against waves of enemies: one world per map (our own number; its worlds are only
+    /// asked for by its category bit).
     pub const GUERRILLA: u32 = 8;
 }
 
@@ -38,14 +45,31 @@ const ARCTIC: u32 = 0x4000;
 const RAVEN: u32 = 0x8000;
 const KHYBER: u32 = 0x1_0000;
 const PACKS: u32 = ARCTIC | RAVEN | KHYBER;
-/// A mode's bit in a category.
-const fn mode_bit(mode: u32) -> u32 {
-    1 << (mode + 2)
+
+/// The category's mode bits and the world mode each asks for.
+const MODE_BITS: &[(u32, u32)] = &[
+    (1 << 4, mode::CONFLICT),
+    (1 << 5, mode::DECOY),
+    (1 << 6, mode::SABOTEUR),
+    (1 << 7, mode::SIEGE),
+    (1 << 8, mode::STOCKADE),
+    (1 << 9, mode::TAKEOVER),
+    (1 << 10, mode::GUERRILLA),
+];
+/// The bit that asks for a world mode.
+fn mode_bit(world_mode: u32) -> u32 {
+    MODE_BITS.iter().find(|&&(_, m)| m == world_mode).map_or(0, |&(bit, _)| bit)
 }
-/// The mode bits: adversarial (1-7) and Guerrilla (8). Asking for none means every adversarial
-/// mode.
-const MODES: u32 = 0x7f8;
-const ADVERSARIAL: u32 = 0x3f8;
+/// The adversarial mode bits: asking for no mode means all of them.
+const ADVERSARIAL: u32 = 0x3f0;
+/// The pack a mode came with, needed on every map.
+const fn mode_pack(world_mode: u32) -> u32 {
+    match world_mode {
+        mode::STOCKADE => ARCTIC,
+        mode::TAKEOVER => RAVEN,
+        _ => BASE,
+    }
+}
 
 pub struct Map {
     /// For reading the table; the game shows its own names.
@@ -75,8 +99,8 @@ pub const MAPS: &[Map] = &[
     Map { name: "Switchback", pack: RAVEN, worlds: &[(1, 0x3220_f29c), (2, 0x3221_04af), (3, 0x3221_050c), (4, 0x3221_053c), (5, 0x3221_0559), (6, 0x3220_f094)] },
     Map { name: "Palace", pack: RAVEN, worlds: &[(1, 0x3220_f0e6), (2, 0x3221_0604), (3, 0x3221_0661), (4, 0x3221_0691), (5, 0x3221_06ae), (6, 0x3220_f0ab)] },
     Map { name: "Transit", pack: RAVEN, worlds: &[(1, 0xab31_4a2e), (2, 0xab31_491e), (3, 0xab31_4954), (4, 0xab31_4971), (5, 0xab31_4a08), (6, 0xab31_4a46)] },
-    Map { name: "Market (Night)", pack: ARCTIC, worlds: &[(1, 0xa110_fe1f), (2, 0xa110_fd2e), (3, 0xa110_fd62), (4, 0xa110_fd7f), (5, 0xa110_fdc5), (6, 0xa110_fde8), (7, 0xa110_fe01)] },
-    Map { name: "Harbor (Night)", pack: ARCTIC, worlds: &[(1, 0xa112_0b05), (2, 0xa112_0a47), (3, 0xa112_0a77), (4, 0xa112_0a95), (5, 0xa112_0aeb), (6, 0xa112_0b1d), (7, 0xa112_0b46)] },
+    Map { name: "Market (Night)", pack: ARCTIC, worlds: &[(1, 0xa110_fe1f), (2, 0xa110_fd2e), (3, 0xa110_fd62), (4, 0xa110_fd7f), (5, 0xa110_fdc5), (6, 0xa110_fde8)] },
+    Map { name: "Harbor (Night)", pack: ARCTIC, worlds: &[(1, 0xa112_0b05), (2, 0xa112_0a47), (3, 0xa112_0a77), (4, 0xa112_0a95), (5, 0xa112_0aeb), (6, 0xa112_0b1d)] },
     // Guerrilla: one world each (which pack Village and Sawmill came with is a guess).
     Map { name: "Shanty Town", pack: BASE, worlds: &[(8, 0x9f2a_ad81)] },
     Map { name: "Mansion", pack: BASE, worlds: &[(8, 0x9f2a_e9dd)] },
@@ -86,22 +110,22 @@ pub const MAPS: &[Map] = &[
     Map { name: "Sawmill", pack: KHYBER, worlds: &[(8, 0x5d28_13a3)] },
 ];
 
-/// Worlds of a base map that came with a later pack (from the second pack's world list).
-const SECOND_PACK_WORLDS: &[u32] = &[0x3220_c22c];
-
-/// The worlds a category covers: those of its modes (every mode when it names none) on the base
-/// maps and the packs it names.
+/// The worlds a category covers: those of its modes (every adversarial mode when it names none)
+/// on the base maps and the packs it names.
 pub fn worlds(category: u32) -> Vec<u32> {
-    let modes = if category & MODES == 0 { ADVERSARIAL } else { category & MODES };
-    let has = |pack: u32| pack == BASE || category & PACKS & pack != 0;
+    let asked = |m: u32| {
+        let bit = mode_bit(m);
+        bit != 0
+            && if category & (ADVERSARIAL | mode_bit(mode::GUERRILLA)) == 0 {
+                ADVERSARIAL & bit != 0
+            } else {
+                category & bit != 0
+            }
+    };
+    let has = |packs: u32| category & PACKS & packs == packs & PACKS;
     MAPS.iter()
         .flat_map(|m| m.worlds.iter().map(move |w| (m.pack, w)))
-        .filter(|&(pack, &(mode, key))| {
-            let pack = if SECOND_PACK_WORLDS.contains(&key) { RAVEN } else { pack };
-            // Arctic Strike's `_gSTO` worlds are on every map.
-            let pack = if mode == mode::STO_WORLDS && pack == BASE { ARCTIC } else { pack };
-            has(pack) && modes & mode_bit(mode) != 0
-        })
+        .filter(|&(pack, &(m, _))| asked(m) && has(pack | mode_pack(m)))
         .map(|(_, &(_, key))| key)
         .collect()
 }
@@ -137,25 +161,31 @@ mod tests {
     }
 
     #[test]
-    fn stockade_and_takeover_as_the_game_asks() {
-        // Seen from the game: Stockade 0xc102, Takeover 0xc202 (Arctic and the second pack).
+    fn stockade_asks_for_the_stockade_worlds() {
+        // Seen from the game: Stockade 0xc102 (Arctic and the second pack).
         let stockade = worlds(0xc102);
-        assert!(stockade.contains(&0x3220_cd6e), "Pipeline's Stockade world");
-        assert!(stockade.contains(&0x3220_c22c), "Overpass's, from the second pack");
-        assert!(stockade.contains(&0xab31_4a46), "Transit's");
+        assert!(stockade.contains(&0x222a_c79a), "Pipeline's");
+        assert!(stockade.contains(&0x222a_cb69), "Rig's");
+        assert!(stockade.contains(&0xab31_4a2e), "Transit's");
+        assert!(!stockade.contains(&0x3220_cd6e), "not Pipeline's Takeover world");
         // 10 base maps, 3 Arctic Strike, 3 second-pack and the 2 night maps.
         assert_eq!(stockade.len(), 10 + 3 + 3 + 2);
-        assert_eq!(worlds(0xc202), vec![0xa110_fe01, 0xa112_0b46], "Takeover: the night maps");
-        assert!(!worlds(mode_bit(mode::STOCKADE) | ARCTIC).contains(&0x3220_c22c));
+        assert!(worlds(0x0102).is_empty(), "Stockade needs Arctic Strike");
+        assert_eq!(worlds(0x4102).len(), 10 + 3 + 2);
     }
 
     #[test]
-    fn the_sto_worlds_need_arctic_strike_even_on_base_maps() {
-        let sto = mode_bit(mode::STO_WORLDS);
-        assert!(worlds(sto).is_empty());
-        let with_pack = worlds(sto | ARCTIC);
-        assert!(with_pack.contains(&0x222a_c79a), "Pipeline's");
-        assert_eq!(with_pack.len(), 10 + 3 + 2);
+    fn takeover_asks_for_the_takeover_worlds_never_team_deathmatch() {
+        // Seen from the game: Takeover 0xc202.
+        let takeover = worlds(0xc202);
+        assert!(takeover.contains(&0x3220_cd6e), "Pipeline's");
+        assert!(takeover.contains(&0x3220_c22c), "Overpass's");
+        assert!(takeover.contains(&0xa110_fde8), "Market (Night)'s");
+        assert!(takeover.contains(&0xab31_4a46), "Transit's");
+        assert!(!takeover.contains(&0xa110_fe01) && !takeover.contains(&0xa112_0b46), "no Team Deathmatch worlds");
+        assert_eq!(takeover.len(), 10 + 3 + 3 + 2);
+        assert!(worlds(0x4202).is_empty(), "Takeover needs the second pack");
+        assert_eq!(worlds(0x8202).len(), 10 + 3);
     }
 
     #[test]
@@ -167,12 +197,12 @@ mod tests {
     }
 
     #[test]
-    fn no_modes_means_every_mode_and_the_answer_is_a_list() {
+    fn no_modes_means_every_base_mode_and_the_answer_is_a_list() {
         let base: usize = MAPS
             .iter()
             .filter(|m| m.pack == BASE)
             .flat_map(|m| m.worlds)
-            .filter(|(mode, key)| *mode != mode::GUERRILLA && *mode != mode::STO_WORLDS && !SECOND_PACK_WORLDS.contains(key))
+            .filter(|(m, _)| (mode::CONFLICT..=mode::SIEGE).contains(m))
             .count();
         assert_eq!(worlds(0).len(), base);
         let reply = map_list(&0x2u32.to_le_bytes());
