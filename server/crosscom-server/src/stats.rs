@@ -23,7 +23,9 @@
 //! ```
 //!
 //! The game sends its whole profile this way (350 rows of board 3 from the menus, keyed by pairs
-//! from (0, 0) up), every op 2, with values such as 255 for "none": so op 2 sets the value. Other
+//! from (0, 0) up), every op 2, with values such as 255 for "none": so op 2 sets the value. Op 0
+//! adds: what a match earned (after a ranked match, +1000 and +750 to a character's board-15
+//! columns, +205 to board 14, its class set alongside with op 2); a string or blob is set. Other
 //! ops are logged and also set, until a game shows what they mean.
 //!
 //! Values are kept per player, type, board, keys and column. A read's key `-1` matches any key,
@@ -59,6 +61,7 @@ use quazal::ClientInfo;
 use quazal::Context;
 use rusqlite::params;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 use slog::debug;
 use slog::info;
 use slog::warn;
@@ -110,11 +113,55 @@ fn zero_value(method: u32) -> Option<Vec<u8>> {
         _ => None,
     }
 }
+/// Why a send wasn't kept.
+#[derive(Debug)]
+enum WriteError {
+    /// More than a player may keep.
+    TooMuch,
+    Database(rusqlite::Error),
+}
+
+fn db_error(e: rusqlite::Error) -> WriteError {
+    WriteError::Database(e)
+}
+
 /// A send's method, by the type of its values; a read's is 5 more.
 const SEND_INT32: u32 = 1;
 const SEND_BLOB: u32 = 5;
-/// The op that sets a value: the only one seen.
+/// The ops seen: add to the value (numbers), and set it.
+const OP_ADD: u8 = 0;
 const OP_SET: u8 = 2;
+
+/// `stored` (if any) plus `added`, both encoded for `send_method`; for a string or blob, `added`.
+fn add_value(send_method: u32, stored: Option<&[u8]>, added: &[u8]) -> Vec<u8> {
+    let Some(stored) = stored.filter(|s| s.len() == added.len()) else {
+        return added.to_vec();
+    };
+    match send_method {
+        1 => {
+            let (a, b) = (
+                i32::from_le_bytes(stored.try_into().unwrap_or_default()),
+                i32::from_le_bytes(added.try_into().unwrap_or_default()),
+            );
+            a.saturating_add(b).to_le_bytes().to_vec()
+        }
+        2 => {
+            let (a, b) = (
+                i64::from_le_bytes(stored.try_into().unwrap_or_default()),
+                i64::from_le_bytes(added.try_into().unwrap_or_default()),
+            );
+            a.saturating_add(b).to_le_bytes().to_vec()
+        }
+        3 => {
+            let (a, b) = (
+                f32::from_le_bytes(stored.try_into().unwrap_or_default()),
+                f32::from_le_bytes(added.try_into().unwrap_or_default()),
+            );
+            (a + b).to_le_bytes().to_vec()
+        }
+        _ => added.to_vec(),
+    }
+}
 /// The longest string or blob kept, the most rows one send may write, and the most a player may
 /// keep: values, and bytes of keys and values.
 const MAX_VALUE_LEN: usize = 1024;
@@ -214,17 +261,29 @@ impl Store {
 
     /// Writes a send's rows for `pid`, all or nothing. Refused if the player would keep more than
     /// `MAX_STORED` values or `MAX_STORED_BYTES`.
-    fn write(&self, pid: u32, value_type: u32, rows: &[Row]) -> Result<(), Error> {
+    fn write(&self, pid: u32, value_type: u32, rows: &[Row]) -> Result<(), WriteError> {
         let mut db = self.lock();
-        let tx = db.transaction().map_err(|_| Error::InternalError)?;
+        let tx = db.transaction().map_err(db_error)?;
         {
             let mut set = tx
                 .prepare_cached("INSERT OR REPLACE INTO player_stats (pid, type, board, keys, col, value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-                .map_err(|_| Error::InternalError)?;
+                .map_err(db_error)?;
+            let mut get = tx
+                .prepare_cached("SELECT value FROM player_stats WHERE pid = ?1 AND type = ?2 AND board = ?3 AND keys = ?4 AND col = ?5")
+                .map_err(db_error)?;
             for row in rows {
                 let keys = keys_blob(&row.keys);
-                for (column, value, _op) in &row.values {
-                    set.execute(params![pid, value_type, row.board, keys, column, value]).map_err(|_| Error::InternalError)?;
+                for (column, value, op) in &row.values {
+                    let value = if *op == OP_ADD {
+                        let stored: Option<Vec<u8>> = get
+                            .query_row(params![pid, value_type, row.board, keys, column], |r| r.get(0))
+                            .optional()
+                            .map_err(db_error)?;
+                        add_value(value_type, stored.as_deref(), value)
+                    } else {
+                        value.clone()
+                    };
+                    set.execute(params![pid, value_type, row.board, keys, column, value]).map_err(db_error)?;
                 }
             }
         }
@@ -234,11 +293,11 @@ impl Store {
                 [pid],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .map_err(|_| Error::InternalError)?;
+            .map_err(db_error)?;
         if stored > MAX_STORED || bytes > MAX_STORED_BYTES {
-            return Err(Error::AccessDenied);
+            return Err(WriteError::TooMuch);
         }
-        tx.commit().map_err(|_| Error::InternalError)
+        tx.commit().map_err(db_error)
     }
 
     /// A player's stored rows of a board: (keys, column, value). Refused past `MAX_REPLY` bytes,
@@ -444,17 +503,23 @@ impl<CI> Protocol<CI> for PlayerStatistics {
         if (SEND_INT32..=SEND_BLOB).contains(&method) {
             let rows = parse_send(&request.parameters, method)?;
             let values: usize = rows.iter().map(|r| r.values.len()).sum();
-            if let Some(op) = rows.iter().flat_map(|r| &r.values).map(|v| v.2).find(|&op| op != OP_SET) {
+            if let Some(op) = rows.iter().flat_map(|r| &r.values).map(|v| v.2).find(|&op| op != OP_SET && op != OP_ADD) {
                 if !self.other_op_logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     let shown = &request.parameters[..request.parameters.len().min(512)];
                     warn!(
                         logger,
-                        "PlayerStatistics.{method}: op {op} (only 2, set, is known; kept as set); parameters: {}",
+                        "PlayerStatistics.{method}: op {op} (only 0, add, and 2, set, are known; kept as set); parameters: {}",
                         shown.iter().map(|b| format!("{b:02x}")).collect::<String>()
                     );
                 }
             }
-            self.store.write(pid, method, &rows)?;
+            self.store.write(pid, method, &rows).map_err(|e| match e {
+                WriteError::TooMuch => Error::AccessDenied,
+                WriteError::Database(e) => {
+                    slog::error!(logger, "PlayerStatistics.{method}: not kept, the database failed: {e}");
+                    Error::InternalError
+                }
+            })?;
             info!(logger, "PlayerStatistics.{method}: kept {} rows, {values} values", rows.len());
             return Ok(Vec::new());
         }
@@ -725,6 +790,20 @@ mod tests {
         let reply = read_reply(&exact, &zero_value(READ_INT32).unwrap(), |pid, board| store.rows(pid, SEND_INT32, board)).unwrap();
         assert_eq!(&reply[reply.len() - 5..], &[1, 17, 0, 0, 0]);
         assert_eq!(u32::from_le_bytes(reply[8..12].try_into().unwrap()), 1, "one row");
+    }
+
+    #[test]
+    fn op_0_adds_what_a_match_earned() {
+        let store = Store::in_memory().unwrap();
+        let v = |n: i32| n.to_le_bytes().to_vec();
+        let send = |values: Vec<(u8, Vec<u8>, u8)>| vec![Row { board: 15, keys: vec![0], values }];
+        store.write(1, SEND_INT32, &send(vec![(1, v(0x17), OP_SET), (14, v(1000), OP_ADD)])).unwrap();
+        store.write(1, SEND_INT32, &send(vec![(1, v(0x17), OP_SET), (14, v(750), OP_ADD)])).unwrap();
+        let got: Vec<(u8, Vec<u8>)> = store.rows(1, SEND_INT32, 15).unwrap().into_iter().map(|(_, c, v)| (c, v)).collect();
+        assert_eq!(got, vec![(1, v(0x17)), (14, v(1750))]);
+        assert_eq!(add_value(1, Some(&v(i32::MAX)), &v(5)), v(i32::MAX), "saturates");
+        assert_eq!(add_value(3, Some(&1.5f32.to_le_bytes()), &2.0f32.to_le_bytes()), 3.5f32.to_le_bytes().to_vec());
+        assert_eq!(add_value(4, Some(&[1, 0, b'a']), &[1, 0, b'b']), vec![1, 0, b'b'], "a string is set");
     }
 
     #[test]
