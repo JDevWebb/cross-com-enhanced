@@ -1,12 +1,14 @@
 //! The fewest players a Quick Match lobby starts with (`quick_match_min_players`).
 //!
 //! The game's AI library (`AICLASS_PC_F.dll`) takes the minimum from its data (8 players, or 6
-//! in the smaller modes), so a small community never starts a ranked match. The library reads it
-//! in two places: where a lobby's minimum is chosen when it's made, and where the host raises it
-//! as players join (to twice the biggest party, less one, at least). Both read the value from
-//! memory; this turns each read into the configured number. Found by their surrounding code
-//! (the library may load elsewhere than its preferred address), and only when each is found
-//! exactly once and both read the same value; otherwise nothing is changed.
+//! in the smaller modes), so a small community never starts a ranked match. What a lobby's start
+//! is measured against is set by the host as each player joins (the data's minimum, raised to
+//! twice the biggest party less one; each game numbers its own parties, so two solo players can
+//! look like one party). The client makes that rule give the setting, and keeps the data's
+//! minimums at the setting too (found as the operands of the code that reads them). Places are
+//! found by their surrounding code (the library may load elsewhere than its preferred address),
+//! only when each is found exactly once and both read the same value; otherwise nothing changes.
+//! Tested in game: a 2-player Quick Match lobby starts.
 
 /// A pattern: hex bytes, `??` for any byte (an address the loader may have moved).
 type Pattern = &'static str;
@@ -21,9 +23,12 @@ const CHOOSER: Pattern = "83 7C 24 04 02 75 51 83 F8 03 74 47 83 F8 02 74 42 8B 
 const CHOOSER_READS: [usize; 3] = [0x36, 0x3e, 0x46];
 
 /// Where the host raises a lobby's minimum as players join: `mov cl, [minimum]` (8A 0D +
-/// address) at +0x19.
+/// address) at +0x19, then twice the biggest party less one (`add al, al; dec al`) at +0x1f.
+/// Solo players can look like one party there (each game numbers its own parties), which made
+/// a 2-player lobby need 3; the party part is dropped, so the minimum is the setting.
 const JOIN_RULE: Pattern = "80 7C 24 37 01 75 4B 0F B6 4C 24 39 39 0D ?? ?? ?? ?? 75 2E E8 ?? ?? ?? ?? 8A 0D ?? ?? ?? ?? 02 C0 FE C8 3A C1 77 02 8A C1";
 const JOIN_READ: usize = 0x19;
+const JOIN_PARTY: usize = 0x1f;
 
 /// The library's file name, as the game loads it.
 pub const MODULE: &str = "AICLASS_PC_F.dll";
@@ -53,9 +58,18 @@ fn address_at(image: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]])
 }
 
+/// Where the game keeps the three minimums it reads from its data (one per lobby size), as the
+/// lobby code addresses them: absolute addresses, already relocated.
+///
+/// # Errors
+/// As for [`plan`].
+pub fn minimums(image: &[u8]) -> Result<[u32; 3], String> {
+    let chooser = find_once(image, CHOOSER).map_err(|e| format!("lobby minimum: {e}"))?;
+    Ok(CHOOSER_READS.map(|read| address_at(image, chooser + read + 1)))
+}
+
 /// The changes that make every Quick Match minimum `players`, in the module's image as loaded
-/// (its sections in memory). Already-made changes are found again and planned the same way,
-/// so planning twice is harmless.
+/// (its sections in memory), before any of them is made.
 ///
 /// # Errors
 /// Either place isn't found exactly once, or they don't read the same value: a game build these
@@ -78,6 +92,10 @@ pub fn plan(image: &[u8], players: u8) -> Result<Vec<Patch>, String> {
     patches.push(Patch {
         offset: join + JOIN_READ,
         bytes: vec![0xB1, players, 0x90, 0x90, 0x90, 0x90], // mov cl, players
+    });
+    patches.push(Patch {
+        offset: join + JOIN_PARTY,
+        bytes: vec![0x30, 0xC0, 0x90, 0x90], // xor al, al: no party size
     });
     Ok(patches)
 }
@@ -106,8 +124,10 @@ mod tests {
     #[test]
     fn plans_four_reads_as_the_number() {
         let img = image(0x1071_8f5c);
+        assert_eq!(minimums(&img).unwrap(), [0x1071_8f5c; 3]);
         let patches = plan(&img, 2).unwrap();
-        assert_eq!(patches.len(), 4);
+        assert_eq!(patches.len(), 5);
+        assert_eq!(patches[4].bytes, vec![0x30, 0xC0, 0x90, 0x90]);
         assert_eq!(
             patches[0],
             Patch {

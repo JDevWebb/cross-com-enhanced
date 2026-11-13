@@ -36,6 +36,15 @@ unsafe fn code_sections(base: *const u8) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// The module's size in memory.
+///
+/// # Safety
+/// `base` must be a loaded module's base address.
+unsafe fn image_size(base: *const u8) -> usize {
+    let nt = unsafe { base.add(0x3c).cast::<u32>().read_unaligned() } as usize;
+    unsafe { base.add(nt + 24 + 56).cast::<u32>().read_unaligned() as usize }
+}
+
 /// Waits for the AI library on a thread of its own, then patches it.
 pub(crate) fn install(players: u8) {
     std::thread::spawn(move || {
@@ -61,6 +70,16 @@ pub(crate) fn install(players: u8) {
                 break;
             }
         }
+        // The minimums themselves, before the code that reads them is changed.
+        let globals = (|| {
+            for (start, size) in unsafe { code_sections(base) } {
+                let code = unsafe { std::slice::from_raw_parts(base.add(start), size) };
+                if let Ok(found) = quick_match::minimums(code) {
+                    return found.to_vec();
+                }
+            }
+            Vec::new()
+        })();
         let (start, patches) = match planned {
             Ok(found) => found,
             Err(e) => {
@@ -68,7 +87,10 @@ pub(crate) fn install(players: u8) {
                 return;
             }
         };
-        for patch in &patches {
+        // The join rule (the last two patches): as each player joins, the host sets the lobby's
+        // minimum from it, which is what a lobby's start is measured against. The minimums
+        // themselves are written below too.
+        for patch in patches.iter().skip(patches.len().saturating_sub(2)) {
             let at = unsafe { base.add(start + patch.offset) }.cast_mut();
             let mut old = 0;
             if unsafe { VirtualProtect(at.cast::<c_void>(), patch.bytes.len(), PAGE_EXECUTE_READWRITE, &raw mut old) } == 0 {
@@ -82,5 +104,22 @@ pub(crate) fn install(players: u8) {
             }
         }
         info!("Quick Match lobbies start with {players} players or more");
+        let end = base as usize + unsafe { image_size(base) };
+        let globals: Vec<*mut u32> = globals
+            .into_iter()
+            .map(|a| a as usize)
+            .filter(|&a| a >= base as usize && a + 4 <= end)
+            .map(|a| a as *mut u32)
+            .collect();
+        loop {
+            for &g in &globals {
+                unsafe {
+                    if g.read_unaligned() != u32::from(players) {
+                        g.write_unaligned(u32::from(players));
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
     });
 }
