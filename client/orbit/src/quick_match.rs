@@ -87,8 +87,14 @@ fn plan(base: usize, players: u8) -> Result<Plan, String> {
     for (start, size) in sections {
         let code = read(base + start, size).ok_or("its code can't be read")?;
         if planned.is_err() {
-            planned = quick_match::plan(&code, players)
-                .map(|p| p.into_iter().map(|patch| Patch { offset: start + patch.offset, ..patch }).collect::<Vec<_>>());
+            planned = quick_match::plan(&code, players).map(|p| {
+                p.into_iter()
+                    .map(|patch| Patch {
+                        offset: start + patch.offset,
+                        ..patch
+                    })
+                    .collect::<Vec<_>>()
+            });
         }
         if globals.is_empty() {
             if let Ok(found) = quick_match::minimums(&code) {
