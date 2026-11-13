@@ -253,34 +253,6 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                 answer: |_| EMPTY_LIST.to_vec(),
             }],
         },
-        FixedProtocol {
-            id: 5008,
-            name: "OverlordDareProtocol",
-            // RequestDareInfo(u32) answers a date-time and a list of dare infos, each
-            // { u32, u32, date-time, u32, u32, u32 } (from the game's decoder): the server's time
-            // and no dares. Left unanswered, a game with a saved profile waits on its title screen.
-            methods: &[Method {
-                id: 1,
-                name: "RequestDareInfo",
-                answer: |_| {
-                    let mut reply = server_time().to_le_bytes().to_vec();
-                    reply.extend_from_slice(&EMPTY_LIST);
-                    reply
-                },
-            }],
-        },
-        // The game's event reports: an event name and named string parameters, e.g. after a
-        // ranked match "MPP" with p1 = "Scout", p2 = "1", p3 = "Scout" (the classes played).
-        // Nothing is kept; succeeding is the answer.
-        FixedProtocol {
-            id: 5001,
-            name: "GameEventProtocol",
-            methods: &[Method {
-                id: 1,
-                name: "ReportEvent",
-                answer: |_| Vec::new(),
-            }],
-        },
     ];
     PROTOCOLS.iter().map(|p| Box::new(FixedProtocol { ..*p }) as Box<dyn Protocol<CI>>).collect()
 }

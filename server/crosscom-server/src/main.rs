@@ -13,6 +13,7 @@
 mod accounts;
 mod clans;
 mod config;
+mod dares;
 mod fixed;
 mod friends;
 mod game_session;
@@ -175,6 +176,13 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let dares = match dares::Store::open(&config.database) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            error!(logger, "couldn't open the challenges in {}: {e}", config.database.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
         Err(e) => {
@@ -203,6 +211,8 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                     handler.register_protocol(protocol);
                 }
                 handler.register_protocol(Box::new(stats::PlayerStatistics::new(Arc::clone(&stats))));
+                handler.register_protocol(Box::new(dares::GameEvents::new(Arc::clone(&dares), Arc::clone(&friends))));
+                handler.register_protocol(Box::new(dares::OverlordDare::new(Arc::clone(&dares))));
                 handler.register_protocol(Box::new(clans::Clans::new(Arc::clone(&clans), Arc::clone(&accounts))));
             })
         }),

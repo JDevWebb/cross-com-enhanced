@@ -43,6 +43,9 @@
 //! - board 2, a row per character keyed by its slot (column 1 its experience, 3 its class, 4 its
 //!   level), and board 3, its loadout keyed by slot and item: only what's stored, no filler
 //!   (a filler row would be an empty character in slot 0).
+//!
+//! Board 18 (the numbers Multiplayer Challenges are made from) gets no filler either: a friend
+//! with nothing stored would be a challenge to beat 0.
 
 use std::io::Cursor;
 use std::io::Read;
@@ -73,6 +76,8 @@ const READ_INT32: u32 = 6;
 /// The career boards (see the module's notes): the header, the characters, their loadouts.
 const CAREER_HEADER: u8 = 1;
 const CAREER_BOARDS: [u8; 3] = [1, 2, 3];
+/// The numbers challenges are made from: a friend with none stored would be "beat 0".
+const CHALLENGE_BOARD: u8 = 18;
 /// The header's columns, and the game's defaults for them.
 const SLOTS_OPEN: u8 = 1;
 const CAREER_DEFAULTS: [(u8, i32); 3] = [(SLOTS_OPEN, 3), (2, 0), (3, 8)];
@@ -436,7 +441,7 @@ fn read_reply(request: &ReadRequest, zero: &[u8], mut stored: impl FnMut(u32, u8
                 }
                 at = end;
             }
-            if rows.len() == before && !CAREER_BOARDS.contains(&query.board) {
+            if rows.len() == before && !CAREER_BOARDS.contains(&query.board) && query.board != CHALLENGE_BOARD {
                 rows.push((query, &query.keys, vec![zero; query.columns.len()]));
             }
         }
