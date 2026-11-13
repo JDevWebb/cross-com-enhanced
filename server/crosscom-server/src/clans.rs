@@ -661,11 +661,20 @@ impl Clans {
                 let (tag, motto, mask) = (p.string().map_err(bad)?, p.string().map_err(bad)?, p.u8().map_err(bad)?);
                 put_u32(&mut out, self.store.update(pid, &tag, &motto, mask)?);
             }
+            // One entry per id asked, in order, each with that id: the game files each in its
+            // cache by id without checking (an entry it didn't ask for corrupts its memory), and
+            // waits for every id it asked for. A squad that no longer exists comes back blank.
             3 => {
-                let clans: Vec<Clan> = p.ids().map_err(bad)?.into_iter().filter_map(|id| self.store.clan(id).ok().flatten()).collect();
-                put_len(&mut out, clans.len());
-                for clan in &clans {
-                    clan_info(&mut out, clan);
+                let ids = p.ids().map_err(bad)?;
+                put_len(&mut out, ids.len());
+                for id in ids {
+                    let clan = self.store.clan(id)?.unwrap_or(Clan {
+                        id,
+                        name: String::new(),
+                        tag: String::new(),
+                        motto: String::new(),
+                    });
+                    clan_info(&mut out, &clan);
                 }
             }
             4 => put_u32(&mut out, self.store.delete(pid)?),
