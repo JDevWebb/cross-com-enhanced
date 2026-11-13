@@ -6,6 +6,8 @@
 //!
 //! Orbit's cloud saves are kept on this PC instead (`crosscom_client_common::saves`).
 
+#[cfg(all(windows, target_arch = "x86"))]
+mod crash;
 #[cfg(windows)]
 mod dll;
 #[cfg(windows)]
@@ -74,6 +76,8 @@ fn start() {
         }
         Err(e) => log::error!("{e}"),
     }
+    #[cfg(target_arch = "x86")]
+    crash::install();
     net::install();
     if CONFIG.get().is_some_and(|c| c.skip_intro_videos) {
         video::install();
