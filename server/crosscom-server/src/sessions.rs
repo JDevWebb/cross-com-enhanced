@@ -44,6 +44,8 @@ pub struct Session {
     /// Participants who joined themselves (or host). Only theirs are shown with their addresses:
     /// a host adding a PID mustn't be a way to learn that player's address.
     pub joined: Vec<u32>,
+    /// The host before the last migration: its players may take it out.
+    pub migrated_from: Option<u32>,
     /// When it was made, in order: IDs are random, so they don't tell.
     created: u64,
 }
@@ -233,6 +235,7 @@ impl Sessions {
                 invited: Vec::new(),
                 accepted: Vec::new(),
                 joined: vec![host],
+                migrated_from: None,
                 created,
             },
         );
@@ -392,9 +395,12 @@ impl Sessions {
         Ok(())
     }
 
-    /// `pid` takes over hosting `key` (the game's host migration): only a player who joined it,
-    /// and only when `gone(host)` says the host has gone. True if `pid` hosts it now (or did).
-    pub fn take_over(&self, key: Key, pid: u32, gone: impl Fn(u32) -> bool) -> bool {
+    /// `pid` takes over hosting `key` (the game's host migration): any player who joined it. The
+    /// game's players notice a lost host (about 10 s) before the server can (it pings every
+    /// 10 s), and the first to ask carries on as host; the others ask too and accept it. Only
+    /// players in the match may, and hosting here gives them no more than being in it does.
+    /// True if `pid` hosts it now (or did); false if it isn't a member.
+    pub fn take_over(&self, key: Key, pid: u32) -> bool {
         let mut inner = self.lock();
         let Some(session) = inner.sessions.get_mut(&key) else {
             return false;
@@ -402,9 +408,10 @@ impl Sessions {
         if session.host == pid {
             return true;
         }
-        if !session.joined(pid) || !gone(session.host) {
+        if !session.joined(pid) {
             return false;
         }
+        session.migrated_from = Some(session.host);
         session.host = pid;
         true
     }
@@ -505,18 +512,18 @@ mod tests {
     }
 
     #[test]
-    fn a_joined_player_takes_over_only_from_a_host_who_has_gone() {
+    fn a_joined_player_takes_over_hosting() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
         sessions.join(11, key).unwrap();
         sessions.add(key, &[12], &[]).unwrap(); // added by the host, not joined
-        assert!(!sessions.take_over(key, 11, |_| false), "the host is still there");
-        assert!(!sessions.take_over(key, 12, |_| true), "only a player who joined");
-        assert!(!sessions.take_over(key, 13, |_| true), "nor an outsider");
-        assert!(sessions.take_over(key, 11, |p| p == 10));
-        assert_eq!(sessions.get(key).unwrap().host, 11);
-        assert!(sessions.take_over(key, 11, |_| false), "the host asking again");
-        assert!(!sessions.take_over((1, 999), 11, |_| true));
+        assert!(!sessions.take_over(key, 12), "only a player who joined");
+        assert!(!sessions.take_over(key, 13), "nor an outsider");
+        assert!(sessions.take_over(key, 11));
+        let session = sessions.get(key).unwrap();
+        assert_eq!((session.host, session.migrated_from), (11, Some(10)));
+        assert!(sessions.take_over(key, 11), "the host asking again");
+        assert!(!sessions.take_over((1, 999), 11));
         assert!(sessions.is_member(11, key) && !sessions.is_member(12, key));
     }
 

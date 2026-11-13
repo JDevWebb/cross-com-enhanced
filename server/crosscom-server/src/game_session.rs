@@ -158,17 +158,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<MigrateSessionResponse, Error> {
-        // The session keeps its key; the player asking hosts it from now on, if it joined it and
-        // its host has gone (the game's players choose a new host among themselves when theirs
-        // drops). While the host is still there, nothing changes.
+        // The session keeps its key; the first of its players to ask hosts it from now on (see
+        // `Sessions::take_over`).
         let pid = player(ci)?;
         let k = key(&request.game_session_key);
-        if self.sessions.take_over(k, pid, gone) {
-            info!(logger, "{pid:#x} hosts session {k:?} now");
-        } else if self.sessions.is_member(pid, k) {
-            info!(logger, "{pid:#x} asked to host session {k:?}, whose host is still there");
-        } else {
+        let before = self.sessions.get(k).map(|s| s.host);
+        if !self.sessions.take_over(k, pid) {
             return Err(Error::AccessDenied);
+        }
+        if before != Some(pid) {
+            info!(logger, "{pid:#x} hosts session {k:?} now, after {:#x}", before.unwrap_or_default());
         }
         Ok(MigrateSessionResponse {
             game_session_key_migrated: request.game_session_key,
@@ -452,10 +451,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let pid = player(ci)?;
         let k = key(&request.game_session_key);
         // The host, a player taking themself out, or a member clearing out players who have gone
-        // (after a host drops, its successor takes it out, maybe before it is the host here).
+        // (after a host drops, each player takes it out, not only its successor).
         let ids = &request.participant_ids.0;
         let only_self = ids.iter().all(|&p| p == pid);
-        let only_gone = self.sessions.is_member(pid, k) && ids.iter().all(|&p| p != pid && gone(p));
+        let previous = self.sessions.get(k).and_then(|s| s.migrated_from);
+        let only_gone = self.sessions.is_member(pid, k) && ids.iter().all(|&p| p != pid && (gone(p) || Some(p) == previous));
         if !only_self && !only_gone && !self.sessions.is_host(pid, k) {
             return Err(Error::AccessDenied);
         }
