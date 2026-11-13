@@ -240,15 +240,21 @@ impl Cookies {
         Self { key: rand::random() }
     }
 
-    /// The signature for `client`'s handshake with this session: the session in the low
-    /// byte, the generation in the next two bits, and 22 bits of MAC above them. The
-    /// session travels in the signature itself, so checking it needs nothing from the
-    /// CONNECT but the signature it carries back.
-    fn signature(&self, client: SocketAddr, session: u8, generation: u32) -> u32 {
+    /// The signature for `client`'s handshake from its virtual port `from` with this session:
+    /// the session in the low byte, the generation in the next two bits, and 22 bits of MAC
+    /// above them. The session travels in the signature itself, so checking it needs nothing
+    /// from the CONNECT but the signature it carries back and the port it comes from.
+    ///
+    /// The virtual port is in the MAC because one game opens two connections to a service at
+    /// once from one socket (its own and the telemetry account's, on ports 15 and 14), and
+    /// sends every SYN with session 0: without it both handshakes got the same signature, and
+    /// the second CONNECT was refused as another connection's.
+    fn signature(&self, client: SocketAddr, from: VPort, session: u8, generation: u32) -> u32 {
         use hmac::Mac as _;
         let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.key).expect("any key length");
         m.update(&address_bytes(client.ip()));
         m.update(&client.port().to_be_bytes());
+        m.update(&from.to_bytes());
         m.update(&[session, generation.to_le_bytes()[0]]);
         let mac = m.finalize().into_bytes();
         let mac = u32::from_be_bytes([mac[0], mac[1], mac[2], mac[3]]);
@@ -256,11 +262,11 @@ impl Cookies {
     }
 
     /// Whether `signature` is one this server gave `client` in answer to a SYN.
-    fn valid(&self, client: SocketAddr, signature: u32) -> bool {
+    fn valid(&self, client: SocketAddr, from: VPort, signature: u32) -> bool {
         #[allow(clippy::cast_possible_truncation)]
         let session = signature as u8;
         let generation = (signature >> 8) & 0x3;
-        self.signature(client, session, generation) == signature
+        self.signature(client, from, session, generation) == signature
     }
 }
 
@@ -922,7 +928,9 @@ where
         // finished ("client is unknown"), so it gets the one it already has: the same
         // signature while the handshake is open (the cookie is the same every time), and the
         // connection's own once it is made.
-        let signatures: Vec<u32> = (0..COOKIE_GENERATIONS).map(|g| self.cookies.signature(client, packet.session_id, g)).collect();
+        let signatures: Vec<u32> = (0..COOKIE_GENERATIONS)
+            .map(|g| self.cookies.signature(client, packet.source, packet.session_id, g))
+            .collect();
         if let Some(ci) = signatures
             .iter()
             .find_map(|sig| self.client_registry.clients.get(sig).filter(|ci| self.is_repeat(ci, client, packet.session_id)))
@@ -1014,7 +1022,7 @@ where
         }
         // The signature must be the one this address got for its SYN (the game sends back
         // what our SYN answer gave it).
-        if !self.cookies.valid(client, packet.signature) {
+        if !self.cookies.valid(client, packet.source, packet.signature) {
             if let Some(skipped) = self.noise.allow() {
                 warn!(logger, "Unknown client {:x} tried to connect. Ignoring the attempt", packet.signature; "similar_skipped" => skipped);
             }
@@ -1543,14 +1551,34 @@ mod tests {
 
         let me = SocketAddr::from(([127, 0, 0, 1], 50000));
         let other = SocketAddr::from(([127, 0, 0, 1], 50001));
-        let mine = server.cookies.signature(me, 3, 0);
-        server.handle_connect(&logger, handshake(PacketType::Connect, server.cookies.signature(other, 3, 0), 3), me);
+        let mine = server.cookies.signature(me, VPort::default(), 3, 0);
+        server.handle_connect(&logger, handshake(PacketType::Connect, server.cookies.signature(other, VPort::default(), 3, 0), 3), me);
         server.handle_connect(&logger, handshake(PacketType::Connect, mine ^ 0x400, 3), me);
         assert!(server.client_registry.clients.is_empty(), "another address's signature, or a guess, makes nothing");
         server.handle_connect(&logger, handshake(PacketType::Connect, mine, 3), me);
         assert!(server.client_registry.clients.contains_key(&mine));
         assert_eq!(server.client_registry.connections_from(me.ip()), 1);
-        assert!(server.cookies.valid(me, mine) && !server.cookies.valid(other, mine));
+        assert!(server.cookies.valid(me, VPort::default(), mine) && !server.cookies.valid(other, VPort::default(), mine));
+    }
+
+    /// A game opens two connections at once from one socket (ports 15 and 14), both SYNs
+    /// with session 0: each handshake gets its own signature, and both connect.
+    #[test]
+    fn two_handshakes_at_once_from_one_socket_both_connect() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let game = SocketAddr::from(([127, 0, 0, 1], 2347));
+        let port = |port| VPort { port, ..VPort::default() };
+        let (own, tracking) = (server.cookies.signature(game, port(15), 0, 0), server.cookies.signature(game, port(14), 0, 0));
+        assert_ne!(own, tracking);
+        for (from, signature, session) in [(15, own, 26), (14, tracking, 210)] {
+            let mut connect = handshake(PacketType::Connect, signature, session);
+            connect.source = port(from);
+            server.handle_connect(&logger, connect, game);
+        }
+        assert!(server.client_registry.clients.contains_key(&own) && server.client_registry.clients.contains_key(&tracking));
+        assert!(!server.cookies.valid(game, port(14), own), "a signature is only good from its own port");
     }
 
     /// A connection an earlier game left lingering keeps its signature; the new game's
@@ -1594,7 +1622,7 @@ mod tests {
         let logger = Logger::root(slog::Discard, o!());
         let mut server = test_server(&ctx);
         let from = SocketAddr::from(([127, 0, 0, 1], 50003));
-        let sig = server.cookies.signature(from, 9, 0);
+        let sig = server.cookies.signature(from, VPort::default(), 9, 0);
         let connect = |payload: &[u8]| QPacket {
             payload: payload.to_vec(),
             ..handshake(PacketType::Connect, sig, 9)
@@ -1632,7 +1660,7 @@ mod tests {
         let gone = SocketAddr::from(([127, 0, 0, 1], 50011));
         let long_ago = Instant::now() - Duration::from_secs(60);
         for (from, user, last_seen) in [(talking, 7, Instant::now()), (gone, 8, long_ago - Duration::from_secs(1))] {
-            let sig = server.cookies.signature(from, 1, 0);
+            let sig = server.cookies.signature(from, VPort::default(), 1, 0);
             server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
             let mut ci = server.client_registry.clients[&sig].borrow_mut();
             ci.user_id = Some(user);
@@ -1661,7 +1689,7 @@ mod tests {
         let logger = Logger::root(slog::Discard, o!());
         let mut server = test_server(&ctx);
         let from = SocketAddr::from(([127, 0, 0, 1], 50002));
-        let sig = server.cookies.signature(from, 1, 0);
+        let sig = server.cookies.signature(from, VPort::default(), 1, 0);
         server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
         server.client_registry.clients[&sig].borrow_mut().last_seen = Instant::now() - SILENT_TIMEOUT - Duration::from_secs(1);
         server.clear_clients();
@@ -1695,7 +1723,7 @@ mod tests {
         let mut server = test_server(&ctx);
         let connect = |server: &mut Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()>, port: u16| {
             let from = SocketAddr::from(([10, 1, 2, 3], port));
-            let sig = server.cookies.signature(from, 1, 0);
+            let sig = server.cookies.signature(from, VPort::default(), 1, 0);
             server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
             sig
         };
@@ -1747,7 +1775,7 @@ mod tests {
             let mut server = test_server(&ctx);
             server.sign_in_required = required;
             let from = SocketAddr::from(([10, 1, 2, 4], 40000));
-            let sig = server.cookies.signature(from, 1, 0);
+            let sig = server.cookies.signature(from, VPort::default(), 1, 0);
             server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
             let data = QPacket {
                 packet_type: PacketType::Data,
