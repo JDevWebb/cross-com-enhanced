@@ -269,6 +269,18 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                 },
             }],
         },
+        // The game's event reports: an event name and named string parameters, e.g. after a
+        // ranked match "MPP" with p1 = "Scout", p2 = "1", p3 = "Scout" (the classes played).
+        // Nothing is kept; succeeding is the answer.
+        FixedProtocol {
+            id: 5001,
+            name: "GameEventProtocol",
+            methods: &[Method {
+                id: 1,
+                name: "ReportEvent",
+                answer: |_| Vec::new(),
+            }],
+        },
     ];
     PROTOCOLS.iter().map(|p| Box::new(FixedProtocol { ..*p }) as Box<dyn Protocol<CI>>).collect()
 }
