@@ -29,6 +29,18 @@
 //! Values are kept per player, type, board, keys and column. A read's key `-1` matches any key,
 //! so a board read with `-1` keys answers every stored row of it, each with its own keys; a board
 //! with nothing stored answers one row of zeros, its keys echoed.
+//!
+//! Except the career boards (1 to 3), which hold a player's Career characters:
+//! - board 1, the header: one row, no keys; column 1 the number of character slots open (3 at
+//!   first, one more for each character that reaches level 50, up to 6), 2 the selected slot,
+//!   3 flags. The game takes it only from exactly one row (keys aside) and locks every slot from
+//!   the count on, so a row of zeros locked them all: a new player couldn't make a Career
+//!   character, and loading a ranked match crashed for want of one. So it's always answered, as
+//!   the game's own defaults when nothing is stored, and never with fewer than 3 slots open
+//!   (which also mends players who were sent 0 and kept it).
+//! - board 2, a row per character keyed by its slot (column 1 its experience, 3 its class, 4 its
+//!   level), and board 3, its loadout keyed by slot and item: only what's stored, no filler
+//!   (a filler row would be an empty character in slot 0).
 
 use std::io::Cursor;
 use std::io::Read;
@@ -54,6 +66,37 @@ use slog::Logger;
 
 /// A read's method, by the type of its values.
 const READ_INT32: u32 = 6;
+
+/// The career boards (see the module's notes): the header, the characters, their loadouts.
+const CAREER_HEADER: u8 = 1;
+const CAREER_BOARDS: [u8; 3] = [1, 2, 3];
+/// The header's columns, and the game's defaults for them.
+const SLOTS_OPEN: u8 = 1;
+const CAREER_DEFAULTS: [(u8, i32); 3] = [(SLOTS_OPEN, 3), (2, 0), (3, 8)];
+/// Slots open: at first, and at most.
+const MIN_SLOTS: i32 = 3;
+const MAX_SLOTS: i32 = 6;
+
+/// A player's stored career header (board 1, int32 values) as the game must get it: one row with
+/// no keys, the defaults for what isn't stored, and the slots open never fewer than 3.
+fn career_header(stored: Stored) -> Stored {
+    let mut row: Stored = stored.into_iter().filter(|(keys, ..)| keys.is_empty()).collect();
+    for (column, default) in CAREER_DEFAULTS {
+        if !row.iter().any(|(_, c, _)| *c == column) {
+            row.push((Vec::new(), column, default.to_le_bytes().to_vec()));
+        }
+    }
+    for (_, column, value) in &mut row {
+        if *column == SLOTS_OPEN {
+            let open = value.get(..4).and_then(|v| v.try_into().ok()).map_or(0, i32::from_le_bytes);
+            if !(MIN_SLOTS..=MAX_SLOTS).contains(&open) {
+                *value = open.clamp(MIN_SLOTS, MAX_SLOTS).to_le_bytes().to_vec();
+            }
+        }
+    }
+    row.sort_by_key(|(_, c, _)| *c);
+    row
+}
 const READ_BLOB: u32 = 10;
 
 /// A new player's value, encoded, for a read method.
@@ -323,7 +366,8 @@ fn read_reply(request: &ReadRequest, zero: &[u8], mut stored: impl FnMut(u32, u8
             while at < found.len() {
                 let keys = &found[at].0;
                 let end = at + found[at..].iter().take_while(|(k, ..)| k == keys).count();
-                if matches(&query.keys, keys) {
+                // The career header is one row the game takes whatever keys it asks with.
+                if matches(&query.keys, keys) || query.board == CAREER_HEADER {
                     let values = query
                         .columns
                         .iter()
@@ -333,7 +377,7 @@ fn read_reply(request: &ReadRequest, zero: &[u8], mut stored: impl FnMut(u32, u8
                 }
                 at = end;
             }
-            if rows.len() == before {
+            if rows.len() == before && !CAREER_BOARDS.contains(&query.board) {
                 rows.push((query, &query.keys, vec![zero; query.columns.len()]));
             }
         }
@@ -419,7 +463,10 @@ impl<CI> Protocol<CI> for PlayerStatistics {
         };
         let read = parse_read(&request.parameters)?;
         debug!(logger, "PlayerStatistics.{method} {read:?}");
-        let reply = read_reply(&read, &zero, |player, board| self.store.rows(player, method - 5, board))?;
+        let reply = read_reply(&read, &zero, |player, board| {
+            let rows = self.store.rows(player, method - 5, board)?;
+            Ok(if method == READ_INT32 && board == CAREER_HEADER { career_header(rows) } else { rows })
+        })?;
         debug!(logger, "PlayerStatistics.{method}: replied {} bytes", reply.len());
         Ok(reply)
     }
@@ -482,7 +529,7 @@ mod tests {
     fn answers_every_column_asked_for_with_zero() {
         let read = ReadRequest {
             boards: vec![BoardQuery {
-                board: 3,
+                board: 4,
                 keys: vec![0xffff_ffff],
                 columns: vec![1, 2],
             }],
@@ -493,13 +540,67 @@ mod tests {
             1, 0, 0, 0,                         // one player
             1, 0, 0x10, 0,                      // pid 0x100001
             1, 0, 0, 0,                         // one board
-            3,                                  // board 3
+            4,                                  // board 4
             1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, // its keys, echoed
             2, 0, 0, 0,                         // two values
             1, 0, 0, 0, 0,                      // column 1 = 0
             2, 0, 0, 0, 0,                      // column 2 = 0
         ];
         assert_eq!(read_reply(&read, &zero_value(READ_INT32).unwrap(), none).unwrap(), expected);
+    }
+
+    fn one_board(board: u8, keys: Vec<u32>, columns: Vec<u8>) -> ReadRequest {
+        ReadRequest {
+            boards: vec![BoardQuery { board, keys, columns }],
+            players: vec![0x0010_0001],
+        }
+    }
+
+    /// A reply's row: its keys, and (column, value)s.
+    type Row32 = (Vec<u32>, Vec<(u8, i32)>);
+
+    /// The rows of a one-player reply.
+    fn reply_rows(reply: &[u8]) -> Vec<Row32> {
+        let mut r = Cursor::new(reply);
+        let u32_ = |r: &mut Cursor<&[u8]>| r.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(u32_(&mut r), 1);
+        u32_(&mut r);
+        (0..u32_(&mut r))
+            .map(|_| {
+                r.read_u8().unwrap();
+                let keys = (0..u32_(&mut r)).map(|_| u32_(&mut r)).collect();
+                let values = (0..u32_(&mut r)).map(|_| (r.read_u8().unwrap(), r.read_i32::<LittleEndian>().unwrap())).collect();
+                (keys, values)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_player_gets_three_career_slots_and_no_empty_characters() {
+        let zero = zero_value(READ_INT32).unwrap();
+        let header = |stored: Stored| move |_, board| Ok(if board == CAREER_HEADER { career_header(stored.clone()) } else { Vec::new() });
+        for keys in [vec![], vec![u32::MAX]] {
+            let reply = read_reply(&one_board(1, keys, vec![1, 2, 3]), &zero, header(Vec::new())).unwrap();
+            assert_eq!(reply_rows(&reply), vec![(vec![], vec![(1, 3), (2, 0), (3, 8)])]);
+        }
+        for board in [2, 3] {
+            let reply = read_reply(&one_board(board, vec![u32::MAX], vec![1, 3]), &zero, header(Vec::new())).unwrap();
+            assert!(reply_rows(&reply).is_empty(), "board {board}: no filler character");
+        }
+        let reply = read_reply(&one_board(4, vec![u32::MAX], vec![1]), &zero, none).unwrap();
+        assert_eq!(reply_rows(&reply).len(), 1, "other boards keep their row of zeros");
+    }
+
+    #[test]
+    fn a_stored_career_header_is_kept_with_at_least_three_slots() {
+        let v = |n: i32| n.to_le_bytes().to_vec();
+        let stored = vec![(vec![], 1, v(5)), (vec![], 2, v(1))];
+        let got: Vec<(u8, Vec<u8>)> = career_header(stored).into_iter().map(|(_, c, v)| (c, v)).collect();
+        assert_eq!(got, vec![(1, v(5)), (2, v(1)), (3, v(8))]);
+        for (sent, kept) in [(0, 3), (-1, 3), (7, 6), (3, 3), (6, 6)] {
+            assert_eq!(career_header(vec![(vec![], 1, v(sent))])[0].2, v(kept), "{sent} slots");
+        }
+        assert_eq!(career_header(vec![(vec![7], 1, v(5))])[0].2, v(3), "a keyed row isn't the header");
     }
 
     #[test]
@@ -608,9 +709,7 @@ mod tests {
             &[2, 0, 0, 0], &[11, 92, 0, 0, 0], &[2, 0, 0, 0, 0],   // column 11 = 92, 2 never sent
             &[3], &[2, 0, 0, 0], &[0; 4], &[1, 0, 0, 0],           // keys (0, 1)
             &[2, 0, 0, 0], &[11, 93, 0, 0, 0], &[2, 0, 0, 0, 0],
-            &[2, 0, 0x10, 0], &[1, 0, 0, 0],                       // the second player: nothing kept
-            &[3], &[2, 0, 0, 0], &[0xff; 4], &[0xff; 4],
-            &[2, 0, 0, 0], &[11, 0, 0, 0, 0], &[2, 0, 0, 0, 0],
+            &[2, 0, 0x10, 0], &[0, 0, 0, 0],                       // the second player: nothing kept, no filler (a career board)
         ].concat();
         assert_eq!(reply, expected);
         // A read of other types, and of exact keys.
