@@ -11,6 +11,7 @@
 //! ```
 
 mod accounts;
+mod clans;
 mod config;
 mod fixed;
 mod friends;
@@ -167,6 +168,13 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let clans = match clans::Store::open(&config.database) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            error!(logger, "couldn't open the squads in {}: {e}", config.database.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
         Err(e) => {
@@ -195,6 +203,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                     handler.register_protocol(protocol);
                 }
                 handler.register_protocol(Box::new(stats::PlayerStatistics::new(Arc::clone(&stats))));
+                handler.register_protocol(Box::new(clans::Clans::new(Arc::clone(&clans), Arc::clone(&accounts))));
             })
         }),
     ];

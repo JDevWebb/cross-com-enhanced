@@ -91,7 +91,7 @@ pub(crate) fn server_time() -> u64 {
     packed_date_time(secs)
 }
 
-fn packed_date_time(unix: u64) -> u64 {
+pub(crate) fn packed_date_time(unix: u64) -> u64 {
     let (days, rest) = (unix / 86_400, unix % 86_400);
     let (hour, minute, second) = (rest / 3600, rest / 60 % 60, rest % 60);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
@@ -154,32 +154,6 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     id: 2,
                     name: "GetPresence",
                     answer: |parameters| per_player(parameters, |pid| [&pid.to_le_bytes()[..], &[0], &[0; 4], &[0; 2]].concat()),
-                },
-            ],
-        },
-        FixedProtocol {
-            id: 110,
-            name: "ClansProtocol",
-            // The player's clan: none (0). With 1 the game went on to ask for that clan's details.
-            // Method 28 (asked with a 0 as the menus load) answers a list and a u32 (from the
-            // game's codec): none.
-            methods: &[
-                Method {
-                    id: 13,
-                    name: "GetCurUserClan",
-                    answer: |_| 0u32.to_bytes(),
-                },
-                // GetClanIds(list<pid>) answers one clan ID per player, in order (from the
-                // game's decoder): 0, no clan, so it never asks for tags (method 27).
-                Method {
-                    id: 26,
-                    name: "GetClanIds",
-                    answer: |parameters| per_player(parameters, |_| 0u32.to_le_bytes().to_vec()),
-                },
-                Method {
-                    id: 28,
-                    name: "Method28",
-                    answer: |_| [EMPTY_LIST, [0; 4]].concat(),
                 },
             ],
         },
