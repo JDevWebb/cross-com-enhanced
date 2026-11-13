@@ -416,10 +416,11 @@ impl Sessions {
         if !session.joined(pid) || session.refused.iter().any(|(p, _)| *p == pid) {
             return false;
         }
+        if session.refused.len() >= MAX_PARTICIPANTS {
+            return false;
+        }
         if !gone(session.host) {
-            if session.refused.len() < MAX_PARTICIPANTS {
-                session.refused.push((pid, std::time::Instant::now()));
-            }
+            session.refused.push((pid, std::time::Instant::now()));
             return false;
         }
         session.host = pid;

@@ -29,9 +29,11 @@ use crate::sessions;
 use crate::sessions::Sessions;
 use crate::ticket::player;
 
-/// How long a player's game has been silent when it counts as gone. Its connections ping every
-/// 10 s (a live game is never silent longer), and a game asks to take over from a host it has
-/// lost for about 10 s: so a little less than that, measured from anything the host sent.
+/// How long a host's game has been silent when another player may take over hosting. A game asks
+/// about 10 s after losing its host, and pings every 10 s: so a live host may now and then have
+/// been quiet this long too. That's accepted, and bounded: only a player in the match may, once
+/// a minute (`Sessions::take_over`). What it gains is the session's listing here (its settings and
+/// who is listed in it), not the match itself, which the players' games run between them.
 const GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Whether `pid`'s game has gone (not heard from for [`GONE_AFTER`], or never).
@@ -455,12 +457,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<RemoveParticipantsResponse, Error> {
         let pid = player(ci)?;
         let k = key(&request.game_session_key);
-        // The host, a player taking themself out, or a member clearing out players who have gone
-        // (after a host drops, each player takes it out, not only its successor).
+        // The host, or a player taking themself out. After a host drops, every player takes it
+        // out, the new host first: for the others it's already out, which changes nothing.
         let ids = &request.participant_ids.0;
         let only_self = ids.iter().all(|&p| p == pid);
-        let only_gone = self.sessions.is_member(pid, k) && ids.iter().all(|&p| p != pid && gone(p));
-        if !only_self && !only_gone && !self.sessions.is_host(pid, k) {
+        let none_in = self.sessions.is_member(pid, k) && self.sessions.get(k).is_some_and(|s| ids.iter().all(|p| !s.has(*p)));
+        if none_in {
+            return Ok(RemoveParticipantsResponse);
+        }
+        if !only_self && !self.sessions.is_host(pid, k) {
             return Err(Error::AccessDenied);
         }
         self.sessions.remove(k, &request.participant_ids.0).map_err(error)?;
