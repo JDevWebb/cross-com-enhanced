@@ -253,6 +253,9 @@ fn run_server(logger: &Logger, ctx: &Context, register: impl FnOnce(&mut RVSecHa
     // No handlers for expired or disconnected clients yet: nothing per player is kept.
     let mut server = Server::<fn(quazal::ClientInfo), fn(quazal::ClientInfo)>::new(logger.clone(), ctx, registry);
     server.user_handler = Some(address_echo);
+    // Every game also signs in to the shared telemetry account (on a connection of its own): one
+    // game's sign-in mustn't close everyone else's. Starting two together left both signed out.
+    server.newest_sign_in_wins = |pid| pid != ticket::TRACKING_PID;
     server.bind(ctx.listen)?;
     server.serve();
     Ok(())
