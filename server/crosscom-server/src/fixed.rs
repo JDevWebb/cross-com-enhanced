@@ -204,6 +204,13 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     name: "UplayWelcome",
                     answer: |_| EMPTY_LIST.to_vec(),
                 },
+                // The game reports Uplay actions it has earned (after a level-up or a challenge,
+                // say); there are no Uplay actions here, so none unlock: an empty list.
+                Method {
+                    id: 9,
+                    name: "SetActionsCompleted",
+                    answer: |_| EMPTY_LIST.to_vec(),
+                },
             ],
         },
         FixedProtocol {
