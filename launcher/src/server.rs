@@ -2,13 +2,12 @@
 //! its online config, asking how it is (its version, players online and news), signing in to an
 //! account and making one when the server allows sign-up.
 //!
-//! Passwords go over HTTPS. Only a server on this machine or a private network (a LAN, or a VPN
-//! such as Tailscale) may take them over plain HTTP, when it has no working HTTPS; a server on the
-//! internet without it is refused. What carries no password (the online config, the info) stays
+//! Passwords go over HTTPS. Only a server set up by its private address (a LAN, or a VPN such as
+//! Tailscale, or this machine) may take them over plain HTTP, and only when nothing answers on its
+//! HTTPS port at all; a server set up by name, or on the internet, without HTTPS is refused. What carries no password (the online config, the info) stays
 //! on plain HTTP, as the game itself only speaks that.
 
 use std::net::IpAddr;
-use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -67,30 +66,46 @@ pub fn is_private(ip: IpAddr) -> bool {
     }
 }
 
-/// Whether passwords may go to `host` over plain HTTP: every address it has is private (see
-/// [`is_private`]). A name that can't be looked up isn't.
+/// Whether passwords may go to `host` over plain HTTP when it has no HTTPS: only when it was
+/// given as a private IP address (see [`is_private`]) or `localhost`. A name is never looked up
+/// for this: its DNS could say private for the check and send the connection elsewhere.
 fn may_send_unencrypted(host: &str) -> bool {
-    let name = host.trim_start_matches('[').trim_end_matches(']');
-    if name.eq_ignore_ascii_case("localhost") {
+    if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    if let Ok(ip) = name.parse::<IpAddr>() {
-        return is_private(ip);
+    let ip = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    ip.parse::<IpAddr>().is_ok_and(is_private)
+}
+
+/// Whether an HTTPS attempt failed before reaching anything: refused, unreachable or timed out
+/// while connecting. A failure after that (a certificate that isn't valid, a broken handshake)
+/// may be someone in the way, and never leads to plain HTTP.
+fn nothing_answered(error: &ureq::Error) -> bool {
+    use std::io::ErrorKind;
+    match error {
+        ureq::Error::ConnectionFailed | ureq::Error::Timeout(ureq::Timeout::Connect) => true,
+        ureq::Error::Io(e) => matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable),
+        _ => false,
     }
-    let addresses: Vec<IpAddr> = (name, 80).to_socket_addrs().map(|a| a.map(|a| a.ip()).collect()).unwrap_or_default();
-    all_private(&addresses)
 }
 
-fn all_private(addresses: &[IpAddr]) -> bool {
-    !addresses.is_empty() && addresses.iter().all(|a| is_private(*a))
+/// Whether a password may go to `host` over plain HTTP after HTTPS failed with `error`.
+fn falls_back_to_plain(host: &str, error: &ureq::Error) -> bool {
+    may_send_unencrypted(host) && nothing_answered(error)
 }
 
-/// Why a password can't go to a server on the internet whose HTTPS didn't work.
-fn needs_https(host: &str, error: &str) -> String {
-    format!(
-        "{host} didn't answer over HTTPS ({error}). Passwords only go to a server on the internet \
-         encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}"
-    )
+/// Why a password didn't go to a server whose HTTPS failed with `error`.
+fn needs_https(host: &str, error: &ureq::Error) -> String {
+    if may_send_unencrypted(host) {
+        // A private address whose HTTPS answered but failed: not a server without HTTPS.
+        format!("{host}'s HTTPS didn't work ({error}), so your password wasn't sent. Whoever runs the server can check its HTTPS: {HTTPS_HELP}")
+    } else {
+        format!(
+            "{host} didn't answer over HTTPS ({error}). Passwords only go to a server set up by name or \
+             on the internet encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}. \
+             A server on your own network or VPN without HTTPS can be set up by its IP address."
+        )
+    }
 }
 
 /// Where the server says to sign in, from its online config (the address the game will use).
@@ -167,15 +182,15 @@ pub fn sign_up(server: &str, name: &str, password: &str, code: &str) -> Result<(
     answer(status, &text).map(|pid| (pid, sent))
 }
 
-/// Posts JSON carrying a password: over HTTPS, or plain HTTP to a private server whose HTTPS
-/// didn't work. The status, the answer's text and how it went.
+/// Posts JSON carrying a password: over HTTPS, or plain HTTP to a server at a private address
+/// where nothing answers on the HTTPS port. The status, the answer's text and how it went.
 fn post_password(server: &str, path: &str, body: &str) -> Result<(u16, String, Sent), String> {
     let host = host(server);
     let https = match post(&format!("https://{host}{path}"), body) {
         Ok((status, text)) => return Ok((status, text, Sent::Encrypted)),
         Err(e) => e,
     };
-    if !may_send_unencrypted(&host) {
+    if !falls_back_to_plain(&host, &https) {
         return Err(needs_https(&host, &https));
     }
     let (status, text) = post(&format!("http://{host}{path}"), body).map_err(|e| format!("couldn't reach {host}: {e}"))?;
@@ -187,8 +202,8 @@ fn post_password(server: &str, path: &str, body: &str) -> Result<(u16, String, S
 }
 
 /// Posts JSON; the status and the answer's text.
-fn post(url: &str, body: &str) -> Result<(u16, String), String> {
-    let mut response = agent().post(url).header("Content-Type", "application/json").send(body).map_err(|e| e.to_string())?;
+fn post(url: &str, body: &str) -> Result<(u16, String), ureq::Error> {
+    let mut response = agent().post(url).header("Content-Type", "application/json").send(body)?;
     let status = response.status().as_u16();
     Ok((status, response.body_mut().read_to_string().unwrap_or_default()))
 }
@@ -255,21 +270,43 @@ mod tests {
     }
 
     #[test]
-    fn plain_http_for_passwords_only_on_a_private_network() {
+    fn plain_http_for_passwords_only_to_a_private_address() {
         assert!(may_send_unencrypted("192.168.1.20"));
         assert!(may_send_unencrypted("100.100.1.2"), "a Tailscale address");
         assert!(may_send_unencrypted("localhost"));
         assert!(may_send_unencrypted("[fd00::5]"));
+        assert!(may_send_unencrypted("fd00::5"));
         assert!(!may_send_unencrypted("203.0.113.10"));
         assert!(!may_send_unencrypted("2001:db8::1"));
-        assert!(!may_send_unencrypted("no-such-host.invalid"), "a name that can't be looked up");
-        // A name counts by where it points: every address private.
-        let ips = |list: &[&str]| list.iter().map(|s| s.parse().unwrap()).collect::<Vec<IpAddr>>();
-        assert!(all_private(&ips(&["192.168.1.20", "fd00::5"])));
-        assert!(!all_private(&ips(&["192.168.1.20", "203.0.113.10"])));
-        assert!(!all_private(&[]));
-        let why = needs_https("play.example.org", "connection refused");
-        assert!(why.contains("play.example.org") && why.contains("connection refused") && why.contains(HTTPS_HELP), "{why}");
+        // Names are never looked up for this, whatever they point at.
+        assert!(!may_send_unencrypted("play.example.org"));
+        assert!(!may_send_unencrypted("lan-box.local"));
+        assert!(!may_send_unencrypted("[play.example.org]"));
+    }
+
+    #[test]
+    fn plain_http_only_when_nothing_answers_on_https() {
+        use std::io::Error as Io;
+        use std::io::ErrorKind;
+        let refused = || ureq::Error::Io(Io::from(ErrorKind::ConnectionRefused));
+        let lan = "192.168.1.20";
+        assert!(falls_back_to_plain(lan, &refused()));
+        assert!(falls_back_to_plain(lan, &ureq::Error::ConnectionFailed));
+        assert!(falls_back_to_plain(lan, &ureq::Error::Timeout(ureq::Timeout::Connect)));
+        assert!(falls_back_to_plain(lan, &ureq::Error::Io(Io::from(ErrorKind::HostUnreachable))));
+        // Something answered and the encryption failed: never plain HTTP.
+        assert!(!falls_back_to_plain(lan, &ureq::Error::Tls("certificate not valid")));
+        assert!(!falls_back_to_plain(lan, &ureq::Error::Io(Io::from(ErrorKind::ConnectionReset))));
+        assert!(!falls_back_to_plain(lan, &ureq::Error::Timeout(ureq::Timeout::RecvResponse)));
+        assert!(!falls_back_to_plain(lan, &ureq::Error::Timeout(ureq::Timeout::Global)));
+        // Not a private address: never plain HTTP.
+        assert!(!falls_back_to_plain("203.0.113.10", &refused()));
+        assert!(!falls_back_to_plain("play.example.org", &refused()));
+
+        let why = needs_https("play.example.org", &refused());
+        assert!(why.contains("play.example.org") && why.contains(HTTPS_HELP) && why.contains("IP address"), "{why}");
+        let why = needs_https(lan, &ureq::Error::Tls("certificate not valid"));
+        assert!(why.contains("wasn't sent") && why.contains("certificate not valid"), "{why}");
     }
 
     #[test]

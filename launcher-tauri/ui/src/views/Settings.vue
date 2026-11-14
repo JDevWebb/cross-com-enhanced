@@ -52,7 +52,7 @@
             </button>
             <button type="button" class="btn" @click="$emit('go', 'setup')">Change server</button>
           </div>
-          <p class="muted small">Your password goes to the server over HTTPS, or unencrypted to a server on your own network or VPN that has no HTTPS.</p>
+          <p class="muted small">Your password goes to the server over HTTPS. Only a server set up by its IP address on your own network or VPN, with no HTTPS at all, gets it unencrypted.</p>
           <p v-if="account.said" class="small" :class="account.failed ? 'bad' : 'good'">{{ account.said }}</p>
         </template>
         <button v-else type="button" class="btn" @click="$emit('go', 'setup')">Set up a server and account</button>
