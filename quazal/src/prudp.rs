@@ -1481,6 +1481,21 @@ mod tests {
         }
     }
 
+    /// A reply of 11 packets, numbered as we send it, comes out whole through our own receiver.
+    #[test]
+    fn a_long_reply_comes_back_whole() {
+        let mut ci = client(Some(1000), 3074);
+        let payload: Vec<u8> = (0..10_500u32).map(|i| (i % 251) as u8).collect();
+        let chunks = payload.chunks(MAX_PAYLOAD_SIZE);
+        let n = chunks.len();
+        assert_eq!(n, 11);
+        let mut out = None;
+        for (i, (fid, chunk)) in fragment_ids(n).zip(chunks).enumerate() {
+            out = whole(add_fragment(&mut ci, fragment(100 + i as u16, fid, chunk)));
+        }
+        assert_eq!(out, Some((100 + n as u16 - 1, payload, n)));
+    }
+
     /// Fragments are put together in order whatever order they come in, and a message
     /// missing one waits for it instead of being handled without it.
     #[test]
