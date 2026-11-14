@@ -292,6 +292,11 @@ fn run_server(logger: &Logger, ctx: &Context, online: Option<Arc<online::Online>
     // Every game also signs in to the shared telemetry account (on a connection of its own): one
     // game's sign-in mustn't close everyone else's. Starting two together left both signed out.
     server.newest_sign_in_wins = |pid| pid != ticket::TRACKING_PID;
+    // Its password is built into the game, so signing in as it proves nothing: its connections
+    // stay within the limits on connections that haven't signed in (32 an address), or anyone
+    // could hold as many as an address may have in all (256), and for as long as a player's.
+    // A game holds one beside its own, so a household stays well within them.
+    server.shared_account = |pid| pid == ticket::TRACKING_PID;
     server.bind(ctx.listen)?;
     server.serve();
     Ok(())
