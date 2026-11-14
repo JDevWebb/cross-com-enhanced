@@ -116,7 +116,11 @@ pub fn check(server: &str) -> Result<String, String> {
         return Err(format!("{} answered {}: is it a Cross-Com server?", host(server), response.status()));
     }
     let body = response.body_mut().read_to_string().map_err(|e| e.to_string())?;
-    sign_in_address(&body).ok_or_else(|| format!("{} didn't say where to sign in: is it a Cross-Com server?", host(server)))
+    let address = sign_in_address(&body).ok_or_else(|| format!("{} didn't say where to sign in: is it a Cross-Com server?", host(server)))?;
+    if let Some(other) = api_is_other_game(server) {
+        return Err(wrong_game(server, &other));
+    }
+    Ok(address)
 }
 
 /// The address and port in the online config's `SandboxUrl`.
@@ -148,18 +152,54 @@ pub struct News {
     pub shows: Option<String>,
 }
 
+/// The game a Cross-Com server for Future Soldier says it's for, in `/api/info`.
+pub const GAME: &str = "ghost-recon-future-soldier";
+
 /// How the server is; `None` when it answers as a Cross-Com server but is older than its API.
+/// An error for another game's server: a machine may host two behind one Caddy, and an address
+/// reaches the other's API (see `other_game`).
 pub fn info(server: &str) -> Result<Option<Info>, String> {
     let url = format!("http://{}/api/info", host(server));
     let mut response = agent().get(&url).call().map_err(|e| format!("couldn't reach {}: {e}", host(server)))?;
     match response.status().as_u16() {
         200 => {
             let body = response.body_mut().read_to_string().map_err(|e| e.to_string())?;
-            serde_json::from_str(&body).map(Some).map_err(|_| format!("{}'s answer made no sense", host(server)))
+            let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| format!("{}'s answer made no sense", host(server)))?;
+            if let Some(other) = other_game(&value) {
+                return Err(wrong_game(server, &other));
+            }
+            serde_json::from_value(value).map(Some).map_err(|_| format!("{}'s answer made no sense", host(server)))
         }
         404 => check(server).map(|_| None),
         status => Err(format!("{} answered {status}", host(server))),
     }
+}
+
+/// The name of the other game's server `/api/info` came from, when it isn't this game's: one
+/// saying another `game`, or none at all (a server for another game doesn't say this one's).
+fn other_game(info: &serde_json::Value) -> Option<String> {
+    if info["game"].as_str() == Some(GAME) {
+        return None;
+    }
+    Some(info["name"].as_str().filter(|n| !n.trim().is_empty()).unwrap_or("another game's server").to_owned())
+}
+
+fn wrong_game(server: &str, other: &str) -> String {
+    format!(
+        "{} reaches {other}, not a Future Soldier server. The machine may host both: set this server up by its own domain.",
+        host(server)
+    )
+}
+
+/// After the online config answered, whether the same address's API is another game's: what
+/// `check` refuses. Anything else (no API, no answer) is left to the game to find out.
+fn api_is_other_game(server: &str) -> Option<String> {
+    let mut response = agent().get(&format!("http://{}/api/info", host(server))).call().ok()?;
+    if response.status() != 200 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&response.body_mut().read_to_string().ok()?).ok()?;
+    other_game(&value)
 }
 
 /// Checks a name and password with the server: the account's ID, `None` when the server is
@@ -223,6 +263,16 @@ fn answer(status: u16, body: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knows_another_games_server_by_its_info() {
+        let ours = serde_json::json!({"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier", "version": "0.1.0"});
+        assert_eq!(other_game(&ours), None);
+        let other = serde_json::json!({"name": "5th Echelon Enhanced", "version": "0.5.0", "features": []});
+        assert_eq!(other_game(&other).as_deref(), Some("5th Echelon Enhanced"));
+        assert_eq!(other_game(&serde_json::json!({"game": "something-else"})).as_deref(), Some("another game's server"));
+        assert!(wrong_game("203.0.113.10", "5th Echelon Enhanced").contains("own domain"));
+    }
 
     #[test]
     fn takes_the_server_as_people_type_it() {

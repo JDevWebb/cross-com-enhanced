@@ -91,6 +91,8 @@ pub(crate) struct Status {
     pub no_info: Option<String>,
     /// Why it couldn't be reached, if it couldn't.
     pub error: Option<String>,
+    /// The address reaches another game's server (by its name), not this game's.
+    pub other_game: Option<String>,
     pub checked: Option<Instant>,
 }
 
@@ -325,6 +327,7 @@ pub(super) fn library_loads(dll: &CStr) -> bool {
 fn poll(server: &str, username: &str, wake: &mpsc::Receiver<()>) {
     let mut watch = Watch::default();
     let mut signed_in_shown = false;
+    let mut other_game_shown = false;
     loop {
         let result = server_info::fetch(server, POLL_TIMEOUT);
         for change in watch.update(&result) {
@@ -337,6 +340,12 @@ fn poll(server: &str, username: &str, wake: &mpsc::Receiver<()>) {
         match &result {
             Ok(Reply::Info(_)) => {}
             Ok(Reply::NoInfo(why)) => info!("{server} answered without its info: {why}"),
+            Ok(Reply::OtherGame(name)) => {
+                warn!("{server} reaches {name}, another game's server: set this game's server up by its own domain");
+                if !std::mem::replace(&mut other_game_shown, true) {
+                    toast(format!("{server} is {name}, not this game's server"), true);
+                }
+            }
             Err(e) => warn!("Couldn't ask {server} for its info: {e}"),
         }
         let online = result.is_ok();
@@ -348,10 +357,18 @@ fn poll(server: &str, username: &str, wake: &mpsc::Receiver<()>) {
                     s.info = Some(info);
                     s.no_info = None;
                     s.error = None;
+                    s.other_game = None;
                 }
                 Ok(Reply::NoInfo(why)) => {
                     s.no_info = Some(why);
                     s.error = None;
+                    s.other_game = None;
+                }
+                Ok(Reply::OtherGame(name)) => {
+                    s.info = None;
+                    s.no_info = None;
+                    s.error = None;
+                    s.other_game = Some(name);
                 }
                 Err(e) => s.error = Some(e.0),
             }

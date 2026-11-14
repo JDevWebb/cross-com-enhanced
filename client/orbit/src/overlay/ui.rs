@@ -335,6 +335,7 @@ impl Overlay {
         self.row(ui, "Address", server, FG);
         let (state, color) = match s.reach {
             Reach::Checking => ("Checking...", MUTED),
+            Reach::Online if s.other_game.is_some() => ("Another game's server", BAD),
             Reach::Online => ("Online", GOOD),
             Reach::Offline => ("Offline", BAD),
         };
@@ -349,7 +350,12 @@ impl Overlay {
             self.row(ui, "Checked", &if ago < 5 { "just now".into() } else { format!("{ago} s ago") }, MUTED);
         }
         ui.spacing();
-        if let Some(error) = &s.error {
+        if let Some(name) = &s.other_game {
+            let _t = ui.push_style_color(StyleColor::Text, BAD);
+            ui.text_wrapped(format!(
+                "This address reaches {name}, not a Future Soldier server: the machine hosts both. The game may still find its server, but set it up in the launcher by this server's own domain."
+            ));
+        } else if let Some(error) = &s.error {
             let _t = ui.push_style_color(StyleColor::Text, BAD);
             ui.text_wrapped(format!("The server isn't answering: {error}. The overlay asks again every minute."));
         } else if let Some(why) = &s.no_info {
@@ -397,6 +403,13 @@ impl Overlay {
         use crosscom_client_common::server_info::LEADERBOARD_MODES;
         if self.status.server.is_none() {
             ui.text_wrapped("No server is set in crosscom.toml. Choose a server in the Cross-Com launcher.");
+            return;
+        }
+        if let Some(name) = &self.status.other_game {
+            let _t = ui.push_style_color(StyleColor::Text, BAD);
+            ui.text_wrapped(format!(
+                "This address reaches {name}; its leaderboard isn't this game's. Set the server up by its own domain."
+            ));
             return;
         }
         // The modes, as buttons.

@@ -141,7 +141,8 @@ docker compose -f docker/compose.yaml -f docker/compose.https.yaml -f docker/com
 
 Players of this game set the server up by its domain, not the machine's address: the game finds
 its online config either way, but the launcher and the overlay ask by name, and an address alone
-would reach the other server's API. Caddy's rules are in `docker/Caddyfile.shared`.
+would reach the other server's API (the launcher and the overlay say so when it does). Caddy's
+rules are in `docker/Caddyfile.shared`.
 
 ## Without Docker
 
@@ -224,11 +225,13 @@ Always on, on port 80 next to the online config. The launcher uses it; so can a 
 without one):
 
 ```json
-{"version": "0.1.0", "players_online": 3, "news": [
+{"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier", "version": "0.1.0", "players_online": 3, "news": [
   {"title": "Double XP weekend", "body": "All weekend, every ranked match.", "date": "2026-11-20", "shows": "multiplayer"}
 ]}
 ```
 
+`game` says which game the server is for: the launcher and the overlay check it, and say so
+when an address reaches another game's server (on a machine that hosts both, see above).
 `shows` is `null`, `"multiplayer"`, `"campaign"` or `"guerrilla"`. A player counts from their
 sign-in until their game disconnects, or a minute after it stops answering.
 

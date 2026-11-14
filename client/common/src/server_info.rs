@@ -17,6 +17,9 @@ use serde::Deserialize;
 
 /// The page.
 pub const PATH: &str = "/api/info";
+/// The game a Cross-Com server for Future Soldier says it's for. A machine may host another
+/// game's server behind the same Caddy, and an address alone reaches that one's page.
+pub const GAME: &str = "ghost-recon-future-soldier";
 /// The server's HTTP port, unless `server` names another (`host:port`).
 pub const HTTP_PORT: u16 = 80;
 /// The most of an answer that's read.
@@ -25,6 +28,8 @@ const MAX_RESPONSE: usize = 512 * 1024;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ServerInfo {
+    pub name: Option<String>,
+    pub game: Option<String>,
     pub version: Option<String>,
     pub players_online: Option<u32>,
     pub news: Vec<NewsItem>,
@@ -47,6 +52,8 @@ pub enum Reply {
     Info(ServerInfo),
     /// It answered, but without its info (no such page, or not as expected).
     NoInfo(String),
+    /// Another game's server answered (by its name): the address reaches the wrong one.
+    OtherGame(String),
 }
 
 /// The server couldn't be asked: not found, not answering, or not speaking HTTP.
@@ -145,7 +152,8 @@ fn get(server: &str, path: &str, timeout: Duration) -> Result<Vec<u8>, Unreachab
 /// Reads an HTTP response as the info page.
 pub fn reply(response: &[u8]) -> Result<Reply, Unreachable> {
     Ok(match body(response)? {
-        Ok(body) => match serde_json::from_slice(&body) {
+        Ok(body) => match serde_json::from_slice::<ServerInfo>(&body) {
+            Ok(info) if info.game.as_deref() != Some(GAME) => Reply::OtherGame(info.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "another game's server".into())),
             Ok(info) => Reply::Info(info),
             Err(e) => Reply::NoInfo(format!("its info isn't as expected: {e}")),
         },
@@ -266,7 +274,7 @@ mod tests {
 
     #[test]
     fn reads_the_info() {
-        let body = r#"{"version":"0.3.0","players_online":4,"news":[{"title":"Welcome","body":"Hi","date":"2026-11-15","shows":null},{"title":"Campaign","body":"Co-op","date":"2026-11-14","shows":"campaign"}],"later":1}"#;
+        let body = r#"{"game":"ghost-recon-future-soldier","version":"0.3.0","players_online":4,"news":[{"title":"Welcome","body":"Hi","date":"2026-11-15","shows":null},{"title":"Campaign","body":"Co-op","date":"2026-11-14","shows":"campaign"}],"later":1}"#;
         let Ok(Reply::Info(info)) = reply(&ok(body)) else { panic!() };
         assert_eq!(info.version.as_deref(), Some("0.3.0"));
         assert_eq!(info.players_online, Some(4));
@@ -276,13 +284,24 @@ mod tests {
     }
 
     #[test]
-    fn every_field_is_optional() {
-        let Ok(Reply::Info(info)) = reply(&ok("{}")) else { panic!() };
-        assert_eq!(info, ServerInfo::default());
-        let Ok(Reply::Info(info)) = reply(&ok(r#"{"news":[{"title":"Only a title"}]}"#)) else {
+    fn every_field_but_the_game_is_optional() {
+        let Ok(Reply::Info(info)) = reply(&ok(r#"{"game":"ghost-recon-future-soldier"}"#)) else {
+            panic!()
+        };
+        assert_eq!(info.version, None);
+        let Ok(Reply::Info(info)) = reply(&ok(r#"{"game":"ghost-recon-future-soldier","news":[{"title":"Only a title"}]}"#)) else {
             panic!()
         };
         assert_eq!(info.news[0].body, "");
+    }
+
+    #[test]
+    fn knows_another_games_server() {
+        assert_eq!(
+            reply(&ok(r#"{"name":"5th Echelon Enhanced","version":"0.5.0"}"#)),
+            Ok(Reply::OtherGame("5th Echelon Enhanced".into()))
+        );
+        assert_eq!(reply(&ok("{}")), Ok(Reply::OtherGame("another game's server".into())));
     }
 
     #[test]
@@ -307,8 +326,16 @@ mod tests {
 
     #[test]
     fn reads_a_chunked_body() {
-        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n{\"pla\r\nE\r\nyers_online\":7\r\n1\r\n}\r\n0\r\n\r\n";
-        let Ok(Reply::Info(info)) = reply(response) else { panic!() };
+        let json = br#"{"game":"ghost-recon-future-soldier","players_online":7}"#;
+        let (a, b) = json.split_at(20);
+        let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        for part in [a, b] {
+            response.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
+            response.extend_from_slice(part);
+            response.extend_from_slice(b"\r\n");
+        }
+        response.extend_from_slice(b"0\r\n\r\n");
+        let Ok(Reply::Info(info)) = reply(&response) else { panic!() };
         assert_eq!(info.players_online, Some(7));
     }
 

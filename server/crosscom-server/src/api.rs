@@ -1,6 +1,7 @@
 //! The launcher's API, over HTTP next to the online config. Always on.
 //!
-//! - `GET /api/info`: `{"version": "0.1.0", "players_online": 3, "news": [...]}`, the news as
+//! - `GET /api/info`: `{"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier",
+//!   "version": "0.1.0", "players_online": 3, "news": [...]}`, the news as
 //!   the game shows it (see `news.rs`), each `{"title", "body", "date": "YYYY-MM-DD", "shows"}`
 //!   with `shows` null or `"multiplayer"`, `"campaign"` or `"guerrilla"`.
 //! - `POST /api/login` with `{"name": ..., "password": ...}`: `200 {"pid": ...}` when they match
@@ -29,6 +30,11 @@ use crate::signup::error;
 use crate::signup::Answer;
 
 pub const INFO_PATH: &str = "/api/info";
+/// The game this server is for, as `/api/info` says: the launcher and the overlay check it, as
+/// a machine may host another game's server too (behind one Caddy), and an address alone could
+/// reach that one's API.
+pub const GAME: &str = "ghost-recon-future-soldier";
+pub const NAME: &str = "Cross-Com Enhanced";
 pub const LOGIN_PATH: &str = "/api/login";
 /// The biggest request body taken: a name and a password fit many times over.
 pub const MAX_BODY: usize = 1024;
@@ -44,6 +50,8 @@ pub struct Api {
 
 #[derive(Serialize)]
 struct Info {
+    name: &'static str,
+    game: &'static str,
     version: &'static str,
     players_online: usize,
     news: Vec<news::Shown>,
@@ -99,6 +107,8 @@ impl Api {
     pub fn info(&self, logger: &Logger) -> String {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let info = Info {
+            name: NAME,
+            game: GAME,
             version: env!("CARGO_PKG_VERSION"),
             players_online: self.online.count(),
             news: news::shown(&news::load(&self.news, logger), now),
@@ -156,6 +166,8 @@ pub(crate) mod tests {
         let logger = Logger::root(slog::Discard, slog::o!());
         let json: serde_json::Value = serde_json::from_str(&api.info(&logger)).unwrap();
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["game"], "ghost-recon-future-soldier");
+        assert_eq!(json["name"], "Cross-Com Enhanced");
         assert_eq!(json["players_online"], 1);
         let news = json["news"].as_array().unwrap();
         assert_eq!(news.len(), 1, "the welcome, without a news file");
