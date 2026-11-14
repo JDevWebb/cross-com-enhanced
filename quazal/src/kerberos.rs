@@ -116,18 +116,27 @@ impl KerberosTicket {
         key
     }
 
-    /// Creates a `KerberosTicket` from a byte buffer.
+    /// Reads a ticket made by [`Self::as_bytes`]: an error, never a panic, for one that's too
+    /// short or whose MAC doesn't match.
     pub fn from_bytes(buf: &[u8], peer_pid: u32, password: Option<&str>, key: &secretbox::Key) -> Result<Self, FromStreamError> {
-        let off = buf.len() - Md5::output_size();
-        let (buf, _mac) = buf.split_at(off);
+        let Some(off) = buf.len().checked_sub(Md5::output_size()) else {
+            return Err(FromStreamError::MissingBytes(Md5::output_size() - buf.len()));
+        };
+        let (buf, mac) = buf.split_at(off);
 
         let obf_key = Self::derive_key(peer_pid, password);
+        let mut check: Hmac<Md5> = Hmac::new_from_slice(&obf_key).expect("any key length");
+        Mac::update(&mut check, buf);
+        check
+            .verify_slice(mac)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "ticket MAC mismatch"))?;
         let buf: Vec<u8> = Rc4::new(&obf_key).zip(buf).map(|(a, b)| a ^ b).collect();
         let mut rdr = ReadStream::from_reader(Cursor::new(buf));
 
         let session_key = FromStream::from_stream(&mut rdr)?;
         let pid = FromStream::from_stream(&mut rdr)?;
-        let internal: Vec<u8> = rdr.read_all()?;
+        // Written with its length in front (`Vec<u8>`'s `to_bytes`), as `as_bytes` does.
+        let internal: Vec<u8> = rdr.read()?;
         let internal = KerberosTicketInternal::open(&internal, key)?;
 
         Ok(Self { session_key, pid, internal })
@@ -170,6 +179,31 @@ mod tests {
         assert!(opened.is_for("203.0.113.5".parse().unwrap()));
         assert!(opened.is_for("::ffff:203.0.113.5".parse().unwrap()), "either way of writing it");
         assert!(!opened.is_for("203.0.113.6".parse().unwrap()));
+    }
+
+    /// A ticket reads back as written; a short one or one with a wrong MAC is an error.
+    #[test]
+    fn a_ticket_reads_back_and_a_bad_one_is_an_error() {
+        let key = secretbox::gen_key();
+        let ticket = KerberosTicket {
+            session_key: [3; SESSION_KEY_SIZE],
+            pid: 0x1000,
+            internal: KerberosTicketInternal {
+                principle_id: 0x1234,
+                valid_until: 99,
+                session_key: [3; SESSION_KEY_SIZE],
+                issued_to: [0; 16],
+            },
+        };
+        let bytes = ticket.as_bytes(0x1234, None, &key);
+        let back = KerberosTicket::from_bytes(&bytes, 0x1234, None, &key).unwrap();
+        assert_eq!((back.session_key, back.pid, back.internal.principle_id), ([3; SESSION_KEY_SIZE], 0x1000, 0x1234));
+        assert!(KerberosTicket::from_bytes(&[1, 2, 3], 0x1234, None, &key).is_err(), "shorter than its MAC");
+        assert!(KerberosTicket::from_bytes(&[], 0x1234, None, &key).is_err());
+        let mut tampered = bytes.clone();
+        tampered[0] ^= 1;
+        assert!(KerberosTicket::from_bytes(&tampered, 0x1234, None, &key).is_err(), "MAC mismatch");
+        assert!(KerberosTicket::from_bytes(&bytes, 0x1234, Some("JaDe!"), &key).is_err(), "another password's key");
     }
 
     #[test]
