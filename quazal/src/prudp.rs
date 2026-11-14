@@ -83,6 +83,9 @@ const MAX_ECHO_SOURCES: usize = 10_000;
 /// How long after a connection's last packet a repeated SYN or CONNECT for it
 /// is still answered as a repeat.
 const REPEAT_WINDOW: Duration = Duration::from_secs(5);
+/// How long a connection must have been quiet for a new handshake from its address to take
+/// its signature when all are in use ([`Server::quiet_signature`], [`Server::takes_over`]).
+const TAKE_OVER_AFTER: Duration = Duration::from_secs(20);
 
 /// Connections one address may hold: 256 (a LAN party behind one router), or
 /// `FE_MAX_CONNECTIONS_PER_IP` (the load test's players all share one).
@@ -354,12 +357,14 @@ impl<T> ClientRegistry<T> {
     }
 
     /// Takes a connection that has signed in (on CONNECT with a ticket, or by a sign-in call)
-    /// off the count of those that haven't.
-    fn settle(&mut self, signature: u32) {
+    /// off the count of those that haven't, unless as a `shared` account (whose password is
+    /// public: signing in as one proves nothing, so its connections stay within the limits on
+    /// those that haven't signed in).
+    fn settle(&mut self, signature: u32, shared: fn(u32) -> bool) {
         let Some(ci) = self.clients.get_mut(&signature).map(RefCell::get_mut) else {
             return;
         };
-        if ci.counted_anonymous && ci.user_id.is_some() {
+        if ci.counted_anonymous && ci.user_id.is_some_and(|id| !shared(id)) {
             ci.counted_anonymous = false;
             let ip = ci.address().ip();
             self.uncount_anonymous(ip);
@@ -466,6 +471,10 @@ where
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
     pub newest_sign_in_wins: fn(u32) -> bool,
+    /// Accounts anyone may sign in as (the server's own, whose passwords are public): their
+    /// connections count against the limits on connections that haven't signed in, per
+    /// address and in all, as before signing in. None by default.
+    pub shared_account: fn(u32) -> bool,
     /// Users to sign out now, from every address (an admin's kick or ban); read once a
     /// second.
     pub sign_outs: Option<std::sync::mpsc::Receiver<u32>>,
@@ -513,6 +522,7 @@ where
             stale_connection_handler: None,
             unacked_handler: None,
             newest_sign_in_wins: |_| true,
+            shared_account: |_| false,
             sign_outs: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
         }
@@ -844,7 +854,7 @@ where
         }
         drop(guard);
         if !signed_in {
-            self.client_registry.settle(packet.signature);
+            self.client_registry.settle(packet.signature, self.shared_account);
         }
     }
 
@@ -945,8 +955,11 @@ where
         }
         // A connection from an earlier game on this address can linger for a minute with the
         // signature a new game's handshake would get (a game started again, by chance, with
-        // the same session number): the new one gets the next generation's.
-        let Some(sig) = signatures.into_iter().find(|sig| !self.client_registry.clients.contains_key(sig)) else {
+        // the same session number): the new one gets the next generation's, or, when every
+        // generation's is held, the one quiet longest from this same address (see
+        // `quiet_signature`).
+        let free = signatures.iter().copied().find(|sig| !self.client_registry.clients.contains_key(sig));
+        let Some(sig) = free.or_else(|| self.quiet_signature(client, &signatures)) else {
             if let Some(skipped) = self.noise.allow() {
                 warn!(logger, "Refusing a handshake from {client}: its signatures are all in use"; "similar_skipped" => skipped);
             }
@@ -973,6 +986,35 @@ where
         }
     }
 
+    /// Every signature this address, port and session can be offered is held by an earlier
+    /// connection (a game restarted again and again, whose old connections linger up to
+    /// [`SESSION_TIMEOUT`]: it was refused until one expired): the signature of the one quiet
+    /// longest, if it's from this same address and quiet for [`TAKE_OVER_AFTER`]. A live game
+    /// is never that quiet. Nothing is ended here (a SYN's address can be forged): the old
+    /// connection goes only when a CONNECT brings the signature back from that address
+    /// ([`Server::takes_over`]).
+    fn quiet_signature(&self, client: SocketAddr, signatures: &[u32]) -> Option<u32> {
+        let (sig, quiet) = signatures
+            .iter()
+            .filter_map(|sig| {
+                let ci = self.client_registry.clients.get(sig)?.try_borrow().ok()?;
+                (*ci.address() == client).then(|| (*sig, ci.last_seen.elapsed()))
+            })
+            .max_by_key(|(_, quiet)| *quiet)?;
+        (quiet >= TAKE_OVER_AFTER).then_some(sig)
+    }
+
+    /// A CONNECT with the signature of an earlier connection from the same address that has
+    /// been quiet [`TAKE_OVER_AFTER`], valid for this address and port (so its sender got our
+    /// SYN answer there): the new game's, which takes the place of the old one.
+    fn takes_over(&self, client: SocketAddr, from: VPort, signature: u32) -> bool {
+        self.client_registry
+            .clients
+            .get(&signature)
+            .is_some_and(|ci| ci.try_borrow().is_ok_and(|ci| *ci.address() == client && ci.last_seen.elapsed() >= TAKE_OVER_AFTER))
+            && self.cookies.valid(client, from, signature)
+    }
+
     /// Whether `ci` is the connection a repeated SYN or CONNECT from `client` with this
     /// session belongs to.
     ///
@@ -994,6 +1036,23 @@ where
             return;
         };
 
+        // A game started again, on the signature of its own quiet earlier connection
+        // (`handle_syn`): the old one goes, and this CONNECT is handled as a new one.
+        if self
+            .client_registry
+            .clients
+            .get(&packet.signature)
+            .is_some_and(|ci| !self.is_repeat(ci, client, packet.session_id))
+            && self.takes_over(client, packet.source, packet.signature)
+        {
+            let old = self.client_registry.clients.remove(&packet.signature).expect("just found").into_inner();
+            info!(
+                logger,
+                "A new game at {client} took the place of its earlier connection, quiet for {} s",
+                old.last_seen.elapsed().as_secs()
+            );
+            self.expire(old);
+        }
         // The same CONNECT again (our answer was slow, or lost): answer it again.
         if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
             if !self.is_repeat(ci, client, packet.session_id) {
@@ -1141,7 +1200,7 @@ where
         // The sign-in is taken in (the player online, their other games signed out) before
         // it's answered: once the game is signed in, everyone sees it online.
         let signed_in = ci.borrow().user_id;
-        self.client_registry.settle(packet.signature);
+        self.client_registry.settle(packet.signature, self.shared_account);
         let answered = !packet.payload.is_empty();
         if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
@@ -1422,6 +1481,21 @@ mod tests {
         }
     }
 
+    /// A reply of 11 packets, numbered as we send it, comes out whole through our own receiver.
+    #[test]
+    fn a_long_reply_comes_back_whole() {
+        let mut ci = client(Some(1000), 3074);
+        let payload: Vec<u8> = (0..10_500u32).map(|i| (i % 251) as u8).collect();
+        let chunks = payload.chunks(MAX_PAYLOAD_SIZE);
+        let n = chunks.len();
+        assert_eq!(n, 11);
+        let mut out = None;
+        for (i, (fid, chunk)) in fragment_ids(n).zip(chunks).enumerate() {
+            out = whole(add_fragment(&mut ci, fragment(100 + i as u16, fid, chunk)));
+        }
+        assert_eq!(out, Some((100 + n as u16 - 1, payload, n)));
+    }
+
     /// Fragments are put together in order whatever order they come in, and a message
     /// missing one waits for it instead of being handled without it.
     #[test]
@@ -1613,6 +1687,50 @@ mod tests {
         assert_eq!(answer().conn_signature, Some(new));
     }
 
+    /// Every signature an address and session can get held by its earlier connections (a
+    /// game restarted again and again): a new handshake is offered the one quiet longest once
+    /// it's been quiet [`TAKE_OVER_AFTER`] (refused while they're all fresher), and the old
+    /// connection goes only when the CONNECT comes back from the same address and port.
+    #[test]
+    fn a_restarted_game_takes_over_its_quiet_old_connection() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let game = UdpSocket::bind("127.0.0.1:0").unwrap();
+        game.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let from = game.local_addr().unwrap();
+        let sigs: Vec<u32> = (0..COOKIE_GENERATIONS).map(|g| server.cookies.signature(from, VPort::default(), 9, g)).collect();
+        for (i, sig) in sigs.iter().enumerate() {
+            server.handle_connect(&logger, handshake(PacketType::Connect, *sig, 9), from);
+            // Quiet 6 s or more: past the repeat window, short of taking over.
+            server.client_registry.clients[sig].borrow_mut().last_seen = Instant::now() - Duration::from_secs(6 + i as u64);
+        }
+        let mut buf = [0u8; 1024];
+        while game.recv(&mut buf).is_ok() {}
+        server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
+        assert!(game.recv(&mut buf).is_err(), "all fresh: refused");
+        assert_eq!(server.client_registry.clients.len(), 4);
+        server.client_registry.clients[&sigs[2]].borrow_mut().last_seen = Instant::now() - TAKE_OVER_AFTER - Duration::from_secs(1);
+        server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
+        let n = game.recv(&mut buf).unwrap();
+        assert_eq!(QPacket::from_bytes(&ctx, &buf[..n]).unwrap().0.conn_signature, Some(sigs[2]));
+        assert_eq!(server.client_registry.clients.len(), 4, "a SYN alone ends nothing");
+        let still_old = |server: &Server<'_, _, _, ()>| server.client_registry.clients[&sigs[2]].borrow().last_seen.elapsed() >= TAKE_OVER_AFTER;
+        // From another address (a forger's), the CONNECT is ignored.
+        let elsewhere = SocketAddr::from(([127, 0, 0, 2], from.port()));
+        server.handle_connect(&logger, handshake(PacketType::Connect, sigs[2], 9), elsewhere);
+        assert!(still_old(&server), "another address");
+        // From another virtual port, the signature isn't the one that port was given.
+        let mut other_port = handshake(PacketType::Connect, sigs[2], 9);
+        other_port.source = VPort { port: 14, ..VPort::default() };
+        server.handle_connect(&logger, other_port, from);
+        assert!(still_old(&server), "another virtual port");
+        // From the game's address and port: the old one goes, the new one is made.
+        server.handle_connect(&logger, handshake(PacketType::Connect, sigs[2], 9), from);
+        assert_eq!(server.client_registry.clients.len(), 4);
+        assert!(!still_old(&server), "the new connection");
+    }
+
     /// A CONNECT on a fresh connection's signature and session is a resend when it's the
     /// same, and a new game's sign-in when it carries another ticket: that one replaces the
     /// old connection instead of getting its answer.
@@ -1747,11 +1865,18 @@ mod tests {
         // One signing in no longer counts.
         let other = *server.client_registry.clients.keys().next().unwrap();
         server.client_registry.clients[&other].borrow_mut().user_id = Some(1234);
-        server.client_registry.settle(other);
+        server.client_registry.settle(other, |_| false);
         assert_eq!(server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()).0, MAX_ANONYMOUS_PER_IP - 2);
         connect(&mut server, 41000);
         connect(&mut server, 41001);
         assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP + 1);
+        // One signing in as a shared account (public password) still counts.
+        let shared = *server.client_registry.clients.iter().find(|(_, c)| c.borrow().user_id.is_none()).unwrap().0;
+        server.client_registry.clients[&shared].borrow_mut().user_id = Some(0x1111);
+        server.client_registry.settle(shared, |id| id == 0x1111);
+        assert_eq!(server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()).0, MAX_ANONYMOUS_PER_IP);
+        connect(&mut server, 41002);
+        assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP + 1, "the address is full");
     }
 
     /// Calls from connections that haven't signed in: a burst, then the rate, per address.
