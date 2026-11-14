@@ -19,7 +19,7 @@
 //! 15 JoinRoom(u32, name, bool, bool, bool) -> result
 //! 16 squad rooms                           -> list (none)
 //! 19 Leaderboard(u8, u32, u32)             -> list, u32, u32 (none yet)
-//! 20 SetProperty(clan id, list)            -> nothing
+//! 20 SetProperty(clan id, list<Change>)    -> nothing   (Change: u32 value, u8 id, u8 how)
 //! 21 RemoveEvent(event id)                 -> result
 //! 22 SetEvent(ClanEvent)                   -> result        (the message of the day: type 1)
 //! 23 GetEvents(clan id, u8 type, from, to) -> list<ClanEvent>
@@ -28,6 +28,12 @@
 //! 27 GetClanTags(list<clan id>)            -> list<tag>
 //! 28 GetInvitesWithNames(clan id or 0)     -> list<InviteWithName>, result
 //! ```
+//!
+//! A ClanInfo carries the squad's member count (a u8 after the motto: the invitation screen's
+//! "Number of Members") and its properties, a list of u32 by id that the game itself keeps up
+//! after squad matches with SetProperty: 0 rating, 1 wins, 2 losses, 4 and 5 experience (the
+//! screen adds them), 6 to 12 wins per mode, 20 level. A change adds to the value (how 0), keeps
+//! the larger (3) or the smaller (4).
 //!
 //! Roles: 0 leader, 1 lieutenant, 2 sergeant, 3 recruit; lower is higher. A leader may leave
 //! only once someone else leads (the game then asks who, and hands over with ChangeRole), or
@@ -92,6 +98,17 @@ const MAX_INVITES_TO_PLAYER: i64 = 20;
 const INVITE_DAYS: i64 = 7;
 /// The events (messages of the day) a squad keeps.
 const MAX_EVENTS: i64 = 20;
+/// The squad properties the game keeps (by id).
+const MAX_PROPERTIES: usize = 21;
+/// Properties the game holds to a range: the rating (100 to 3000) and the level (up to 20).
+const RATING: u8 = 0;
+const RATING_RANGE: (u32, u32) = (100, 3000);
+const LEVEL: u8 = 20;
+const MAX_LEVEL: u32 = 20;
+/// The most one change may add (a match brings a few thousand experience at most).
+const MAX_ADDED: u32 = 100_000;
+/// The most property changes one SetProperty may carry.
+const MAX_CHANGES: u32 = 64;
 /// The most squads or players one request may ask about.
 const MAX_ASKED: u32 = 256;
 
@@ -194,7 +211,13 @@ impl Store {
                 text TEXT NOT NULL,
                 kind INTEGER NOT NULL,
                 at INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS clan_properties (
+                clan INTEGER NOT NULL,
+                prop INTEGER NOT NULL,
+                value INTEGER NOT NULL,
+                PRIMARY KEY (clan, prop)
+            ) WITHOUT ROWID;",
         )?;
         Ok(Self { db: Mutex::new(db) })
     }
@@ -275,6 +298,64 @@ impl Store {
                 })
             })
             .optional()
+    }
+
+    pub fn member_count(&self, clan: u32) -> Res<u32> {
+        self.lock().query_row("SELECT COUNT(*) FROM clan_members WHERE clan = ?1", [clan], |r| r.get(0))
+    }
+
+    /// A squad's properties by id, up to the last one kept (unkept ones are 0).
+    pub fn properties(&self, clan: u32) -> Res<Vec<u32>> {
+        let db = self.lock();
+        let mut q = db.prepare_cached("SELECT prop, value FROM clan_properties WHERE clan = ?1")?;
+        let mut props = Vec::new();
+        for row in q.query_map([clan], |r| Ok((r.get::<_, usize>(0)?, r.get::<_, u32>(1)?)))? {
+            let (id, value) = row?;
+            if id >= props.len() {
+                props.resize(id + 1, 0);
+            }
+            props[id] = value;
+        }
+        Ok(props)
+    }
+
+    /// Changes to a squad's properties, from one of its members after a match; others' are
+    /// ignored, as are ids the game doesn't keep.
+    pub fn change_properties(&self, pid: u32, clan: u32, changes: &[(u32, u8, u8)]) -> Res<()> {
+        let mut db = self.lock();
+        let tx = db.transaction()?;
+        if Self::membership(&tx, pid)?.map(|(c, _)| c) != Some(clan) {
+            return Ok(());
+        }
+        for &(value, id, how) in changes {
+            if usize::from(id) >= MAX_PROPERTIES {
+                continue;
+            }
+            let old: u32 = tx
+                .query_row("SELECT value FROM clan_properties WHERE clan = ?1 AND prop = ?2", params![clan, id], |r| r.get(0))
+                .optional()?
+                .unwrap_or(0);
+            // The game's own changes only: additions of what one match can bring, and the
+            // larger or smaller of two values; anything else is dropped.
+            let new = match how {
+                0 if value <= MAX_ADDED => old.saturating_add(value),
+                3 => old.max(value),
+                4 if old == 0 => value,
+                4 => old.min(value),
+                _ => continue,
+            };
+            let new = match id {
+                RATING => new.clamp(RATING_RANGE.0, RATING_RANGE.1),
+                LEVEL => new.min(MAX_LEVEL),
+                _ => new,
+            };
+            tx.execute(
+                "INSERT INTO clan_properties (clan, prop, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (clan, prop) DO UPDATE SET value = excluded.value",
+                params![clan, id, new],
+            )?;
+        }
+        tx.commit()
     }
 
     pub fn members(&self, clan: u32) -> Res<Vec<Member>> {
@@ -401,6 +482,7 @@ impl Store {
             tx.execute("DELETE FROM clans WHERE id = ?1", [clan])?;
             tx.execute("DELETE FROM clan_invites WHERE clan = ?1", [clan])?;
             tx.execute("DELETE FROM clan_events WHERE clan = ?1", [clan])?;
+            tx.execute("DELETE FROM clan_properties WHERE clan = ?1", [clan])?;
         }
         tx.commit()?;
         Ok(result::OK)
@@ -416,7 +498,7 @@ impl Store {
         if role != LEADER {
             return Ok(result::NOT_ALLOWED);
         }
-        for table in ["clan_members", "clan_invites", "clan_events"] {
+        for table in ["clan_members", "clan_invites", "clan_events", "clan_properties"] {
             tx.execute(&format!("DELETE FROM {table} WHERE clan = ?1"), [clan])?;
         }
         tx.execute("DELETE FROM clans WHERE id = ?1", [clan])?;
@@ -580,17 +662,20 @@ fn put_len(out: &mut Vec<u8>, n: usize) {
     put_u32(out, n as u32);
 }
 
-fn clan_info(out: &mut Vec<u8>, clan: &Clan) {
+fn clan_info(out: &mut Vec<u8>, clan: &Clan, members: u32, properties: &[u32]) {
     put_u32(out, clan.id);
     put_str(out, &clan.name);
     put_str(out, &clan.tag);
     put_str(out, &clan.motto);
-    out.push(0);
+    out.push(u8::try_from(members).unwrap_or(u8::MAX));
     put_len(out, ROLE_PRIVILEGES.len());
     for p in ROLE_PRIVILEGES {
         out.extend_from_slice(&p.to_le_bytes());
     }
-    put_len(out, 0); // squad properties (its XP): none kept yet
+    put_len(out, properties.len());
+    for &p in properties {
+        put_u32(out, p);
+    }
     put_str(out, "");
 }
 
@@ -668,13 +753,18 @@ impl Clans {
                 let ids = p.ids().map_err(bad)?;
                 put_len(&mut out, ids.len());
                 for id in ids {
-                    let clan = self.store.clan(id)?.unwrap_or(Clan {
-                        id,
-                        name: String::new(),
-                        tag: String::new(),
-                        motto: String::new(),
-                    });
-                    clan_info(&mut out, &clan);
+                    match self.store.clan(id)? {
+                        Some(clan) => clan_info(&mut out, &clan, self.store.member_count(id)?, &self.store.properties(id)?),
+                        None => {
+                            let blank = Clan {
+                                id,
+                                name: String::new(),
+                                tag: String::new(),
+                                motto: String::new(),
+                            };
+                            clan_info(&mut out, &blank, 0, &[]);
+                        }
+                    }
                 }
             }
             4 => put_u32(&mut out, self.store.delete(pid)?),
@@ -721,8 +811,16 @@ impl Clans {
                 put_u32(&mut out, 0);
                 put_u32(&mut out, 0);
             }
-            // The squad's own numbers (its XP): accepted, not kept yet.
-            20 | 25 | 17 | 18 => {}
+            20 => {
+                let clan = p.u32().map_err(bad)?;
+                let n = p.u32().map_err(bad)?;
+                if n > MAX_CHANGES {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                let changes = (0..n).map(|_| Ok((p.u32()?, p.u8()?, p.u8()?))).collect::<Result<Vec<_>, Error>>().map_err(bad)?;
+                self.store.change_properties(pid, clan, &changes)?;
+            }
+            25 | 17 | 18 => {}
             21 => put_u32(&mut out, self.store.remove_event(pid, p.u32().map_err(bad)?)?),
             22 => {
                 let id = p.u32().map_err(bad)?;
@@ -866,6 +964,33 @@ impl<CI> Protocol<CI> for Clans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_squad_keeps_its_numbers_and_tells_its_size() {
+        let s = Store::in_memory().unwrap();
+        let (id, _) = s.create(1, "Night Owls", "OWL", "").unwrap();
+        s.invite(1, 2).unwrap();
+        s.join(2, id).unwrap();
+        assert_eq!(s.member_count(id).unwrap(), 2);
+        assert!(s.properties(id).unwrap().is_empty());
+        s.change_properties(1, id, &[(5, 4, 0), (1, 1, 0), (1500, 0, 3)]).unwrap();
+        s.change_properties(2, id, &[(7, 4, 0), (1200, 0, 4), (3, 20, 3), (9, 21, 0)]).unwrap();
+        s.change_properties(3, id, &[(1000, 4, 0)]).unwrap(); // not a member
+        s.change_properties(1, id, &[(1_000_000, 4, 0), (9, 4, 1), (99, 20, 3)]).unwrap(); // too much, unknown, out of range
+        let props = s.properties(id).unwrap();
+        assert_eq!(props.len(), 21);
+        assert_eq!((props[0], props[1], props[4], props[20]), (1200, 1, 12, 20));
+
+        let clan = s.clan(id).unwrap().unwrap();
+        let mut out = Vec::new();
+        clan_info(&mut out, &clan, 2, &props);
+        let after_motto = 4 + 2 + 11 + 2 + 4 + 2;
+        assert_eq!(out[after_motto], 2, "the member count follows the motto");
+
+        s.leave(2, 2).unwrap();
+        s.leave(1, 1).unwrap();
+        assert!(s.properties(id).unwrap().is_empty(), "gone with the squad");
+    }
 
     #[test]
     fn a_squad_is_made_joined_by_invitation_and_led() {
