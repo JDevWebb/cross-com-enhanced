@@ -11,8 +11,8 @@
 //! ```
 //!
 //! a dare being "GDE" with `targetPID`, `dareId` (the sender's own PID) and `score` (the packed
-//! value). "MPP" sends strings; numbers may come as any of the number types, so each value is
-//! read as text. Other events (such as "MPP" after a ranked match) are only answered.
+//! value), each an int64 (type 1) widened from a signed 32-bit int, in that (sorted) order.
+//! "MPP" sends strings. Each value is read as text whatever its type. Other events (such as "MPP" after a ranked match) are only answered.
 //!
 //! Protocol 5008 hands them out: RequestDareInfo (1) answers the server's time and the caller's
 //! dares, each `{ sender: u32, u32, sent: date-time, value: u32, id: u32, u32 }` (the game reads
@@ -179,7 +179,15 @@ fn hex(bytes: &[u8]) -> String {
 
 /// A dare event's target and packed value.
 fn dare_of(values: &[(String, String)]) -> Option<(u32, u32)> {
-    let get = |key: &str| values.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.trim().parse::<u32>().ok());
+    // The game sends each as an int64 widened from a signed 32-bit int, so a packed value with
+    // the top bit set comes negative: the low 32 bits are the value.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let get = |key: &str| {
+        let v = values.iter().find(|(k, _)| k == key)?.1.trim();
+        v.parse::<u32>()
+            .ok()
+            .or_else(|| v.parse::<i64>().ok().filter(|n| i32::try_from(*n).is_ok()).map(|n| n as u32))
+    };
     Some((get("targetPID")?, get("score")?))
 }
 
@@ -377,6 +385,9 @@ mod tests {
         gde.extend_from_slice(&1_234_567i64.to_le_bytes());
         let (_, values) = parse_event(&gde).unwrap();
         assert_eq!(dare_of(&values), Some((1_048_578, 1_234_567)));
+        // A value of 32768 or more to beat comes negative.
+        let values = [("targetPID".to_string(), "7".to_string()), ("score".to_string(), "-2147418111".to_string())];
+        assert_eq!(dare_of(&values), Some((7, 0x8001_0001)));
     }
 
     #[test]
