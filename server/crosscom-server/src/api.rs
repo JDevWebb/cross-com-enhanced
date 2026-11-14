@@ -85,7 +85,7 @@ impl Api {
             return ("200 OK", leaderboard::answer(mode, Vec::new()));
         };
         let made = self.leaderboards.get(mode, || {
-            let stored = stats.everyone(leaderboard::BOARD).ok()?;
+            let stored = stats.leaderboard_numbers().ok()?;
             let rows = leaderboard::table(&stored, leaderboard::MODES[mode].1, |pid| self.accounts.name(pid).ok().flatten());
             Some(leaderboard::answer(mode, rows))
         });

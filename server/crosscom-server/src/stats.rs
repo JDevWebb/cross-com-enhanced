@@ -239,11 +239,18 @@ pub struct Store {
 const MAX_EVERYONE: i64 = 500_000;
 
 impl Store {
-    /// Every player's 32-bit numbers on `board`: (player, keys, column, value).
-    pub fn everyone(&self, board: u8) -> rusqlite::Result<Vec<crate::leaderboard::Stored>> {
+    /// Every player's 32-bit numbers on the leaderboard's board, only in its shape: one key, a
+    /// mode (0 to 11, the little-endian u32's top three bytes zero), and its columns; so other
+    /// rows a player stores can't crowd anyone out of the read. (player, keys, column, value).
+    pub fn leaderboard_numbers(&self) -> rusqlite::Result<Vec<crate::leaderboard::Stored>> {
         let db = self.lock();
-        let mut query = db.prepare_cached("SELECT pid, keys, col, value FROM player_stats WHERE type = ?1 AND board = ?2 LIMIT ?3")?;
-        let rows = query.query_map(params![SEND_INT32, board, MAX_EVERYONE], |r| {
+        let mut query = db.prepare_cached(
+            "SELECT pid, keys, col, value FROM player_stats
+             WHERE type = ?1 AND board = ?2 AND length(keys) = 4 AND substr(keys, 2, 3) = x'000000'
+               AND substr(keys, 1, 1) < x'0c' AND col IN (1, 2, 3, 7, 8, 9) AND length(value) = 4
+             LIMIT ?3",
+        )?;
+        let rows = query.query_map(params![SEND_INT32, crate::leaderboard::BOARD, MAX_EVERYONE], |r| {
             Ok((r.get(0)?, keys_from_blob(&r.get::<_, Vec<u8>>(1)?), r.get(2)?, r.get(3)?))
         })?;
         rows.collect()
@@ -577,6 +584,31 @@ impl<CI> Protocol<CI> for PlayerStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_leaderboard_reads_only_its_rows() {
+        let store = Store::in_memory().unwrap();
+        {
+            let db = store.lock();
+            let add = |pid: u32, board: u8, keys: &[u32], col: u8, value: &[u8]| {
+                db.execute(
+                    "INSERT INTO player_stats (pid, type, board, keys, col, value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![pid, SEND_INT32, board, keys_blob(keys), col, value],
+                )
+                .unwrap();
+            };
+            add(1, 10, &[2], 3, &5i32.to_le_bytes()); // kept
+            add(1, 10, &[11], 7, &1i32.to_le_bytes()); // kept: mode 11
+            add(1, 10, &[12], 3, &1i32.to_le_bytes()); // not a mode
+            add(1, 10, &[0x0100_0002], 3, &1i32.to_le_bytes()); // not a mode
+            add(1, 10, &[2, 1], 3, &1i32.to_le_bytes()); // two keys
+            add(1, 10, &[2], 4, &1i32.to_le_bytes()); // not a leaderboard column
+            add(1, 10, &[2], 2, &[1, 2]); // not a 32-bit value
+            add(1, 18, &[2], 3, &1i32.to_le_bytes()); // another board
+        }
+        let rows = store.leaderboard_numbers().unwrap();
+        assert_eq!(rows.iter().map(|r| (r.1.clone(), r.2)).collect::<Vec<_>>(), vec![(vec![2], 3), (vec![11], 7)]);
+    }
 
     /// What the game sent as its menus loaded (two of its boards).
     const FROM_THE_GAME: &str = "020000000a01000000ffffffff060000000708090102030d0000000006000000201a1312101b0100000001001000";

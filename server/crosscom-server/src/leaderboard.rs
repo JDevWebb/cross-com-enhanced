@@ -149,18 +149,18 @@ pub fn answer(mode: usize, rows: Vec<Entry>) -> String {
 pub struct Cache(Mutex<HashMap<usize, (Instant, String)>>);
 
 impl Cache {
-    /// `mode`'s answer, made with `make` when there's none fresh.
+    /// `mode`'s answer, made with `make` when there's none fresh. The lock is held while it's
+    /// made, so requests at once wait for that one instead of each reading the database.
     pub fn get(&self, mode: usize, make: impl FnOnce() -> Option<String>) -> Option<String> {
         let now = Instant::now();
-        if let Some((at, json)) = self.0.lock().ok()?.get(&mode) {
+        let mut cache = self.0.lock().ok()?;
+        if let Some((at, json)) = cache.get(&mode) {
             if now.duration_since(*at) < KEEP_FOR {
                 return Some(json.clone());
             }
         }
         let json = make()?;
-        if let Ok(mut cache) = self.0.lock() {
-            cache.insert(mode, (now, json.clone()));
-        }
+        cache.insert(mode, (now, json.clone()));
         Some(json)
     }
 }
