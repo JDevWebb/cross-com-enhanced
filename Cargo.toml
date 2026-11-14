@@ -13,6 +13,15 @@ members = [
   "tools/quazal-tools/quazal-tools-macros",
 ]
 resolver = "2"
+# Third-party crates kept here with patches of our own (each folder's PATCHES.md says which).
+exclude = ["vendor"]
+
+[patch.crates-io]
+# The overlay's graphics hook: hudhook 0.8.1 with fixes for its DirectX 9 vertex buffer and for
+# systems that won't make the DirectX 11 dummy device it hooks through. See vendor/hudhook/PATCHES.md.
+hudhook = { path = "vendor/hudhook" }
+# imgui-rs with the fix for imgui-rs/imgui-rs#775 (a panic under hudhook), until a release has it.
+imgui = { git = "https://github.com/imgui-rs/imgui-rs", rev = "cb8beeb" }
 
 [profile.release]
 strip = true
