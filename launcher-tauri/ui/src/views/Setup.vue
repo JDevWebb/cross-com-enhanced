@@ -56,6 +56,7 @@
           </div>
           <p v-if="account.new" class="muted small">Letters, digits, "-", "_" and "." for your name, which other players see. Use a password you use nowhere else.</p>
           <p v-else class="muted small">The server checks your name and password before the game uses them.</p>
+          <p class="muted small">Your password goes to the server over HTTPS. Only a server set up by its IP address on your own network or VPN, with no HTTPS at all, gets it unencrypted.</p>
         </li>
 
         <li class="card done">

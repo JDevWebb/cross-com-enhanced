@@ -29,6 +29,7 @@ mod notify;
 mod online;
 mod online_config;
 mod privileges;
+mod proxy;
 mod rate_limit;
 mod secure;
 mod sessions;
@@ -176,7 +177,12 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         content: online_config::content(public_ip, config.auth_port),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
         api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)).with_stats(Arc::clone(&stats)),
+        // Checked as the settings were read.
+        proxies: config.trusted_proxies().unwrap_or_default(),
     };
+    if !config.trusted_proxies.is_empty() {
+        info!(logger, "HTTP behind a proxy at {}", config.trusted_proxies.join(", "));
+    }
     if config.signup && config.signup_code.is_none() {
         info!(logger, "Sign-up is open to anyone who can reach this server (no signup_code)");
     }

@@ -6,6 +6,7 @@ PC at home with the ports forwarded, a cheap VPS, or a machine on the LAN or VPN
 | Port | Protocol | What for |
 |---|---|---|
 | 80 | TCP | The online config the game asks for first (it always uses port 80), the launcher's API and sign-up |
+| 443 | TCP | Only with [HTTPS](#https-with-caddy): the launcher's sign-in and sign-up, encrypted |
 | 21030 | UDP | Sign-in |
 | 21031 | UDP | Everything else: profiles, matchmaking, friends |
 
@@ -49,9 +50,68 @@ In `docker/.env` (or the environment):
 | `CROSSCOM_SIGNUP` | `false` | `true` lets players make their own accounts |
 | `CROSSCOM_SIGNUP_CODE` | (none) | A code players must give to sign up: at least 12 random characters |
 | `CROSSCOM_LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` or `trace` |
+| `CROSSCOM_DOMAIN` | (none) | The server's domain, for [HTTPS](#https-with-caddy) (`compose.https.yaml` only) |
+| `CROSSCOM_TRUSTED_PROXIES` | (none) | Reverse proxies in front of port 80, by address or network, separated by commas (`compose.https.yaml` sets it) |
 
 Everything else can go in `crosscom-server.toml` in the volume (see below); the environment wins
 over the file.
+
+## HTTPS with Caddy
+
+The launcher sends players' passwords when they sign in or make an account, over HTTPS. It
+falls back to plain HTTP only for a server set up by a private IP address (`10.x`, `172.16-31.x`,
+`192.168.x`, `100.64-127.x` as Tailscale uses, `fc00::/7`, link-local, or this machine) where
+nothing answers on port 443 at all, and tells the player their password went unencrypted. A
+server set up by name is never sent a password unencrypted, whatever its name points at, nor is
+one whose HTTPS answers but fails (a certificate that isn't valid): the launcher refuses and says
+the server needs HTTPS. So a LAN or VPN server without a domain is set up in the launcher by its
+IP address.
+
+`docker/compose.https.yaml` puts [Caddy](https://caddyserver.com) in front of the server's port
+80. Caddy gets a certificate from Let's Encrypt and renews it by itself. You need:
+
+- a domain (or a subdomain; a free dynamic DNS name works) with a DNS `A` record pointing at the
+  machine's public IP;
+- TCP ports 80 and 443 open or forwarded to the machine, as well as UDP 21030 and 21031;
+- Docker Compose 2.24.4 or later.
+
+Add the domain to `docker/.env` and start both files together:
+
+```sh
+echo CROSSCOM_DOMAIN=play.example.org >> docker/.env
+docker compose -f docker/compose.yaml -f docker/compose.https.yaml up -d
+```
+
+Use the same two `-f` files for every other compose command (`logs`, `exec`, `down`). Players can
+set up the launcher with the domain or the IP address: the game itself only uses port 80.
+
+What stays on plain HTTP, on port 80, and why:
+
+- `GET /OnlineConfigService.svc/GetOnlineConfig`: the game asks for it there and can't use HTTPS.
+- `GET /api/...` (the server's info, news and other read-only answers): the in-game overlay reads
+  them and has no TLS. None carries a password.
+
+Everything else on port 80, notably `POST /accounts` and `POST /api/login`, is redirected to
+`https://` the domain. Certificates' challenges are answered on port 80 too. The UDP ports aren't
+proxied; the game's own sign-in goes there as before.
+
+Caddy's address on the compose network is fixed (`172.31.80.10`), and the server trusts it alone
+(`CROSSCOM_TRUSTED_PROXIES`): from it, the server counts each request as coming from the rightmost
+`X-Forwarded-For` address, so the sign-in and sign-up limits count each player rather than Caddy,
+and it refuses passwords unless `X-Forwarded-Proto` says HTTPS. From any other address those
+headers are ignored. If `172.31.80.0/24` is already used on the machine, change the subnet,
+Caddy's address and `CROSSCOM_TRUSTED_PROXIES` in `compose.https.yaml` together.
+
+Caddy runs from the official image, pinned by digest, on a read-only filesystem with only the
+capability to bind ports 80 and 443. Its certificates live in the `caddy_data` volume; keep it,
+or Let's Encrypt's rate limits may bite after a few rebuilds.
+
+Without a domain (a server only on a LAN or VPN), leave `compose.https.yaml` out: the server
+answers everything on port 80 as before.
+
+With a reverse proxy of your own instead, have it set `X-Forwarded-For` (appending the client's
+address on the right) and `X-Forwarded-Proto`, keep the two plain-HTTP paths above on port 80,
+and name it in `trusted_proxies`.
 
 ## Without Docker
 
@@ -69,6 +129,7 @@ database = "crosscom.db"
 log_level = "info"
 # signup = true
 # signup_code = "at least 12 random characters"
+# trusted_proxies = ["127.0.0.1"]   # a reverse proxy on this machine, giving HTTPS
 ```
 
 and run `target/release/crosscom-server --config crosscom-server.toml`. Port 80 needs root or, on
@@ -118,8 +179,9 @@ right code, `409` if the name is taken, `400` for a name or password the game ca
 after too many tries (10 a day from one address; 200 sign-ups an hour in all, counting only
 those with the right code).
 
-Sign-up goes over plain HTTP, like the game's own sign-in to the server, so passwords cross the
-network unencrypted. Players should use a password they use nowhere else. If you leave sign-up
+Without [HTTPS](#https-with-caddy), sign-up goes over plain HTTP and passwords cross the network
+unencrypted; the launcher only does that with a server set up by a private IP address. With it, use
+`https://DOMAIN/accounts`. Either way, players should use a password they use nowhere else. If you leave sign-up
 open without a code, anyone who can reach the server can make accounts. The server refuses a code
 shorter than 12 characters; make it random (`openssl rand -base64 12`), not a word.
 
@@ -143,7 +205,8 @@ sign-in until their game disconnects, or a minute after it stops answering.
 `POST /api/login` with `{"name": "Kozak", "password": "their-password"}` checks an account:
 `200 {"pid": ...}` when it matches, `401 {"error": "wrong name or password"}` when it doesn't.
 Failed tries count with the game's own sign-in: after 10 in 15 minutes from one address, or for
-one name, it answers `429`. Like sign-up, it's plain HTTP.
+one name, it answers `429`. Like sign-up, it goes over HTTPS when the server has it; through a
+trusted proxy, both answer `403` to a request that didn't come over HTTPS.
 
 `GET /api/leaderboard?mode=conflict` ranks every player who has played that mode (`all`,
 `conflict`, `decoy`, `saboteur`, `siege`, `stockade` or `takeover`; `all` without one), from

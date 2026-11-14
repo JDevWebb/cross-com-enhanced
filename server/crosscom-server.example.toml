@@ -19,3 +19,8 @@ database = "crosscom.db"
 
 # error, warning, info, debug or trace.
 log_level = "info"
+
+# Reverse proxies in front of the HTTP side (such as Caddy, for HTTPS), by address or network.
+# Their X-Forwarded-For names the client, and passwords through them are taken only over HTTPS.
+# For example ["172.31.80.10"] (docker/compose.https.yaml sets this).
+trusted_proxies = []

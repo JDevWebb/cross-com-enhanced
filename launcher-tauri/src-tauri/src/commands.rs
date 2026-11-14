@@ -143,13 +143,22 @@ pub async fn server_info(state: tauri::State<'_, Launcher>) -> Result<Option<ser
 }
 
 /// Signs in to an account (`new` false) or makes one, then the account the game signs in with.
-/// Whether the server checked it (an older one can't).
-fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<bool, String> {
+/// Whether the server checked it (an older one can't), and how the password went.
+fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<(bool, server::Sent), String> {
     if new {
-        server::sign_up(host, name, password, code)?;
-        Ok(true)
+        let (_, sent) = server::sign_up(host, name, password, code)?;
+        Ok((true, sent))
     } else {
-        Ok(server::sign_in(host, name, password)?.is_some())
+        let (pid, sent) = server::sign_in(host, name, password)?;
+        Ok((pid.is_some(), sent))
+    }
+}
+
+/// Said after an account's done, when its password went unencrypted.
+fn unencrypted_note(sent: server::Sent) -> &'static str {
+    match sent {
+        server::Sent::Encrypted => "",
+        server::Sent::Unencrypted => " This server on your network has no HTTPS, so your password went to it unencrypted.",
     }
 }
 
@@ -194,7 +203,7 @@ pub async fn setup(state: tauri::State<'_, Launcher>, setup: Setup) -> Result<St
         ..old
     };
     let (new, code, work_dir) = (setup.new_account, setup.code, dir.clone());
-    let checked = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+    let (checked, sent) = tauri::async_runtime::spawn_blocking(move || -> Result<(bool, server::Sent), String> {
         server::check(&host)?;
         let checked = account(&host, &config.username, &config.password, new, &code)?;
         game::install(&work_dir, &files)?;
@@ -207,11 +216,12 @@ pub async fn setup(state: tauri::State<'_, Launcher>, setup: Setup) -> Result<St
     prefs.game_dir = Some(dir);
     prefs.dx9 = setup.dx9;
     state.save(prefs)?;
-    Ok(match (setup.new_account, checked) {
+    let said = match (setup.new_account, checked) {
         (true, _) => format!("Account {name} made, and the game is set up."),
         (false, true) => format!("Signed in as {name}, and the game is set up."),
         (false, false) => "The game is set up. This server can't check passwords here; the game will.".into(),
-    })
+    };
+    Ok(said + unencrypted_note(sent))
 }
 
 #[derive(Deserialize)]
@@ -241,18 +251,19 @@ pub async fn set_account(state: tauri::State<'_, Launcher>, account: Account) ->
         ..config
     };
     let new = account.new_account;
-    let checked = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+    let (checked, sent) = tauri::async_runtime::spawn_blocking(move || -> Result<(bool, server::Sent), String> {
         let checked = self::account(&host, &config.username, &config.password, new, &account.code)?;
         settings::save_client(&dir, &config, &overlay)?;
         Ok(checked)
     })
     .await
     .map_err(|e| e.to_string())??;
-    Ok(match (new, checked) {
+    let said = match (new, checked) {
         (true, _) => format!("Account {name} made. The game signs in with it."),
         (false, true) => format!("Signed in as {name}. The game signs in with it."),
         (false, false) => format!("The game signs in as {name} now. This server can't check passwords here; the game will."),
-    })
+    };
+    Ok(said + unencrypted_note(sent))
 }
 
 #[derive(Deserialize)]
