@@ -1,7 +1,8 @@
 //! The Cross-Com server for Ghost Recon: Future Soldier.
 //!
 //! Three services, each on its own thread:
-//! - the online config, over HTTP, which tells the game where to sign in;
+//! - the online config, over HTTP, which tells the game where to sign in (and the launcher's
+//!   API);
 //! - the auth server, where the game signs in and gets a ticket for the secure server;
 //! - the secure server, where the game's online services are.
 //!
@@ -11,6 +12,7 @@
 //! ```
 
 mod accounts;
+mod api;
 mod clans;
 mod config;
 mod dares;
@@ -23,6 +25,7 @@ mod menu;
 mod nat;
 mod news;
 mod notify;
+mod online;
 mod online_config;
 mod privileges;
 mod rate_limit;
@@ -158,8 +161,14 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     let auth = context(config.auth_port);
     let secure = context(config.secure_port);
     let http_listen = SocketAddr::new(config.listen_ip, config.http_port);
-    let online_config = online_config::content(public_ip, config.auth_port);
-    let signup = config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone()));
+    // Failed sign-ins count together, from the game and from the launcher.
+    let failed_sign_ins = Arc::new(rate_limit::FailedSignIns::default());
+    let online = Arc::new(online::Online::default());
+    let http = online_config::Http {
+        content: online_config::content(public_ip, config.auth_port),
+        signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
+        api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)),
+    };
     if config.signup && config.signup_code.is_none() {
         info!(logger, "Sign-up is open to anyone who can reach this server (no signup_code)");
     }
@@ -194,16 +203,18 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     };
 
     let threads = [
-        spawn("online config", logger.clone(), move |logger| {
-            online_config::serve(&logger, http_listen, online_config, signup)
-        }),
+        spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
         spawn("auth", logger.clone(), {
             let accounts = Arc::clone(&accounts);
-            move |logger| run_server(&logger, &auth, |handler| handler.register_protocol(ticket::new_protocol(accounts)))
+            move |logger| {
+                run_server(&logger, &auth, None, |handler| {
+                    handler.register_protocol(ticket::new_protocol(accounts, failed_sign_ins));
+                })
+            }
         }),
         spawn("secure", logger.clone(), move |logger| {
             let sessions = Arc::new(sessions::Sessions::default());
-            run_server(&logger, &secure, |handler| {
+            run_server(&logger, &secure, Some(online), |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts), Arc::clone(&friends)));
@@ -241,8 +252,9 @@ where
         .expect("starting a thread")
 }
 
-/// Runs a PRUDP server with the protocols `register` adds.
-fn run_server(logger: &Logger, ctx: &Context, register: impl FnOnce(&mut RVSecHandler<()>)) -> std::io::Result<()> {
+/// Runs a PRUDP server with the protocols `register` adds, keeping `online` up to date with who
+/// is signed in to it.
+fn run_server(logger: &Logger, ctx: &Context, online: Option<Arc<online::Online>>, register: impl FnOnce(&mut RVSecHandler<()>)) -> std::io::Result<()> {
     let mut handler = RVSecHandler::<()>::new(logger.clone());
     register(&mut handler);
     let mut registry = StreamHandlerRegistry::new(logger.clone());
@@ -253,8 +265,22 @@ fn run_server(logger: &Logger, ctx: &Context, register: impl FnOnce(&mut RVSecHa
         },
         Box::new(handler),
     );
-    // No handlers for expired or disconnected clients yet: nothing per player is kept.
-    let mut server = Server::<fn(quazal::ClientInfo), fn(quazal::ClientInfo)>::new(logger.clone(), ctx, registry);
+    // A player's last connection closing (or timing out) signs them out. When they sign in
+    // from a new address, their old connections close first and the new sign-in counts after.
+    let gone = {
+        let online = online.clone();
+        move |ci: quazal::ClientInfo| {
+            if let (Some(online), Some(pid)) = (&online, ci.user_id) {
+                online.gone(pid);
+            }
+        }
+    };
+    let mut server = Server::new(logger.clone(), ctx, registry);
+    server.expired_client_handler = Some(gone.clone());
+    server.disconnect_handler = Some(gone);
+    if let Some(online) = online {
+        server.login_handler = Some(Box::new(move |pid, _| online.signed_in(pid)));
+    }
     server.user_handler = Some(address_echo);
     // Every game also signs in to the shared telemetry account (on a connection of its own): one
     // game's sign-in mustn't close everyone else's. Starting two together left both signed out.

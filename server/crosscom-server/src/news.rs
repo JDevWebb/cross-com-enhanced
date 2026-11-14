@@ -38,6 +38,7 @@ use quazal::rmc::Request;
 use quazal::ClientInfo;
 use quazal::Context;
 use serde::Deserialize;
+use serde::Serialize;
 use slog::warn;
 use slog::Logger;
 
@@ -69,7 +70,7 @@ pub struct Item {
     pub shows: Option<Shows>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shows {
     Multiplayer,
@@ -130,6 +131,21 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The civil date of a day since 1970-01-01 (the inverse of `days_from_civil`).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 1 to 12, 1 to 31
+    (year, month as u32, day as u32)
+}
+
 fn unix(date: Option<&toml::value::Datetime>, now: u64) -> u64 {
     let Some(d) = date.and_then(|d| d.date) else {
         return now;
@@ -146,6 +162,41 @@ fn cut(s: &str, max: usize) -> String {
         end -= 1;
     }
     s[..end].to_string()
+}
+
+fn title(item: &Item) -> String {
+    item.title.replace('\0', "").chars().take(MAX_TITLE_CHARS).collect()
+}
+
+fn body(item: &Item) -> String {
+    cut(&item.body, MAX_BODY_BYTES)
+}
+
+/// A news item as the launcher shows it (`GET /api/info`).
+#[derive(Debug, Serialize)]
+pub struct Shown {
+    pub title: String,
+    pub body: String,
+    /// `YYYY-MM-DD`: the item's date, or today's.
+    pub date: String,
+    pub shows: Option<Shows>,
+}
+
+/// The news the game shows, for the launcher: the same items, cut the same way.
+pub fn shown(items: &[Item], now: u64) -> Vec<Shown> {
+    items[..items.len().min(MAX_ITEMS)]
+        .iter()
+        .map(|item| {
+            #[allow(clippy::cast_possible_wrap)] // seconds since 1970 fit an i64
+            let (year, month, day) = civil_from_days((unix(item.date.as_ref(), now) / 86_400) as i64);
+            Shown {
+                title: title(item),
+                body: body(item),
+                date: format!("{year:04}-{month:02}-{day:02}"),
+                shows: item.shows,
+            }
+        })
+        .collect()
 }
 
 fn put_str(out: &mut Vec<u8>, s: &str) {
@@ -172,11 +223,10 @@ pub fn reply(items: &[Item], now: u64) -> Vec<u8> {
         for _ in 0..3 {
             out.extend_from_slice(&when.to_le_bytes()); // published, display, expires
         }
-        let title: String = item.title.replace('\0', "").chars().take(MAX_TITLE_CHARS).collect();
-        put_str(&mut out, &title);
+        put_str(&mut out, &title(item));
         put_str(&mut out, "");
         let tag = item.shows.map_or("", Shows::tag);
-        put_str(&mut out, &format!("{tag}{}", cut(&item.body, MAX_BODY_BYTES)));
+        put_str(&mut out, &format!("{tag}{}", body(item)));
     }
     out
 }
@@ -247,6 +297,37 @@ mod tests {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(2000, 3, 1), 11_017);
         assert_eq!(days_from_civil(2026, 11, 15), 20_772);
+        for days in [0, 11_017, 20_772, 59, 60, -1] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(days_from_civil(y, m, d), days);
+        }
+        assert_eq!(civil_from_days(20_772), (2026, 11, 15));
+    }
+
+    #[test]
+    fn the_launcher_gets_the_same_news_as_json() {
+        let file: File = toml::from_str(
+            r#"
+            [[news]]
+            title = "Double XP"
+            body = "All weekend."
+            date = 2026-11-20
+            shows = "multiplayer"
+            [[news]]
+            title = "Hi"
+            body = "x"
+            "#,
+        )
+        .unwrap();
+        let json = serde_json::to_value(shown(&file.news, 20_772 * 86_400 + 3600)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                { "title": "Double XP", "body": "All weekend.", "date": "2026-11-20", "shows": "multiplayer" },
+                { "title": "Hi", "body": "x", "date": "2026-11-15", "shows": null },
+            ])
+        );
+        assert_eq!(shown(&vec![file.news[1].clone(); 20], 0).len(), MAX_ITEMS);
     }
 
     #[test]
