@@ -113,6 +113,36 @@ With a reverse proxy of your own instead, have it set `X-Forwarded-For` (appendi
 address on the right) and `X-Forwarded-Proto`, keep the two plain-HTTP paths above on port 80,
 and name it in `trusted_proxies`.
 
+### Sharing a machine with another game's server
+
+One machine can host this server and another game's server built the same way, such as
+[5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) for Splinter Cell:
+Blacklist. Their game ports differ (UDP 21030 and 21031 here, 21126 to 21128 there); what they
+share is TCP 80 and 443, where both games ask for their online config, at the same path. One
+Caddy holds both ports and tells the games apart: Future Soldier's request carries its own config
+ID (`23ad683803a0457cabce83f905811dbc`), so it comes here and every other goes to the other
+server. Launchers, overlays and tools ask by domain, one per server.
+
+You need:
+
+- two domains (or subdomains) pointing at the machine: one for each server;
+- the other server's HTTP side (its online config and API) moved off port 80, to port 8080 on
+  this machine by default, and set to trust Caddy (`172.31.80.10`, or the `172.31.80.0/24`
+  network) for `X-Forwarded-For`. In 5th Echelon Enhanced that's `[public] proxies`, and
+  `require_tls_for_credentials` keeps its passwords on HTTPS. Don't run its own Caddy as well;
+- in `docker/.env`: `CROSSCOM_DOMAIN`, `OTHER_DOMAIN` (the other server's domain) and, if it
+  isn't on port 8080 of this machine, `OTHER_UPSTREAM` (`host:port`, as Caddy reaches it).
+
+Then start this server with all three files:
+
+```sh
+docker compose -f docker/compose.yaml -f docker/compose.https.yaml -f docker/compose.shared.yaml up -d
+```
+
+Players of this game set the server up by its domain, not the machine's address: the game finds
+its online config either way, but the launcher and the overlay ask by name, and an address alone
+would reach the other server's API. Caddy's rules are in `docker/Caddyfile.shared`.
+
 ## Without Docker
 
 Build with the pinned toolchain (`rustup` picks it from `rust-toolchain.toml`):

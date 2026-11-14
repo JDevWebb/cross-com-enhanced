@@ -1,0 +1,56 @@
+# Caddy for a machine that hosts this server and another game's server built the same way (such
+# as 5th Echelon Enhanced, for Splinter Cell: Blacklist), sharing ports 80 and 443
+# (docker/compose.shared.yaml). Each game's own UDP ports differ and don't pass through here.
+#
+# Both games ask for their online config on port 80, at the same path, by the address players set
+# up: Future Soldier's request carries its own config ID, so that one comes here and every other
+# goes to the other server. The launchers, the overlay and the other game's tools ask by domain:
+# CROSSCOM_DOMAIN here, OTHER_DOMAIN there. OTHER_UPSTREAM is where the other server's HTTP side
+# answers (see docs/hosting.md).
+#
+# Passwords to this server go over HTTPS only, as in docker/Caddyfile. The other domain's traffic
+# is passed on as it comes; its server decides what it takes over plain HTTP.
+{
+	auto_https disable_redirects
+}
+
+{$CROSSCOM_DOMAIN} {
+	reverse_proxy server:80
+}
+
+{$OTHER_DOMAIN} {
+	reverse_proxy {$OTHER_UPSTREAM}
+}
+
+:80 {
+	# Future Soldier's online config, whatever address it was asked at.
+	@future_soldier {
+		path /OnlineConfigService.svc/GetOnlineConfig
+		query onlineConfigID=23ad683803a0457cabce83f905811dbc
+	}
+	handle @future_soldier {
+		reverse_proxy server:80
+	}
+
+	# This server's domain: what carries no password over plain HTTP, the rest to HTTPS.
+	@crosscom host {$CROSSCOM_DOMAIN}
+	handle @crosscom {
+		@plain {
+			method GET HEAD
+			path /api/*
+			not path /api/login
+		}
+		handle @plain {
+			reverse_proxy server:80
+		}
+		handle {
+			redir https://{$CROSSCOM_DOMAIN}{uri} 308
+		}
+	}
+
+	# Everything else (the other game's online config, by any address, and its domain): the other
+	# server, as it would have been asked without Caddy.
+	handle {
+		reverse_proxy {$OTHER_UPSTREAM}
+	}
+}

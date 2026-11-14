@@ -1,0 +1,26 @@
+# One machine, two game servers: this one and another built the same way (such as 5th Echelon
+# Enhanced, for Splinter Cell: Blacklist), sharing ports 80 and 443 through one Caddy. On top of
+# compose.https.yaml, from the repository root:
+#
+#   docker compose -f docker/compose.yaml -f docker/compose.https.yaml -f docker/compose.shared.yaml up -d
+#
+# In docker/.env, with the other settings:
+#   CROSSCOM_DOMAIN  this server's domain
+#   OTHER_DOMAIN     the other server's domain (its launcher and tools use it)
+#   OTHER_UPSTREAM   where the other server's HTTP side answers, as Caddy reaches it; by default
+#                    port 8080 on this machine (move it off port 80, which Caddy now has)
+#
+# The other server keeps its own ports for its game (UDP) and anything else it serves. It should
+# trust Caddy's X-Forwarded-For (172.31.80.10) for its rate limits. See docs/hosting.md.
+services:
+  caddy:
+    environment:
+      OTHER_DOMAIN: ${OTHER_DOMAIN:?set OTHER_DOMAIN to the other server's domain}
+      OTHER_UPSTREAM: ${OTHER_UPSTREAM:-host.docker.internal:8080}
+    # The other server, when it runs on this machine outside this compose project.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes: !override
+      - ./Caddyfile.shared:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
