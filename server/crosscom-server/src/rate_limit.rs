@@ -4,6 +4,9 @@
 //! The name limit stops guessing one account from many addresses, but it mustn't let a stranger
 //! lock the owner out: the last few addresses an account signed in from stay allowed while its
 //! name is over the limit. A success clears the name's count.
+//!
+//! A sign-in counts as failed from the moment it's let through until it matches, so many tried at
+//! once can't all pass the check while the password hashes are compared.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -76,25 +79,52 @@ fn bump<K: std::hash::Hash + Eq + Clone>(table: &mut HashMap<K, Count>, key: K, 
     count.failures += 1;
 }
 
+fn allows(tables: &Tables, address: IpAddr, name: &str, now: Instant) -> bool {
+    let known = tables.known.get(name).is_some_and(|a| a.contains(&address.to_canonical()));
+    current(tables.by_address.get(&address_key(address)), now) < MAX_PER_ADDRESS && (known || current(tables.by_name.get(name), now) < MAX_PER_NAME)
+}
+
 impl FailedSignIns {
-    /// Whether a sign-in from `address` as `name` may be tried now.
-    pub fn allowed(&self, address: IpAddr, name: &str, now: Instant) -> bool {
-        let tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let name = name.to_lowercase();
-        let known = tables.known.get(&name).is_some_and(|a| a.contains(&address.to_canonical()));
-        current(tables.by_address.get(&address_key(address)), now) < MAX_PER_ADDRESS && (known || current(tables.by_name.get(&name), now) < MAX_PER_NAME)
+    fn tables(&self) -> std::sync::MutexGuard<'_, Tables> {
+        self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn failed(&self, address: IpAddr, name: &str, now: Instant) {
-        let mut tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// Starts a sign-in from `address` as `name`, if one may be tried now. It counts as failed
+    /// until [`Self::succeeded`] says otherwise, decided under one lock: sign-ins checked at once
+    /// (the launcher's each have a thread) can't all pass before any of them has failed.
+    pub fn try_begin(&self, address: IpAddr, name: &str, now: Instant) -> bool {
+        let mut tables = self.tables();
+        let name = name.to_lowercase();
+        if !allows(&tables, address, &name, now) {
+            return false;
+        }
+        bump(&mut tables.by_address, address_key(address), now);
+        bump(&mut tables.by_name, name, now);
+        true
+    }
+
+    /// Whether a sign-in from `address` as `name` may be tried now.
+    #[cfg(test)]
+    fn allowed(&self, address: IpAddr, name: &str, now: Instant) -> bool {
+        allows(&self.tables(), address, &name.to_lowercase(), now)
+    }
+
+    #[cfg(test)]
+    fn failed(&self, address: IpAddr, name: &str, now: Instant) {
+        let mut tables = self.tables();
         bump(&mut tables.by_address, address_key(address), now);
         bump(&mut tables.by_name, name.to_lowercase(), now);
     }
 
+    /// A sign-in begun with [`Self::try_begin`] matched: it doesn't count as failed, and the
+    /// name's failures are forgotten.
     pub fn succeeded(&self, address: IpAddr, name: &str) {
-        let mut tables = self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tables = self.tables();
         let name = name.to_lowercase();
         tables.by_name.remove(&name);
+        if let Some(count) = tables.by_address.get_mut(&address_key(address)) {
+            count.failures = count.failures.saturating_sub(1);
+        }
         if tables.known.len() >= MAX_ENTRIES && !tables.known.contains_key(&name) {
             // Only real accounts get here, so this is rare; any entry will do.
             if let Some(any) = tables.known.keys().next().cloned() {
@@ -117,6 +147,38 @@ mod tests {
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::from([192, 0, 2, last])
+    }
+
+    #[test]
+    fn sign_ins_at_once_cant_pass_the_limit_together() {
+        let limits = std::sync::Arc::new(FailedSignIns::default());
+        let start = Instant::now();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(40));
+        let threads: Vec<_> = (0..40)
+            .map(|_| {
+                let (limits, barrier) = (std::sync::Arc::clone(&limits), std::sync::Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    limits.try_begin(ip(1), "Kozak", start)
+                })
+            })
+            .collect();
+        let begun = threads.into_iter().filter_map(|t| t.join().ok()).filter(|begun| *begun).count();
+        assert_eq!(begun, MAX_PER_ADDRESS as usize, "none of them had failed yet, but each counted");
+    }
+
+    #[test]
+    fn a_sign_in_that_matches_doesnt_count() {
+        let limits = FailedSignIns::default();
+        let now = Instant::now();
+        for _ in 0..MAX_PER_ADDRESS * 2 {
+            assert!(limits.try_begin(ip(1), "Kozak", now));
+            limits.succeeded(ip(1), "Kozak");
+        }
+        for _ in 0..MAX_PER_ADDRESS {
+            assert!(limits.try_begin(ip(1), "Kozak", now));
+        }
+        assert!(!limits.try_begin(ip(1), "Kozak", now));
     }
 
     #[test]

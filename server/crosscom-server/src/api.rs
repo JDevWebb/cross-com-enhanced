@@ -79,7 +79,9 @@ impl Api {
         if !accounts::valid_name(&login.name) {
             return wrong();
         }
-        if !self.failed.allowed(address, &login.name, Instant::now()) {
+        // Counted as failed from here unless it matches (see `rate_limit`), so requests at once
+        // can't all try before any has failed.
+        if !self.failed.try_begin(address, &login.name, Instant::now()) {
             return (error("429 Too Many Requests", "too many failed sign-ins; try again later"), None);
         }
         match self.accounts.verify(&login.name, &login.password) {
@@ -87,10 +89,7 @@ impl Api {
                 self.failed.succeeded(address, &login.name);
                 (("200 OK", json!({ "pid": pid }).to_string()), Some(login.name))
             }
-            Ok(None) => {
-                self.failed.failed(address, &login.name, Instant::now());
-                wrong()
-            }
+            Ok(None) => wrong(),
             Err(_) => (error("500 Internal Server Error", "couldn't check the account"), None),
         }
     }
@@ -143,6 +142,25 @@ pub(crate) mod tests {
         assert_eq!(api.login(here, &login("not a name", "x")).0 .0, "401 Unauthorized");
         assert_eq!(api.login(here, b"{oops").0 .0, "400 Bad Request");
         assert_eq!(api.login(here, br#"{"name":"Kozak","password":"hunter2","admin":true}"#).0 .0, "400 Bad Request");
+    }
+
+    #[test]
+    fn logins_at_once_cant_pass_the_limit_together() {
+        let (api, _) = api();
+        let api = Arc::new(api);
+        let barrier = Arc::new(std::sync::Barrier::new(30));
+        let threads: Vec<_> = (0..30)
+            .map(|i| {
+                let (api, barrier) = (Arc::clone(&api), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    api.login("198.51.100.1".parse().unwrap(), &login("Kozak", &format!("guess{i}"))).0 .0
+                })
+            })
+            .collect();
+        let statuses: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(statuses.iter().filter(|s| **s == "401 Unauthorized").count(), 10, "{statuses:?}");
+        assert_eq!(statuses.iter().filter(|s| **s == "429 Too Many Requests").count(), 20);
     }
 
     #[test]
