@@ -1,4 +1,5 @@
-//! Exports the Orbit methods under their MSVC C++ names.
+//! Exports the Orbit methods under their MSVC C++ names, and has the overlay's DirectX and
+//! DirectInput libraries loaded only when it starts.
 //!
 //! On 32-bit Windows rustc can't export a symbol whose name starts with `?` (the linker doesn't
 //! find it), so `src/orbit.rs` gives each method a plain C name and the linker exports it again
@@ -35,6 +36,9 @@ const EXPORTS: &[(&str, &str)] = &[
     ("?Close@SavegameWriter@orbitclient@mg@@QAEX_N@Z", "SavegameWriter_Close"),
 ];
 
+/// Loaded on first use (`/DELAYLOAD`); `src/overlay` loads them itself first.
+const DELAY_LOADED: &[&str] = &["d3d9.dll", "d3d11.dll", "d3dcompiler_47.dll", "dinput8.dll"];
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -43,5 +47,14 @@ fn main() {
         for (mangled, function) in EXPORTS {
             println!("cargo:rustc-cdylib-link-arg=/EXPORT:{mangled}={function}");
         }
+    }
+    if os == "windows" {
+        // The overlay's graphics and input libraries load when it starts, not with the game: the
+        // game doesn't load them when the overlay is off, and one that's missing turns the overlay
+        // off (src/overlay) instead of stopping the game.
+        for dll in DELAY_LOADED {
+            println!("cargo:rustc-cdylib-link-arg=/DELAYLOAD:{dll}");
+        }
+        println!("cargo:rustc-link-lib=delayimp");
     }
 }

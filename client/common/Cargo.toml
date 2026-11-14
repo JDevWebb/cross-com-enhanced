@@ -2,9 +2,10 @@
 name = "crosscom-client-common"
 version = "0.1.0"
 edition = "2021"
-description = "What both client DLLs share: the settings file and the log"
+description = "What both client DLLs share: the settings file, the log, the saves and the server's info"
 
 [dependencies]
 log = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }

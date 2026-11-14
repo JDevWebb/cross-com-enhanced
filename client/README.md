@@ -4,10 +4,23 @@ Two DLLs that replace the game's Ubisoft libraries, in the game's folder:
 
 | File | Replaces | What it does |
 |---|---|---|
-| `ubiorbitapi_r2_loader.dll` | Orbit | Gives the game the account, password and CD key in `crosscom.toml`; sends the game's lookup of `onlineconfigservice.ubi.com` to the Cross-Com server. Cloud saves are accepted and dropped. |
+| `ubiorbitapi_r2_loader.dll` | Orbit | Gives the game the account, password and CD key in `crosscom.toml`; sends the game's lookup of `onlineconfigservice.ubi.com` to the Cross-Com server. Cloud saves are kept on this PC. Draws the in-game overlay. |
 | `uplay_r1_loader.dll` | Uplay | Answers the six Uplay functions the game calls, without Uplay. |
 
 Both read `crosscom.toml` ([example](crosscom.example.toml)) and log to `crosscom.log`, next to the game's exe. They work with both `Future Soldier DX9.exe` and `Future Soldier DX11.exe`.
+
+## The overlay
+
+F5 (or `overlay_key`, F1 to F12) opens a panel over the game; it or Esc closes it. While it's open the game gets no mouse or keyboard. Its pages:
+
+- **Server**: the address from `crosscom.toml`, whether it answers, its version and how many players are online.
+- **News**: the server's news.
+- **Account**: the account the game signs in with.
+- **Help**: the keys, and how to report a problem.
+
+Toasts in the top-right corner say when the game signs in ("Cross-Com: signed in as NAME"), when the server stops answering, and when there's news.
+
+The server's details come from `GET http://<server>/api/info` (its HTTP port, 80), asked every minute on a thread of its own. Drawing uses [hudhook](https://github.com/veeenu/hudhook) (patched, in `vendor/hudhook`) and Dear ImGui over the game's DirectX 11 or 9 frames, by the exe's name. It starts 10 s after the game does, as hooking earlier can stop a fullscreen game from starting. If it can't hook (no DirectX device it can use, a library missing) it says why in `crosscom.log` and the game runs without it. `overlay = false` turns it off: nothing is hooked and no requests are made.
 
 ## Building
 

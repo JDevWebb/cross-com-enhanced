@@ -18,7 +18,7 @@ pub const ONLINE_CONFIG_HOST: &str = "onlineconfigservice.ubi.com";
 /// with its terminating NUL, and a longer one stops the game.
 pub const MAX_LOGIN_FIELD_LEN: usize = 79;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The Cross-Com server, a host name or an address. Without it the game talks to Ubisoft's
@@ -37,7 +37,46 @@ pub struct Config {
     /// data asks for 8 (6 in the smaller modes), which a small community rarely reaches; unset
     /// keeps the game's numbers.
     pub quick_match_min_players: Option<u8>,
+    /// The in-game overlay (on unless set to false).
+    pub overlay: bool,
+    /// The key that opens the overlay's panel: `F1` to `F12`. An unknown name means F5.
+    pub overlay_key: String,
 }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: None,
+            username: String::new(),
+            password: String::new(),
+            cd_key: String::new(),
+            log_level: None,
+            skip_intro_videos: false,
+            quick_match_min_players: None,
+            overlay: true,
+            overlay_key: DEFAULT_OVERLAY_KEY.to_owned(),
+        }
+    }
+}
+
+/// The overlay's key unless another is chosen.
+pub const DEFAULT_OVERLAY_KEY: &str = "F5";
+
+/// The keys the overlay can open with, by name, with their Windows virtual-key codes.
+pub const OVERLAY_KEYS: [(&str, u16); 12] = [
+    ("F1", 0x70),
+    ("F2", 0x71),
+    ("F3", 0x72),
+    ("F4", 0x73),
+    ("F5", 0x74),
+    ("F6", 0x75),
+    ("F7", 0x76),
+    ("F8", 0x77),
+    ("F9", 0x78),
+    ("F10", 0x79),
+    ("F11", 0x7A),
+    ("F12", 0x7B),
+];
 
 /// The fewest players a match can be played with.
 pub const MIN_QUICK_MATCH_PLAYERS: u8 = 2;
@@ -109,6 +148,14 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The overlay's key: its name and virtual-key code. F5 when `overlay_key` isn't one of
+    /// [`OVERLAY_KEYS`] (any case).
+    #[must_use]
+    pub fn overlay_key(&self) -> (&'static str, u16) {
+        let find = |key: &str| OVERLAY_KEYS.iter().copied().find(|(name, _)| name.eq_ignore_ascii_case(key.trim()));
+        find(&self.overlay_key).or_else(|| find(DEFAULT_OVERLAY_KEY)).unwrap_or(("F5", 0x74))
     }
 
     /// Where a lookup of `host` should go instead, if anywhere.
@@ -207,6 +254,19 @@ mod tests {
         assert_eq!(config.redirect("OnlineConfigService.Ubi.com"), Some("10.0.0.5"));
         assert_eq!(config.redirect("www.ubi.com"), None);
         assert_eq!(Config::default().redirect(ONLINE_CONFIG_HOST), None);
+    }
+
+    #[test]
+    fn the_overlay_is_on_with_f5_unless_set() {
+        let config = Config::parse("").unwrap();
+        assert!(config.overlay);
+        assert_eq!(config.overlay_key(), ("F5", 0x74));
+        let config = Config::parse("overlay = false\noverlay_key = \"F12\"").unwrap();
+        assert!(!config.overlay);
+        assert_eq!(config.overlay_key(), ("F12", 0x7B));
+        assert_eq!(Config::parse("overlay_key = \"f1\"").unwrap().overlay_key(), ("F1", 0x70));
+        // A key it doesn't know doesn't stop the game signing in: F5 instead.
+        assert_eq!(Config::parse("overlay_key = \"Insert\"").unwrap().overlay_key(), ("F5", 0x74));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 name = "crosscom-orbit"
 version = "0.1.0"
 edition = "2021"
-description = "ubiorbitapi_r2_loader.dll: the game's sign-in details from crosscom.toml, and its online lookups sent to the Cross-Com server"
+description = "ubiorbitapi_r2_loader.dll: the game's sign-in details from crosscom.toml, its online lookups sent to the Cross-Com server, and the in-game overlay"
 
 [lib]
 # The file name the game loads.
@@ -15,4 +15,9 @@ log = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 retour = { version = "0.4.0-alpha.4", features = ["static-detour"] }
+# The in-game overlay (src/overlay): Dear ImGui drawn in the game's DirectX 9 or 11 frames.
+hudhook = { version = "0.8", default-features = false, features = ["dx9", "dx11"] }
+imgui = "0.12"
+# hudhook's version, for DirectInput and the window and keyboard calls the overlay makes.
+windows = { version = "0.54", features = ["Win32_Devices_HumanInterfaceDevice", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_System_Threading"] }

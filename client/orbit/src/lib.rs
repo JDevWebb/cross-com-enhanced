@@ -2,7 +2,8 @@
 //!
 //! The game gets its sign-in details from Orbit: the account name, password and CD key it sends
 //! to the online service. This library gives it the ones in `crosscom.toml`. It also sends the
-//! game's lookup of Ubisoft's online config service to the Cross-Com server (`net`).
+//! game's lookup of Ubisoft's online config service to the Cross-Com server (`net`), and draws
+//! the in-game overlay (`overlay`).
 //!
 //! Orbit's cloud saves are kept on this PC instead (`crosscom_client_common::saves`).
 
@@ -14,6 +15,8 @@ mod dll;
 mod net;
 #[cfg(all(windows, target_arch = "x86"))]
 mod orbit;
+#[cfg(windows)]
+mod overlay;
 #[cfg(windows)]
 mod quick_match;
 #[cfg(windows)]
@@ -85,6 +88,7 @@ fn start() {
     if let Some(players) = CONFIG.get().and_then(|c| c.quick_match_min_players) {
         quick_match::install(players);
     }
+    overlay::start(config());
 }
 
 #[cfg(test)]

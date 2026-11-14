@@ -14,3 +14,10 @@ log_level = "info"
 
 # Skip the three splash videos the game plays as it starts (true or false).
 skip_intro_videos = false
+
+# The in-game overlay: the server's status, its news and your account, over the game
+# (true or false).
+overlay = true
+
+# The key that opens and closes the overlay: F1 to F12.
+overlay_key = "F5"
