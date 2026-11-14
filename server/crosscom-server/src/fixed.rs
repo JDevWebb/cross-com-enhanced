@@ -234,16 +234,6 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
             }],
         },
         FixedProtocol {
-            id: 5002,
-            name: "OverlordNewsProtocol",
-            // GetNews(predicate, result range) answers one list (from the game's call): no news.
-            methods: &[Method {
-                id: 1,
-                name: "GetNews",
-                answer: |_| EMPTY_LIST.to_vec(),
-            }],
-        },
-        FixedProtocol {
             id: 5003,
             name: "OverlordCoreProtocol",
             // The game's settings: none, so it uses its defaults.

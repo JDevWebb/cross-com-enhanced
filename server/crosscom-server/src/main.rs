@@ -21,6 +21,7 @@ mod invitations;
 mod maps;
 mod menu;
 mod nat;
+mod news;
 mod notify;
 mod online_config;
 mod privileges;
@@ -183,6 +184,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let news = config.news.clone();
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
         Err(e) => {
@@ -213,6 +215,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                 handler.register_protocol(Box::new(stats::PlayerStatistics::new(Arc::clone(&stats))));
                 handler.register_protocol(Box::new(dares::GameEvents::new(Arc::clone(&dares), Arc::clone(&friends))));
                 handler.register_protocol(Box::new(dares::OverlordDare::new(Arc::clone(&dares))));
+                handler.register_protocol(Box::new(news::OverlordNews::new(news.clone())));
                 handler.register_protocol(Box::new(clans::Clans::new(Arc::clone(&clans), Arc::clone(&accounts))));
             })
         }),

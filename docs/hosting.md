@@ -74,6 +74,23 @@ log_level = "info"
 and run `target/release/crosscom-server --config crosscom-server.toml`. Port 80 needs root or, on
 Linux, `sudo setcap cap_net_bind_service=+ep target/release/crosscom-server`.
 
+## News
+
+The game shows news in its main menu (the Ghost Feed on the right) and on its Community Messages
+screen. Put it in `news.toml` next to the database (or the file `news = "..."` names in
+`crosscom-server.toml`); the server reads it each time a player signs in, so there's no restart:
+
+```toml
+[[news]]
+title = "Double XP weekend"          # up to 60 characters
+body = "All weekend, every ranked match."   # up to 500 bytes
+date = 2026-11-20                    # shown as the date; today if left out
+shows = "multiplayer"                # or "campaign" or "guerrilla"
+```
+
+The first item without `shows` appears in every view; others without it only under Community
+Messages. The game takes up to 14. With no `news.toml`, players see a short welcome.
+
 ## Accounts
 
 Each player needs an account: a name (letters, digits, `-`, `_`, `.`; up to 32) and a password

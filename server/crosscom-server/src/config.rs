@@ -31,6 +31,9 @@ pub struct Config {
     pub signup: bool,
     /// A code players must give to sign up, if set; give it to the people you play with.
     pub signup_code: Option<String>,
+    /// The news the game shows in its menus (see `news.rs` for the format); read at each sign-in,
+    /// so edits need no restart. Without the file, a welcome.
+    pub news: PathBuf,
 }
 
 impl Default for Config {
@@ -45,6 +48,7 @@ impl Default for Config {
             log_level: "info".into(),
             signup: false,
             signup_code: None,
+            news: "news.toml".into(),
         }
     }
 }
