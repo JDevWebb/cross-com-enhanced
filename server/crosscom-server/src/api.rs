@@ -81,12 +81,12 @@ impl Api {
         }
         // Counted as failed from here unless it matches (see `rate_limit`), so requests at once
         // can't all try before any has failed.
-        if !self.failed.try_begin(address, &login.name, Instant::now()) {
+        let Some(attempt) = self.failed.try_begin(address, &login.name, Instant::now()) else {
             return (error("429 Too Many Requests", "too many failed sign-ins; try again later"), None);
-        }
+        };
         match self.accounts.verify(&login.name, &login.password) {
             Ok(Some(pid)) => {
-                self.failed.succeeded(address, &login.name);
+                self.failed.succeeded(attempt);
                 (("200 OK", json!({ "pid": pid }).to_string()), Some(login.name))
             }
             Ok(None) => wrong(),

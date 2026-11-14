@@ -139,13 +139,13 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             warn!(logger, "sign-in from {} refused: not a valid name", ci.address());
             return Err(Error::AccessDenied);
         }
-        if !self.failed.try_begin(from, &login.user_name, Instant::now()) {
+        let Some(attempt) = self.failed.try_begin(from, &login.user_name, Instant::now()) else {
             warn!(logger, "sign-in as {:?} from {} refused: too many failed sign-ins", login.user_name, ci.address());
             return Err(Error::AccessDenied);
-        }
+        };
         let pid = match self.accounts.verify(&login.user_name, &login.password) {
             Ok(Some(pid)) => {
-                self.failed.succeeded(from, &login.user_name);
+                self.failed.succeeded(attempt);
                 pid
             }
             Ok(None) => {
