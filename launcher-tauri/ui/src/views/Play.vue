@@ -6,7 +6,7 @@
         <div>
           <p class="kicker">Ghost Recon: Future Soldier</p>
           <h1 class="title">Ready for deployment</h1>
-          <p class="soft">Multiplayer on a Cross-Com server: Conflict, Decoy, Saboteur, Siege, Guerrilla and co-op.</p>
+          <p class="soft">Multiplayer on a Cross-Com server: every mode (Conflict, Decoy, Saboteur, Siege, Stockade, Takeover), Guerrilla and co-op.</p>
         </div>
       </div>
 
