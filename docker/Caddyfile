@@ -1,0 +1,32 @@
+# Caddy in front of the Cross-Com server's HTTP side, giving it HTTPS (docker/compose.https.yaml).
+#
+# CROSSCOM_DOMAIN is the server's domain; its DNS A record points at this machine, and ports 80
+# and 443 reach it. Caddy gets the certificate itself, from Let's Encrypt over port 80.
+#
+# Passwords (POST /accounts, POST /api/login) are taken over HTTPS only. Port 80 still answers
+# what carries none, over plain HTTP: the game asks for its online config there and can't do
+# HTTPS, and the in-game overlay reads the API without TLS.
+{
+	# Port 80 is set out below rather than redirecting everything to HTTPS.
+	auto_https disable_redirects
+}
+
+{$CROSSCOM_DOMAIN} {
+	reverse_proxy server:80
+}
+
+# Every name and address on port 80: the game asks by whatever address the player set up.
+# Let's Encrypt's challenges are answered here too, before these routes.
+:80 {
+	@plain {
+		method GET HEAD
+		path /OnlineConfigService.svc/GetOnlineConfig /api/*
+		not path /api/login
+	}
+	handle @plain {
+		reverse_proxy server:80
+	}
+	handle {
+		redir https://{$CROSSCOM_DOMAIN}{uri} 308
+	}
+}

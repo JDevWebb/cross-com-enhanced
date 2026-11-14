@@ -6,6 +6,9 @@
 # CROSSCOM_PUBLIC_ADDRESS is the address players connect to: the machine's
 # public IP (with the ports below open or forwarded), or its address on the
 # LAN or VPN you play over. See docs/hosting.md.
+#
+# With a domain, add compose.https.yaml for HTTPS in front of port 80 (Caddy),
+# so passwords from the launcher go encrypted.
 services:
   server:
     build:
@@ -21,7 +24,7 @@ services:
       CROSSCOM_SIGNUP_CODE: ${CROSSCOM_SIGNUP_CODE:-}
       CROSSCOM_LOG_LEVEL: ${CROSSCOM_LOG_LEVEL:-info}
     ports:
-      - "80:80/tcp"          # online config (the game always asks on port 80), sign-up
+      - "80:80/tcp"          # online config (the game always asks on port 80), launcher API, sign-up
       - "21030:21030/udp"    # sign-in
       - "21031:21031/udp"    # game services
     # The server's own user may bind port 80; nothing else is needed.
