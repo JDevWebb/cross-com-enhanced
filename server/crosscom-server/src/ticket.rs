@@ -44,7 +44,7 @@ const TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 struct TicketGranting {
     accounts: Arc<Accounts>,
-    failed: FailedSignIns,
+    failed: Arc<FailedSignIns>,
 }
 
 /// The signed-in player. The tracking principal, which anyone can sign in as (its password is
@@ -139,17 +139,16 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             warn!(logger, "sign-in from {} refused: not a valid name", ci.address());
             return Err(Error::AccessDenied);
         }
-        if !self.failed.allowed(from, &login.user_name, Instant::now()) {
+        let Some(attempt) = self.failed.try_begin(from, &login.user_name, Instant::now()) else {
             warn!(logger, "sign-in as {:?} from {} refused: too many failed sign-ins", login.user_name, ci.address());
             return Err(Error::AccessDenied);
-        }
+        };
         let pid = match self.accounts.verify(&login.user_name, &login.password) {
             Ok(Some(pid)) => {
-                self.failed.succeeded(from, &login.user_name);
+                self.failed.succeeded(attempt);
                 pid
             }
             Ok(None) => {
-                self.failed.failed(from, &login.user_name, Instant::now());
                 warn!(logger, "sign-in as {:?} from {} refused: wrong name or password", login.user_name, ci.address());
                 return Err(Error::AccessDenied);
             }
@@ -189,11 +188,9 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
     }
 }
 
-pub fn new_protocol<CI: 'static>(accounts: Arc<Accounts>) -> Box<dyn Protocol<CI>> {
-    Box::new(TicketGrantingProtocolServer::new(TicketGranting {
-        accounts,
-        failed: FailedSignIns::default(),
-    }))
+/// The sign-in protocol. `failed` counts failed sign-ins, shared with the launcher's.
+pub fn new_protocol<CI: 'static>(accounts: Arc<Accounts>, failed: Arc<FailedSignIns>) -> Box<dyn Protocol<CI>> {
+    Box::new(TicketGrantingProtocolServer::new(TicketGranting { accounts, failed }))
 }
 
 #[cfg(test)]

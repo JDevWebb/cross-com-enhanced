@@ -5,7 +5,7 @@ PC at home with the ports forwarded, a cheap VPS, or a machine on the LAN or VPN
 
 | Port | Protocol | What for |
 |---|---|---|
-| 80 | TCP | The online config the game asks for first (it always uses port 80), and sign-up |
+| 80 | TCP | The online config the game asks for first (it always uses port 80), the launcher's API and sign-up |
 | 21030 | UDP | Sign-in |
 | 21031 | UDP | Everything else: profiles, matchmaking, friends |
 
@@ -122,6 +122,28 @@ Sign-up goes over plain HTTP, like the game's own sign-in to the server, so pass
 network unencrypted. Players should use a password they use nowhere else. If you leave sign-up
 open without a code, anyone who can reach the server can make accounts. The server refuses a code
 shorter than 12 characters; make it random (`openssl rand -base64 12`), not a word.
+
+## The launcher's API
+
+Always on, on port 80 next to the online config. The launcher uses it; so can a website or a bot.
+
+`GET /api/info` gives the server's version, how many players are signed in to it, and the news
+(as the game shows it: the first 14 items, cut the same way; the date is today's for an item
+without one):
+
+```json
+{"version": "0.1.0", "players_online": 3, "news": [
+  {"title": "Double XP weekend", "body": "All weekend, every ranked match.", "date": "2026-11-20", "shows": "multiplayer"}
+]}
+```
+
+`shows` is `null`, `"multiplayer"`, `"campaign"` or `"guerrilla"`. A player counts from their
+sign-in until their game disconnects, or a minute after it stops answering.
+
+`POST /api/login` with `{"name": "Kozak", "password": "their-password"}` checks an account:
+`200 {"pid": ...}` when it matches, `401 {"error": "wrong name or password"}` when it doesn't.
+Failed tries count with the game's own sign-in: after 10 in 15 minutes from one address, or for
+one name, it answers `429`. Like sign-up, it's plain HTTP.
 
 ## Checking it works
 

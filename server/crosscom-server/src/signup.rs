@@ -119,7 +119,7 @@ struct Request {
 /// An HTTP status and a JSON body.
 pub type Answer = (&'static str, String);
 
-fn error(status: &'static str, message: &str) -> Answer {
+pub(crate) fn error(status: &'static str, message: &str) -> Answer {
     (status, json!({ "error": message }).to_string())
 }
 

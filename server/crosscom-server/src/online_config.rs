@@ -1,5 +1,6 @@
 //! The HTTP server: the online config, the first thing the game asks (it answers with where to
-//! sign in), and account sign-up for the launcher when it's turned on (see `signup`).
+//! sign in), the launcher's API (see `api`), and account sign-up for the launcher when it's
+//! turned on (see `signup`).
 
 use std::io::Read;
 use std::io::Write;
@@ -18,12 +19,14 @@ use slog::info;
 use slog::warn;
 use slog::Logger;
 
+use crate::api::Api;
 use crate::signup::SignUp;
 
 const PATH: &str = "/OnlineConfigService.svc/GetOnlineConfig";
 /// How long one request may take in all, however slowly it arrives.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
-/// Requests answered at once; more are turned away. The game asks once as it starts.
+/// Requests answered at once; more are turned away. The game asks once as it starts, the
+/// launcher as it opens its Play screen.
 const MAX_CONNECTIONS: usize = 64;
 
 #[derive(Serialize)]
@@ -58,14 +61,24 @@ pub fn content(public_ip: IpAddr, auth_port: u16) -> String {
     serde_json::to_string(&items).unwrap_or_default()
 }
 
-/// Serves the online config, and sign-up if given, until the process ends.
-pub fn serve(logger: &Logger, listen: SocketAddr, content: String, signup: Option<SignUp>) -> std::io::Result<()> {
+/// What the HTTP server answers.
+pub struct Http {
+    /// The online config (see [`content`]).
+    pub content: String,
+    /// Sign-up, when the server's settings turn it on.
+    pub signup: Option<SignUp>,
+    pub api: Api,
+}
+
+/// Serves the online config, the launcher's API and sign-up if on, until the process ends.
+pub fn serve(logger: &Logger, listen: SocketAddr, http: Http) -> std::io::Result<()> {
     let listener = TcpListener::bind(listen)?;
     info!(logger, "Online config on http://{listen}{PATH}");
-    if signup.is_some() {
+    info!(logger, "Launcher API on http://{listen}{}", crate::api::INFO_PATH);
+    if http.signup.is_some() {
         info!(logger, "Sign-up on http://{listen}{}", crate::signup::PATH);
     }
-    let signup = signup.map(Arc::new);
+    let http = Arc::new(http);
     let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
@@ -73,12 +86,11 @@ pub fn serve(logger: &Logger, listen: SocketAddr, content: String, signup: Optio
             continue; // dropping the stream closes it
         }
         let logger = logger.clone();
-        let content = content.clone();
         let open = Arc::clone(&open);
-        let signup = signup.clone();
+        let http = Arc::clone(&http);
         std::thread::spawn(move || {
-            if let Err(e) = answer(&logger, stream, &content, signup.as_deref()) {
-                warn!(logger, "online config request failed: {e}");
+            if let Err(e) = answer(&logger, stream, &http) {
+                warn!(logger, "HTTP request failed: {e}");
             }
             open.fetch_sub(1, Ordering::AcqRel);
         });
@@ -86,7 +98,7 @@ pub fn serve(logger: &Logger, listen: SocketAddr, content: String, signup: Optio
     Ok(())
 }
 
-fn answer(logger: &Logger, mut stream: TcpStream, content: &str, signup: Option<&SignUp>) -> std::io::Result<()> {
+fn answer(logger: &Logger, mut stream: TcpStream, http: &Http) -> std::io::Result<()> {
     let deadline = Instant::now() + REQUEST_DEADLINE;
     stream.set_write_timeout(Some(REQUEST_DEADLINE))?;
     let peer = stream.peer_addr()?;
@@ -113,34 +125,8 @@ fn answer(logger: &Logger, mut stream: TcpStream, content: &str, signup: Option<
             }
         }
     }
-    let head_end = buf[..len].windows(4).position(|w| w == b"\r\n\r\n");
-    let request = String::from_utf8_lossy(&buf[..head_end.unwrap_or(len)]);
-    let line = request.lines().next().unwrap_or_default();
-    let declared = content_length(&request).unwrap_or(0);
-    let answered: String;
-    let (status, body) = if is_online_config_request(line) {
-        info!(logger, "Online config for {peer}");
-        ("200 OK", content)
-    } else if let (Some(signup), true) = (signup, is_signup_request(line)) {
-        let start = head_end.map_or(len, |e| e + 4);
-        let body = &buf[start.min(len)..len];
-        if declared > crate::signup::MAX_BODY || body.len() < declared {
-            ("413 Content Too Large", "{\"error\":\"request too big\"}")
-        } else {
-            let ((status, json), made) = signup.handle(peer.ip(), &body[..declared]);
-            match made {
-                Some(name) => info!(logger, "{peer} signed up as {name}"),
-                None => info!(logger, "{peer}: sign-up refused, {status}"),
-            }
-            answered = json;
-            (status, answered.as_str())
-        }
-    } else if line.is_empty() {
-        // A connection that sends nothing, such as the container's health check.
+    let Some((status, body)) = respond(logger, http, peer, &buf[..len]) else {
         return Ok(());
-    } else {
-        warn!(logger, "{peer} asked for something else: {line:?}");
-        ("404 Not Found", "")
     };
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -149,22 +135,86 @@ fn answer(logger: &Logger, mut stream: TcpStream, content: &str, signup: Option<
     stream.write_all(response.as_bytes())
 }
 
+/// What a request asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    OnlineConfig,
+    SignUp,
+    Info,
+    Login,
+    /// A connection that sends nothing, such as the container's health check.
+    Nothing,
+    Other,
+}
+
+fn route(request_line: &str) -> Route {
+    let mut parts = request_line.split(' ');
+    let (method, path) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+    match (method, path.split('?').next().unwrap_or_default()) {
+        ("", _) => Route::Nothing,
+        ("GET", PATH) => Route::OnlineConfig,
+        ("GET", crate::api::INFO_PATH) => Route::Info,
+        ("POST", crate::api::LOGIN_PATH) => Route::Login,
+        ("POST", p) if p == crate::signup::PATH => Route::SignUp,
+        _ => Route::Other,
+    }
+}
+
+/// The answer to a whole request (head and body), as a status and a JSON body; `None` for one
+/// that asks nothing.
+fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Option<(&'static str, String)> {
+    let len = request.len();
+    let head_end = request.windows(4).position(|w| w == b"\r\n\r\n");
+    let head = String::from_utf8_lossy(&request[..head_end.unwrap_or(len)]);
+    let line = head.lines().next().unwrap_or_default();
+    let declared = content_length(&head).unwrap_or(0);
+    let start = head_end.map_or(len, |e| e + 4);
+    let body = &request[start.min(len)..];
+    // The body of a POST, if it all came and isn't too big.
+    let body = |max: usize| (declared <= max && body.len() >= declared).then(|| &body[..declared]);
+    let too_big = || ("413 Content Too Large", "{\"error\":\"request too big\"}".to_owned());
+    Some(match route(line) {
+        Route::Nothing => return None,
+        Route::OnlineConfig => {
+            info!(logger, "Online config for {peer}");
+            ("200 OK", http.content.clone())
+        }
+        Route::Info => ("200 OK", http.api.info(logger)),
+        Route::Login => match body(crate::api::MAX_BODY) {
+            None => too_big(),
+            Some(body) => {
+                let ((status, json), name) = http.api.login(peer.ip(), body);
+                match name {
+                    Some(name) => info!(logger, "{peer} signed in to the launcher as {name}"),
+                    None => info!(logger, "{peer}: launcher sign-in refused, {status}"),
+                }
+                (status, json)
+            }
+        },
+        Route::SignUp if http.signup.is_some() => match (body(crate::signup::MAX_BODY), http.signup.as_ref()) {
+            (Some(body), Some(signup)) => {
+                let ((status, json), made) = signup.handle(peer.ip(), body);
+                match made {
+                    Some(name) => info!(logger, "{peer} signed up as {name}"),
+                    None => info!(logger, "{peer}: sign-up refused, {status}"),
+                }
+                (status, json)
+            }
+            _ => too_big(),
+        },
+        Route::SignUp | Route::Other => {
+            warn!(logger, "{peer} asked for something else: {line:?}");
+            ("404 Not Found", String::new())
+        }
+    })
+}
+
 /// The request's Content-Length, if it gives one.
 fn content_length(head: &str) -> Option<usize> {
     head.lines().skip(1).find_map(|l| {
         let (name, value) = l.split_once(':')?;
         name.trim().eq_ignore_ascii_case("content-length").then(|| value.trim().parse().ok())?
     })
-}
-
-fn is_signup_request(request_line: &str) -> bool {
-    let mut parts = request_line.split(' ');
-    parts.next() == Some("POST") && parts.next() == Some(crate::signup::PATH)
-}
-
-fn is_online_config_request(request_line: &str) -> bool {
-    let mut parts = request_line.split(' ');
-    parts.next() == Some("GET") && parts.next().is_some_and(|target| target.split('?').next() == Some(PATH))
 }
 
 #[cfg(test)]
@@ -182,15 +232,71 @@ mod tests {
     }
 
     #[test]
-    fn recognises_the_request() {
-        assert!(is_online_config_request(
-            "GET /OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=23ad683803a0457cabce83f905811dbc HTTP/1.1"
-        ));
-        assert!(!is_online_config_request("GET /other HTTP/1.1"));
-        assert!(!is_online_config_request("POST /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1"));
-        assert!(is_signup_request("POST /accounts HTTP/1.1"));
-        assert!(!is_signup_request("GET /accounts HTTP/1.1"));
+    fn routes_requests() {
+        assert_eq!(
+            route("GET /OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=23ad683803a0457cabce83f905811dbc HTTP/1.1"),
+            Route::OnlineConfig
+        );
+        assert_eq!(route("GET /other HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /accounts HTTP/1.1"), Route::SignUp);
+        assert_eq!(route("GET /accounts HTTP/1.1"), Route::Other);
+        assert_eq!(route("GET /api/info HTTP/1.1"), Route::Info);
+        assert_eq!(route("GET /api/info?x=1 HTTP/1.1"), Route::Info);
+        assert_eq!(route("POST /api/info HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /api/login HTTP/1.1"), Route::Login);
+        assert_eq!(route("GET /api/login HTTP/1.1"), Route::Other);
+        assert_eq!(route(""), Route::Nothing);
         assert_eq!(content_length("POST /accounts HTTP/1.1\r\nHost: x\r\ncontent-length: 42"), Some(42));
         assert_eq!(content_length("GET / HTTP/1.1\r\nHost: x"), None);
+    }
+
+    fn server(signup: bool) -> Http {
+        let (api, _) = crate::api::tests::api();
+        let accounts = Arc::new(crate::accounts::Accounts::open(std::path::Path::new(":memory:")).unwrap());
+        Http {
+            content: "[]".into(),
+            signup: signup.then(|| SignUp::new(accounts, None)),
+            api,
+        }
+    }
+
+    fn ask(http: &Http, request: &str) -> Option<(&'static str, String)> {
+        let logger = Logger::root(slog::Discard, slog::o!());
+        respond(&logger, http, "203.0.113.7:50000".parse().unwrap(), request.as_bytes())
+    }
+
+    fn post(path: &str, body: &str) -> String {
+        format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+    }
+
+    #[test]
+    fn answers_the_launcher() {
+        let http = server(false);
+        let (status, json) = ask(&http, "GET /api/info HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        assert_eq!(status, "200 OK");
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["players_online"], 0);
+        assert!(json["news"].is_array());
+
+        let (status, json) = ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"hunter2"}"#)).unwrap();
+        assert_eq!((status, json.as_str()), ("200 OK", r#"{"pid":1048576}"#));
+        assert_eq!(ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"nope"}"#)).unwrap().0, "401 Unauthorized");
+        let big = format!(r#"{{"name":"Kozak","password":"{}"}}"#, "x".repeat(2000));
+        assert_eq!(ask(&http, &post("/api/login", &big)).unwrap().0, "413 Content Too Large");
+        let cut_short = "POST /api/login HTTP/1.1\r\nContent-Length: 50\r\n\r\n{}";
+        assert_eq!(ask(&http, cut_short).unwrap().0, "413 Content Too Large");
+
+        assert_eq!(
+            ask(&http, &post("/accounts", r#"{"name":"New","password":"x"}"#)).unwrap().0,
+            "404 Not Found",
+            "sign-up off"
+        );
+        assert_eq!(ask(&server(true), &post("/accounts", r#"{"name":"New","password":"x"}"#)).unwrap().0, "201 Created");
+        assert_eq!(
+            ask(&http, "GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n").unwrap(),
+            ("200 OK", "[]".into())
+        );
+        assert_eq!(ask(&http, ""), None);
     }
 }
