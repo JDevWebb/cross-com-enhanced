@@ -34,7 +34,7 @@
           <header><span class="n">03</span><h2>Your account</h2></header>
           <div class="tabs" role="tablist">
             <button type="button" role="tab" :aria-selected="account.new" :class="{ on: account.new }" @click="account.new = true">Make one</button>
-            <button type="button" role="tab" :aria-selected="!account.new" :class="{ on: !account.new }" @click="account.new = false">I have one</button>
+            <button type="button" role="tab" :aria-selected="!account.new" :class="{ on: !account.new }" @click="account.new = false">Sign in</button>
           </div>
           <div class="grid">
             <label class="field">
@@ -43,7 +43,7 @@
             </label>
             <label class="field">
               <span class="caps">Password</span>
-              <input v-model="account.password" type="password" maxlength="79" autocomplete="new-password" />
+              <input v-model="account.password" type="password" maxlength="79" :autocomplete="account.new ? 'new-password' : 'current-password'" />
             </label>
             <label v-if="account.new" class="field">
               <span class="caps">Password again</span>
@@ -55,6 +55,7 @@
             </label>
           </div>
           <p v-if="account.new" class="muted small">Letters, digits, "-", "_" and "." for your name, which other players see. Use a password you use nowhere else.</p>
+          <p v-else class="muted small">The server checks your name and password before the game uses them.</p>
         </li>
 
         <li class="card done">
@@ -79,7 +80,7 @@
 
 <script setup>
 // The guided setup: the game's folder (found on its own when it can be), the server (checked),
-// the account (made here or an existing one) and the game options; then one press sets it all up.
+// the account (made here, or an existing one, checked with the server) and the game options; then one press sets it all up.
 import { computed, onMounted, reactive, ref } from 'vue';
 import { call, chooseFolder } from '../lib/tauri.js';
 

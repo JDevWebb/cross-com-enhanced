@@ -62,6 +62,9 @@ pub struct Info {
     account: Option<String>,
     skip_intro: bool,
     dx9: bool,
+    /// The in-game overlay, and the key that opens it (`F1` to `F12`).
+    overlay: bool,
+    overlay_key: String,
     /// Everything's set: Play can go.
     ready: bool,
 }
@@ -84,6 +87,7 @@ pub fn info(state: tauri::State<'_, Launcher>) -> Info {
     let prefs = state.prefs();
     let dir = prefs.game_dir.as_deref().filter(|d| game::is_game_dir(d));
     let config = dir.map(settings::client).unwrap_or_default();
+    let overlay = dir.map(settings::overlay).unwrap_or_default();
     let client = client_state(dir);
     let server = config.server.clone().filter(|s| !s.is_empty());
     let account = Some(config.username.clone()).filter(|n| !n.is_empty());
@@ -98,6 +102,8 @@ pub fn info(state: tauri::State<'_, Launcher>) -> Info {
         account,
         skip_intro: config.skip_intro_videos,
         dx9: prefs.dx9,
+        overlay: overlay.on,
+        overlay_key: overlay.key,
     }
 }
 
@@ -125,6 +131,26 @@ pub fn check_game(dir: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn check_server(server: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || server::check(&server)).await.map_err(|e| e.to_string())?
+}
+
+/// How the server set up is: its version, players online and news. `None` for a server that
+/// answers but is older than the launcher's API; an error if it doesn't answer.
+#[tauri::command]
+pub async fn server_info(state: tauri::State<'_, Launcher>) -> Result<Option<server::Info>, String> {
+    let dir = state.prefs().game_dir.filter(|d| game::is_game_dir(d)).ok_or("No game set up.")?;
+    let host = settings::client(&dir).server.filter(|s| !s.is_empty()).ok_or("No server set up.")?;
+    tauri::async_runtime::spawn_blocking(move || server::info(&host)).await.map_err(|e| e.to_string())?
+}
+
+/// Signs in to an account (`new` false) or makes one, then the account the game signs in with.
+/// Whether the server checked it (an older one can't).
+fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<bool, String> {
+    if new {
+        server::sign_up(host, name, password, code)?;
+        Ok(true)
+    } else {
+        Ok(server::sign_in(host, name, password)?.is_some())
+    }
 }
 
 #[derive(Deserialize)]
@@ -158,23 +184,22 @@ pub async fn setup(state: tauri::State<'_, Launcher>, setup: Setup) -> Result<St
     }
     let host = server::host(&setup.server);
     let old = settings::client(&dir);
+    let overlay = settings::overlay(&dir);
     let config = Config {
         server: Some(host.clone()),
         username: name.clone(),
         password: setup.password.clone(),
-        cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key },
+        cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key.clone() },
         skip_intro_videos: setup.skip_intro,
-        ..Config::default()
+        ..old
     };
     let (new, code, work_dir) = (setup.new_account, setup.code, dir.clone());
-    let made = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+    let checked = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
         server::check(&host)?;
-        if new {
-            server::sign_up(&host, &config.username, &config.password, &code)?;
-        }
+        let checked = account(&host, &config.username, &config.password, new, &code)?;
         game::install(&work_dir, &files)?;
-        settings::save_client(&work_dir, &config)?;
-        Ok(new)
+        settings::save_client(&work_dir, &config, &overlay)?;
+        Ok(checked)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -182,25 +207,78 @@ pub async fn setup(state: tauri::State<'_, Launcher>, setup: Setup) -> Result<St
     prefs.game_dir = Some(dir);
     prefs.dx9 = setup.dx9;
     state.save(prefs)?;
-    Ok(if made {
-        format!("Account {name} made, and the game is set up.")
-    } else {
-        "The game is set up.".into()
+    Ok(match (setup.new_account, checked) {
+        (true, _) => format!("Account {name} made, and the game is set up."),
+        (false, true) => format!("Signed in as {name}, and the game is set up."),
+        (false, false) => "The game is set up. This server can't check passwords here; the game will.".into(),
     })
+}
+
+#[derive(Deserialize)]
+pub struct Account {
+    name: String,
+    password: String,
+    /// Make the account (with the server's sign-up code, if it has one) rather than sign in.
+    new_account: bool,
+    #[serde(default)]
+    code: String,
+}
+
+/// Another account on the server set up: signs in to it (or makes it), then the game uses it.
+#[tauri::command]
+pub async fn set_account(state: tauri::State<'_, Launcher>, account: Account) -> Result<String, String> {
+    let dir = state.prefs().game_dir.filter(|d| game::is_game_dir(d)).ok_or("Set the game up first.")?;
+    let name = account.name.trim().to_owned();
+    if name.is_empty() || account.password.is_empty() {
+        return Err("Fill in your name and password.".into());
+    }
+    let config = settings::client(&dir);
+    let host = config.server.clone().filter(|s| !s.is_empty()).ok_or("Set a server up first.")?;
+    let overlay = settings::overlay(&dir);
+    let config = Config {
+        username: name.clone(),
+        password: account.password,
+        ..config
+    };
+    let new = account.new_account;
+    let checked = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        let checked = self::account(&host, &config.username, &config.password, new, &account.code)?;
+        settings::save_client(&dir, &config, &overlay)?;
+        Ok(checked)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(match (new, checked) {
+        (true, _) => format!("Account {name} made. The game signs in with it."),
+        (false, true) => format!("Signed in as {name}. The game signs in with it."),
+        (false, false) => format!("The game signs in as {name} now. This server can't check passwords here; the game will."),
+    })
+}
+
+#[derive(Deserialize)]
+pub struct Options {
+    skip_intro: bool,
+    dx9: bool,
+    overlay: bool,
+    overlay_key: String,
 }
 
 /// The game options: written into the client's settings and the launcher's.
 #[tauri::command]
-pub fn set_options(state: tauri::State<'_, Launcher>, skip_intro: bool, dx9: bool) -> Result<(), String> {
+pub fn set_options(state: tauri::State<'_, Launcher>, options: Options) -> Result<(), String> {
     let mut prefs = state.prefs();
     if let Some(dir) = prefs.game_dir.clone().filter(|d| game::is_game_dir(d)) {
         let mut config = settings::client(&dir);
         if !config.username.is_empty() {
-            config.skip_intro_videos = skip_intro;
-            settings::save_client(&dir, &config)?;
+            config.skip_intro_videos = options.skip_intro;
+            let overlay = settings::Overlay {
+                on: options.overlay,
+                key: options.overlay_key,
+            };
+            settings::save_client(&dir, &config, &overlay)?;
         }
     }
-    prefs.dx9 = dx9;
+    prefs.dx9 = options.dx9;
     state.save(prefs)
 }
 
