@@ -6,11 +6,13 @@
 //! event's name, then named string parameters,
 //!
 //! ```text
-//! request: name: string, list<{ key: string, type: u8 (4 = string), value: string }>
+//! request: name: string, list<{ key: string, value: Variant }>
+//! Variant: u8 type, then 0 nothing, 1 i64, 2 f64, 3 bool (u8), 4 string, 5 date-time (u64), 6 u64
 //! ```
 //!
 //! a dare being "GDE" with `targetPID`, `dareId` (the sender's own PID) and `score` (the packed
-//! value), all in decimal. Other events (such as "MPP" after a ranked match) are only answered.
+//! value). "MPP" sends strings; numbers may come as any of the number types, so each value is
+//! read as text. Other events (such as "MPP" after a ranked match) are only answered.
 //!
 //! Protocol 5008 hands them out: RequestDareInfo (1) answers the server's time and the caller's
 //! dares, each `{ sender: u32, u32, sent: date-time, value: u32, id: u32, u32 }` (the game reads
@@ -144,21 +146,35 @@ fn read_string(r: &mut Cursor<&[u8]>) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(bytes.strip_suffix(&[0]).unwrap_or(&bytes)).into_owned())
 }
 
-/// An event's name and its string parameters (any of another type end the list read).
+/// An event's name and its parameters, each value as text (a type not known ends the list read).
 fn parse_event(parameters: &[u8]) -> std::io::Result<(String, Vec<(String, String)>)> {
-    const STRING: u8 = 4;
     let mut r = Cursor::new(parameters);
     let name = read_string(&mut r)?;
     let count = r.read_u32::<LittleEndian>()?;
     let mut values = Vec::new();
     for _ in 0..count.min(MAX_PARAMETERS) {
         let key = read_string(&mut r)?;
-        if r.read_u8()? != STRING {
-            break;
-        }
-        values.push((key, read_string(&mut r)?));
+        let value = match r.read_u8()? {
+            0 => String::new(),
+            1 => r.read_i64::<LittleEndian>()?.to_string(),
+            2 => r.read_f64::<LittleEndian>()?.to_string(),
+            3 => (r.read_u8()? != 0).to_string(),
+            4 => read_string(&mut r)?,
+            5 | 6 => r.read_u64::<LittleEndian>()?.to_string(),
+            _ => break,
+        };
+        values.push((key, value));
     }
     Ok((name, values))
+}
+
+/// The start of a request's parameters in hex, for the log.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().take(256).fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// A dare event's target and packed value.
@@ -234,7 +250,11 @@ impl<CI> Protocol<CI> for GameEvents {
                     self.store.send(pid, target, value, now()).map_err(|e| db_failed(logger, &e))?;
                     info!(logger, "{pid:#x} challenged {target:#x} ({value:#010x})");
                 }
-                _ => info!(logger, "{pid:#x}: a challenge not kept (not a friend, or unreadable): {values:?}"),
+                _ => info!(
+                    logger,
+                    "{pid:#x}: a challenge not kept (not a friend, or unreadable): {values:?} ({})",
+                    hex(&request.parameters)
+                ),
             }
         }
         Ok(Vec::new())
@@ -342,6 +362,21 @@ mod tests {
         assert_eq!(dare_of(&values), Some((1_048_578, 1_234_567)));
         assert_eq!(dare_of(&values[..1]), None);
         assert!(parse_event(&gde[..gde.len() - 2]).is_err());
+
+        // Numbers as numbers: int64 and uint64.
+        let mut gde = string("GDE");
+        gde.extend_from_slice(&3u32.to_le_bytes());
+        gde.extend(string("targetPID"));
+        gde.push(1);
+        gde.extend_from_slice(&1_048_578i64.to_le_bytes());
+        gde.extend(string("dareId"));
+        gde.push(6);
+        gde.extend_from_slice(&1_048_577u64.to_le_bytes());
+        gde.extend(string("score"));
+        gde.push(1);
+        gde.extend_from_slice(&1_234_567i64.to_le_bytes());
+        let (_, values) = parse_event(&gde).unwrap();
+        assert_eq!(dare_of(&values), Some((1_048_578, 1_234_567)));
     }
 
     #[test]
