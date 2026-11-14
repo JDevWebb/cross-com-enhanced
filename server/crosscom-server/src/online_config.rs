@@ -68,6 +68,8 @@ pub struct Http {
     /// Sign-up, when the server's settings turn it on.
     pub signup: Option<SignUp>,
     pub api: Api,
+    /// Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed (see `proxy`).
+    pub proxies: crate::proxy::Trusted,
 }
 
 /// Serves the online config, the launcher's API and sign-up if on, until the process ends.
@@ -173,7 +175,15 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
     // The body of a POST, if it all came and isn't too big.
     let body = |max: usize| (declared <= max && body.len() >= declared).then(|| &body[..declared]);
     let too_big = || ("413 Content Too Large", "{\"error\":\"request too big\"}".to_owned());
-    Some(match route(line) {
+    // Who asked: through a trusted proxy, the client it names.
+    let client = crate::proxy::client(peer.ip(), &head, &http.proxies);
+    let peer = client.address;
+    let route = route(line);
+    if matches!(route, Route::Login | Route::SignUp) && !client.may_send_passwords() {
+        warn!(logger, "{peer}: password sent through the proxy without HTTPS, refused");
+        return Some(crate::signup::error("403 Forbidden", "this server takes passwords over HTTPS only"));
+    }
+    Some(match route {
         Route::Nothing => return None,
         Route::OnlineConfig => {
             info!(logger, "Online config for {peer}");
@@ -183,7 +193,7 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
         Route::Login => match body(crate::api::MAX_BODY) {
             None => too_big(),
             Some(body) => {
-                let ((status, json), name) = http.api.login(peer.ip(), body);
+                let ((status, json), name) = http.api.login(peer, body);
                 match name {
                     Some(name) => info!(logger, "{peer} signed in to the launcher as {name}"),
                     None => info!(logger, "{peer}: launcher sign-in refused, {status}"),
@@ -193,7 +203,7 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
         },
         Route::SignUp if http.signup.is_some() => match (body(crate::signup::MAX_BODY), http.signup.as_ref()) {
             (Some(body), Some(signup)) => {
-                let ((status, json), made) = signup.handle(peer.ip(), body);
+                let ((status, json), made) = signup.handle(peer, body);
                 match made {
                     Some(name) => info!(logger, "{peer} signed up as {name}"),
                     None => info!(logger, "{peer}: sign-up refused, {status}"),
@@ -258,12 +268,21 @@ mod tests {
             content: "[]".into(),
             signup: signup.then(|| SignUp::new(accounts, None)),
             api,
+            proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
         }
     }
 
+    /// The proxy the test server trusts.
+    const PROXY: &str = "172.31.80.10";
+
     fn ask(http: &Http, request: &str) -> Option<(&'static str, String)> {
+        ask_from(http, "203.0.113.7", request)
+    }
+
+    fn ask_from(http: &Http, peer: &str, request: &str) -> Option<(&'static str, String)> {
         let logger = Logger::root(slog::Discard, slog::o!());
-        respond(&logger, http, "203.0.113.7:50000".parse().unwrap(), request.as_bytes())
+        let peer = std::net::SocketAddr::new(peer.parse().unwrap(), 50000);
+        respond(&logger, http, peer, request.as_bytes())
     }
 
     fn post(path: &str, body: &str) -> String {
@@ -298,5 +317,61 @@ mod tests {
             ("200 OK", "[]".into())
         );
         assert_eq!(ask(&http, ""), None);
+    }
+
+    /// A request as the proxy passes it on: from `client`, over `proto`.
+    fn proxied(path: &str, body: &str, client: &str, proto: &str) -> String {
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: {client}\r\nX-Forwarded-Proto: {proto}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[test]
+    fn behind_the_proxy_limits_count_each_client() {
+        let http = server(false);
+        // Guessing at another account, so only the address limit comes into it.
+        let wrong = r#"{"name":"Pepper","password":"nope"}"#;
+        // Ten failures from one client through the proxy stop that client only.
+        for _ in 0..10 {
+            let status = ask_from(&http, PROXY, &proxied("/api/login", wrong, "198.51.100.1", "https")).unwrap().0;
+            assert_eq!(status, "401 Unauthorized");
+        }
+        let guesser = ask_from(&http, PROXY, &proxied("/api/login", wrong, "198.51.100.1", "https")).unwrap().0;
+        assert_eq!(guesser, "429 Too Many Requests");
+        let right = r#"{"name":"Kozak","password":"hunter2"}"#;
+        let other = ask_from(&http, PROXY, &proxied("/api/login", right, "198.51.100.2", "https")).unwrap().0;
+        assert_eq!(other, "200 OK", "another client through the same proxy isn't held up");
+
+        // A client that isn't the proxy can't name another address to get round its limit.
+        let http = server(false);
+        for i in 0..10 {
+            let spoofed = proxied("/api/login", wrong, &format!("198.51.100.{i}"), "https");
+            assert_eq!(ask_from(&http, "203.0.113.9", &spoofed).unwrap().0, "401 Unauthorized");
+        }
+        let spoofed = proxied("/api/login", right, "198.51.100.99", "https");
+        assert_eq!(ask_from(&http, "203.0.113.9", &spoofed).unwrap().0, "429 Too Many Requests");
+    }
+
+    #[test]
+    fn behind_the_proxy_passwords_need_https() {
+        let http = server(true);
+        let login = r#"{"name":"Kozak","password":"hunter2"}"#;
+        let signup = r#"{"name":"New","password":"x"}"#;
+        let via = |path, body, proto| ask_from(&http, PROXY, &proxied(path, body, "198.51.100.1", proto)).unwrap();
+        let (status, json) = via("/api/login", login, "http");
+        assert_eq!(status, "403 Forbidden");
+        assert!(json.contains("HTTPS"), "{json}");
+        assert_eq!(via("/accounts", signup, "http").0, "403 Forbidden");
+        assert_eq!(via("/api/login", login, "https").0, "200 OK");
+        assert_eq!(via("/accounts", signup, "https").0, "201 Created");
+        let no_proto = format!("POST /api/login HTTP/1.1\r\nContent-Length: {}\r\n\r\n{login}", login.len());
+        assert_eq!(ask_from(&http, PROXY, &no_proto).unwrap().0, "403 Forbidden");
+        // What needs no password still goes over plain HTTP: the game's online config, the info.
+        let get = |path: &str| ask_from(&http, PROXY, &format!("GET {path} HTTP/1.1\r\nX-Forwarded-Proto: http\r\n\r\n")).unwrap().0;
+        assert_eq!(get("/OnlineConfigService.svc/GetOnlineConfig"), "200 OK");
+        assert_eq!(get("/api/info"), "200 OK");
+        // Straight to the server, as on a LAN without a proxy, as before.
+        assert_eq!(ask(&http, &post("/api/login", login)).unwrap().0, "200 OK");
     }
 }

@@ -34,6 +34,11 @@ pub struct Config {
     /// The news the game shows in its menus (see `news.rs` for the format); read at each sign-in,
     /// so edits need no restart. Without the file, a welcome.
     pub news: PathBuf,
+    /// Reverse proxies in front of the HTTP side (such as Caddy, for HTTPS), by address or
+    /// network (`172.31.80.0/24`). A request from one of them is taken to be from the client its
+    /// `X-Forwarded-For` names, and passwords through it only over HTTPS (see `proxy.rs`). None by
+    /// default: the headers are ignored.
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for Config {
@@ -49,6 +54,7 @@ impl Default for Config {
             signup: false,
             signup_code: None,
             news: "news.toml".into(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -65,7 +71,8 @@ impl Config {
 
     /// The settings with any given in the environment instead, as a container is set up:
     /// `CROSSCOM_PUBLIC_ADDRESS`, `CROSSCOM_LOG_LEVEL`, `CROSSCOM_SIGNUP` (`true` or `false`) and
-    /// `CROSSCOM_SIGNUP_CODE`. `var` looks one up.
+    /// `CROSSCOM_SIGNUP_CODE` and `CROSSCOM_TRUSTED_PROXIES` (separated by commas or spaces).
+    /// `var` looks one up.
     pub fn with_env(mut self, var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |name: &str| var(name).filter(|v| !v.trim().is_empty());
         if let Some(address) = var("CROSSCOM_PUBLIC_ADDRESS") {
@@ -84,12 +91,21 @@ impl Config {
         if let Some(code) = var("CROSSCOM_SIGNUP_CODE") {
             self.signup_code = Some(code);
         }
+        if let Some(proxies) = var("CROSSCOM_TRUSTED_PROXIES") {
+            self.trusted_proxies = proxies.split([',', ' ']).filter(|p| !p.is_empty()).map(str::to_owned).collect();
+        }
         self.check()?;
         Ok(self)
     }
 
-    /// Refuses a sign-up code short enough to guess.
+    /// The proxies in `trusted_proxies`.
+    pub fn trusted_proxies(&self) -> Result<crate::proxy::Trusted, String> {
+        crate::proxy::Trusted::parse(&self.trusted_proxies)
+    }
+
+    /// Refuses a sign-up code short enough to guess, and proxies that aren't addresses.
     fn check(&self) -> Result<(), String> {
+        self.trusted_proxies()?;
         match &self.signup_code {
             Some(code) if !code.is_empty() && code.chars().count() < crate::signup::MIN_CODE_LEN => Err(format!(
                 "signup_code is too short to keep strangers out: use at least {} random characters",
@@ -143,6 +159,21 @@ mod tests {
         assert_eq!(config.log_level, "info", "empty values are ignored");
         assert!(Config::default().with_env(|n| (n == "CROSSCOM_SIGNUP").then(|| "maybe".into())).is_err());
         assert!(!Config::default().signup, "off by default");
+    }
+
+    #[test]
+    fn trusted_proxies_from_the_file_or_the_environment() {
+        let config: Config = toml::from_str("trusted_proxies = [\"172.31.80.10\", \"fd00::/8\"]").unwrap();
+        let trusted = config.trusted_proxies().unwrap();
+        assert!(trusted.trusts("172.31.80.10".parse().unwrap()));
+        assert!(trusted.trusts("fd00::1".parse().unwrap()));
+        assert!(!trusted.trusts("172.31.80.11".parse().unwrap()));
+        let config = Config::default()
+            .with_env(|n| (n == "CROSSCOM_TRUSTED_PROXIES").then(|| "172.31.80.10, 10.0.0.0/8".into()))
+            .unwrap();
+        assert_eq!(config.trusted_proxies, ["172.31.80.10", "10.0.0.0/8"]);
+        assert!(Config::default().with_env(|n| (n == "CROSSCOM_TRUSTED_PROXIES").then(|| "caddy".into())).is_err());
+        assert_eq!(Config::default().trusted_proxies().unwrap(), crate::proxy::Trusted::default(), "none by default");
     }
 
     #[test]
