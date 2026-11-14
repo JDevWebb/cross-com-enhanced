@@ -1,4 +1,4 @@
-//! The in-game overlay: a panel over the game (Server, News, Account, Help), opened and closed
+//! The in-game overlay: a panel over the game (Server, News, Leaderboards, Account, Help), opened and closed
 //! with the overlay key (`overlay_key`, F5 unless set), and toasts in the top-right corner when
 //! something changes (signed in, the server unreachable, news).
 //!
@@ -8,7 +8,8 @@
 //! on without the overlay.
 //!
 //! What the server says about itself (`/api/info`) is asked for on a thread of its own, every
-//! minute, so the game's frames never wait on the network.
+//! minute, and its leaderboard on another when the Leaderboards tab asks, so the game's frames
+//! never wait on the network.
 
 mod input;
 mod ui;
@@ -25,6 +26,7 @@ use std::time::Instant;
 
 use crosscom_client_common::server_info;
 use crosscom_client_common::server_info::Change;
+use crosscom_client_common::server_info::Leaderboard;
 use crosscom_client_common::server_info::Reply;
 use crosscom_client_common::server_info::ServerInfo;
 use crosscom_client_common::server_info::Watch;
@@ -101,6 +103,83 @@ static TOASTS: Mutex<Vec<Toast>> = Mutex::new(Vec::new());
 static LOGIN_GIVEN: AtomicBool = AtomicBool::new(false);
 /// Wakes the poller early (the game is signing in).
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
+/// The leaderboard last asked for, and asks for another (a mode's place in `LEADERBOARD_MODES`).
+static BOARD: Mutex<Option<Board>> = Mutex::new(None);
+static BOARD_VERSION: AtomicU32 = AtomicU32::new(0);
+static BOARD_ASK: OnceLock<Mutex<mpsc::Sender<usize>>> = OnceLock::new();
+
+/// What the Leaderboards tab shows.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Board {
+    /// The mode asked for, by its place in `LEADERBOARD_MODES`.
+    pub mode: usize,
+    pub loading: bool,
+    pub board: Option<Leaderboard>,
+    /// The server answered without a leaderboard (an older server).
+    pub missing: bool,
+    pub error: Option<String>,
+}
+
+/// Asks for `mode`'s leaderboard (on the leaderboard thread).
+pub(crate) fn ask_leaderboard(mode: usize) {
+    set_board(|b| {
+        b.mode = mode;
+        b.loading = true;
+    });
+    if let Some(ask) = BOARD_ASK.get().and_then(|a| a.lock().ok()) {
+        let _ = ask.send(mode);
+    }
+}
+
+/// The leaderboard, if it changed since `seen` (and its new version).
+pub(crate) fn board_since(seen: u32) -> Option<(u32, Board)> {
+    let now = BOARD_VERSION.load(Ordering::Acquire);
+    if now == seen {
+        return None;
+    }
+    let board = BOARD.try_lock().ok()?.clone().unwrap_or_default();
+    Some((now, board))
+}
+
+fn set_board(change: impl FnOnce(&mut Board)) {
+    if let Ok(mut board) = BOARD.lock() {
+        change(board.get_or_insert_with(Board::default));
+    }
+    BOARD_VERSION.fetch_add(1, Ordering::Release);
+}
+
+/// Fetches the leaderboards asked for, the latest ask first, until the game ends.
+fn leaderboards(server: &str, asks: &mpsc::Receiver<usize>) {
+    while let Ok(mut mode) = asks.recv() {
+        while let Ok(later) = asks.try_recv() {
+            mode = later;
+        }
+        let name = server_info::LEADERBOARD_MODES.get(mode).map_or("all", |(name, _)| name);
+        let result = server_info::fetch_leaderboard(server, name, POLL_TIMEOUT);
+        if let Err(e) = &result {
+            warn!("Couldn't ask {server} for its leaderboard: {e}");
+        }
+        set_board(|b| {
+            if b.mode != mode {
+                return; // another was asked for meanwhile
+            }
+            b.loading = false;
+            match result {
+                Ok(Some(board)) => {
+                    b.board = Some(board);
+                    b.missing = false;
+                    b.error = None;
+                }
+                Ok(None) => {
+                    b.board = None;
+                    b.missing = true;
+                    b.error = None;
+                }
+                Err(e) => b.error = Some(e.0),
+            }
+        });
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Toast {
@@ -164,9 +243,16 @@ pub(crate) fn start(config: &Config) {
         let (tx, rx) = mpsc::channel();
         let _ = WAKE.set(Mutex::new(tx));
         let username = config.username.clone();
-        let spawned = std::thread::Builder::new().name("crosscom-server-info".into()).spawn(move || poll(&server, &username, &rx));
+        let polled = server.clone();
+        let spawned = std::thread::Builder::new().name("crosscom-server-info".into()).spawn(move || poll(&polled, &username, &rx));
         if let Err(e) = spawned {
             error!("Overlay: couldn't start asking the server for its info: {e}");
+        }
+        let (tx, rx) = mpsc::channel();
+        let _ = BOARD_ASK.set(Mutex::new(tx));
+        let spawned = std::thread::Builder::new().name("crosscom-leaderboard".into()).spawn(move || leaderboards(&server, &rx));
+        if let Err(e) = spawned {
+            error!("Overlay: couldn't start the leaderboard's thread: {e}");
         }
     }
     let Some(engine) = Engine::detect() else {

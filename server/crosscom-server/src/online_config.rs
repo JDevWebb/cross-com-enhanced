@@ -142,6 +142,7 @@ enum Route {
     SignUp,
     Info,
     Login,
+    Leaderboard,
     /// A connection that sends nothing, such as the container's health check.
     Nothing,
     Other,
@@ -154,6 +155,7 @@ fn route(request_line: &str) -> Route {
         ("", _) => Route::Nothing,
         ("GET", PATH) => Route::OnlineConfig,
         ("GET", crate::api::INFO_PATH) => Route::Info,
+        ("GET", crate::leaderboard::PATH) => Route::Leaderboard,
         ("POST", crate::api::LOGIN_PATH) => Route::Login,
         ("POST", p) if p == crate::signup::PATH => Route::SignUp,
         _ => Route::Other,
@@ -180,6 +182,10 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             ("200 OK", http.content.clone())
         }
         Route::Info => ("200 OK", http.api.info(logger)),
+        Route::Leaderboard => {
+            let target = line.split(' ').nth(1).unwrap_or_default();
+            http.api.leaderboard(target.split_once('?').map_or("", |(_, query)| query))
+        }
         Route::Login => match body(crate::api::MAX_BODY) {
             None => too_big(),
             Some(body) => {
@@ -238,6 +244,8 @@ mod tests {
             Route::OnlineConfig
         );
         assert_eq!(route("GET /other HTTP/1.1"), Route::Other);
+        assert_eq!(route("GET /api/leaderboard?mode=siege HTTP/1.1"), Route::Leaderboard);
+        assert_eq!(route("POST /api/leaderboard HTTP/1.1"), Route::Other);
         assert_eq!(route("POST /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1"), Route::Other);
         assert_eq!(route("POST /accounts HTTP/1.1"), Route::SignUp);
         assert_eq!(route("GET /accounts HTTP/1.1"), Route::Other);

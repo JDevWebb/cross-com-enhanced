@@ -234,6 +234,22 @@ pub struct Store {
     db: Mutex<Connection>,
 }
 
+/// The most stored numbers a read of one board for everyone takes (the leaderboard's: a few
+/// hundred thousand players' worth).
+const MAX_EVERYONE: i64 = 500_000;
+
+impl Store {
+    /// Every player's 32-bit numbers on `board`: (player, keys, column, value).
+    pub fn everyone(&self, board: u8) -> rusqlite::Result<Vec<crate::leaderboard::Stored>> {
+        let db = self.lock();
+        let mut query = db.prepare_cached("SELECT pid, keys, col, value FROM player_stats WHERE type = ?1 AND board = ?2 LIMIT ?3")?;
+        let rows = query.query_map(params![SEND_INT32, board, MAX_EVERYONE], |r| {
+            Ok((r.get(0)?, keys_from_blob(&r.get::<_, Vec<u8>>(1)?), r.get(2)?, r.get(3)?))
+        })?;
+        rows.collect()
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         Self::with(Connection::open(path)?)

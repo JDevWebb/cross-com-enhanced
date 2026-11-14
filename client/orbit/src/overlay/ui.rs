@@ -26,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATEAPP;
 use windows::Win32::UI::WindowsAndMessaging::WM_MOUSEMOVE;
 
 use super::input;
+use super::Board;
 use super::Reach;
 use super::Status;
 
@@ -42,6 +43,8 @@ const FADE: f32 = 0.25;
 const MAX_TOASTS: usize = 4;
 /// `VK_ESCAPE`.
 const VK_ESCAPE: u16 = 0x1B;
+/// How long a leaderboard is shown before it's asked for again.
+const BOARD_FRESH: Duration = Duration::from_secs(60);
 
 /// The launcher's colours (theme.css), as RGBA.
 const fn rgb(hex: u32) -> [f32; 4] {
@@ -76,11 +79,18 @@ static WINDOW_MOUSE: AtomicBool = AtomicBool::new(false);
 enum Tab {
     Server,
     News,
+    Leaderboards,
     Account,
     Help,
 }
 
-const TABS: [(Tab, &str); 4] = [(Tab::Server, "Server"), (Tab::News, "News"), (Tab::Account, "Account"), (Tab::Help, "Help")];
+const TABS: [(Tab, &str); 5] = [
+    (Tab::Server, "Server"),
+    (Tab::News, "News"),
+    (Tab::Leaderboards, "Leaderboards"),
+    (Tab::Account, "Account"),
+    (Tab::Help, "Help"),
+];
 
 struct Fonts {
     strong: FontId,
@@ -112,6 +122,11 @@ pub(super) struct Overlay {
     s: f32,
     status: Status,
     status_version: u32,
+    board: Board,
+    board_version: u32,
+    /// The leaderboard mode chosen, and when it was last asked for.
+    board_mode: usize,
+    board_asked: Option<(usize, Instant)>,
     toasts: Vec<ShownToast>,
     /// The overlay stopped drawing after a panic.
     broken: bool,
@@ -136,6 +151,10 @@ impl Overlay {
             s: 1.0,
             status: Status::default(),
             status_version: 0,
+            board: Board::default(),
+            board_version: 0,
+            board_mode: 0,
+            board_asked: None,
             toasts: vec![ShownToast { toast: hint, since: None }],
             broken: false,
             first_frame: true,
@@ -207,6 +226,10 @@ impl Overlay {
             self.status_version = version;
             self.status = status;
         }
+        if let Some((version, board)) = super::board_since(self.board_version) {
+            self.board_version = version;
+            self.board = board;
+        }
         self.toasts.extend(super::take_toasts().into_iter().map(|toast| ShownToast { toast, since: None }));
         if self.open {
             self.panel(ui);
@@ -220,7 +243,7 @@ impl Overlay {
         let [w, h] = ui.io().display_size;
         // The game, dimmed behind the panel.
         ui.get_background_draw_list().add_rect([0.0, 0.0], [w, h], DIM).filled(true).build();
-        let size = [self.px(720.0).min(w - 32.0), self.px(500.0).min(h - 32.0)];
+        let size = [self.px(820.0).min(w - 32.0), self.px(560.0).min(h - 32.0)];
         let _border = ui.push_style_color(StyleColor::Border, CONTROL_LINE);
         ui.window("##crosscom-panel")
             .no_decoration()
@@ -234,6 +257,7 @@ impl Overlay {
                 ui.child_window("##crosscom-page").border(false).build(|| match self.tab {
                     Tab::Server => self.server_page(ui),
                     Tab::News => self.news_page(ui),
+                    Tab::Leaderboards => self.leaderboards_page(ui),
                     Tab::Account => self.account_page(ui),
                     Tab::Help => self.help_page(ui),
                 });
@@ -255,7 +279,7 @@ impl Overlay {
     }
 
     fn tabs(&mut self, ui: &Ui) {
-        let width = self.px(110.0);
+        let width = self.px(124.0);
         for (i, (tab, name)) in TABS.into_iter().enumerate() {
             if i > 0 {
                 ui.same_line();
@@ -369,6 +393,97 @@ impl Overlay {
         }
     }
 
+    fn leaderboards_page(&mut self, ui: &Ui) {
+        use crosscom_client_common::server_info::LEADERBOARD_MODES;
+        if self.status.server.is_none() {
+            ui.text_wrapped("No server is set in crosscom.toml. Choose a server in the Cross-Com launcher.");
+            return;
+        }
+        // The modes, as buttons.
+        let width = (ui.content_region_avail()[0] - self.px(10.0) * 6.0) / 7.0;
+        for (i, (_, shown)) in LEADERBOARD_MODES.iter().enumerate() {
+            if i > 0 {
+                ui.same_line();
+            }
+            let current = self.board_mode == i;
+            let _b = ui.push_style_color(StyleColor::Button, if current { SELECTED } else { CONTROL });
+            let _t = ui.push_style_color(StyleColor::Text, if current { ACCENT } else { SOFT });
+            if ui.button_with_size(shown, [width, 0.0]) {
+                self.board_mode = i;
+            }
+        }
+        ui.spacing();
+        // Asked for when first shown, when the mode changes, and again after a minute.
+        let stale = self.board_asked.is_none_or(|(mode, at)| mode != self.board_mode || at.elapsed() > BOARD_FRESH);
+        if stale {
+            self.board_asked = Some((self.board_mode, Instant::now()));
+            super::ask_leaderboard(self.board_mode);
+        }
+        let b = &self.board;
+        let shown = b.board.as_ref().filter(|_| b.mode == self.board_mode);
+        let rows = shown.map(|board| board.rows.as_slice()).unwrap_or_default();
+        if rows.is_empty() {
+            let _t = ui.push_style_color(StyleColor::Text, if b.error.is_some() { BAD } else { MUTED });
+            ui.text_wrapped(if b.loading || shown.is_none() && b.error.is_none() && !b.missing {
+                "Loading...".to_owned()
+            } else if let Some(error) = &b.error {
+                format!("The server isn't answering: {error}.")
+            } else if b.missing {
+                "This server has no leaderboard yet (an older version).".to_owned()
+            } else {
+                "Nobody has played this mode yet. Players show here after their first match.".to_owned()
+            });
+            return;
+        }
+        let me = crate::config().username.trim().to_lowercase();
+        let flags = imgui::TableFlags::ROW_BG | imgui::TableFlags::BORDERS_INNER_H | imgui::TableFlags::SCROLL_Y | imgui::TableFlags::SIZING_STRETCH_PROP;
+        let Some(_table) = ui.begin_table_with_flags("##crosscom-leaderboard", 8, flags) else {
+            return;
+        };
+        ui.table_setup_scroll_freeze(0, 1);
+        for (name, weight) in [
+            ("#", 0.5),
+            ("Player", 3.0),
+            ("Won", 1.0),
+            ("Lost", 1.0),
+            ("Kills", 1.0),
+            ("Deaths", 1.0),
+            ("Objectives", 1.4),
+            ("Time", 1.2),
+        ] {
+            ui.table_setup_column_with(imgui::TableColumnSetup {
+                init_width_or_weight: weight,
+                ..imgui::TableColumnSetup::new(name)
+            });
+        }
+        {
+            let _t = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.table_headers_row();
+        }
+        for row in rows {
+            ui.table_next_row();
+            let mine = !me.is_empty() && row.name.to_lowercase() == me;
+            if mine {
+                ui.table_set_bg_color(imgui::TableBgTarget::ROW_BG1, SELECTED);
+            }
+            let color = if mine { ACCENT } else { FG };
+            let cells = [
+                row.rank.to_string(),
+                row.name.clone(),
+                row.wins.to_string(),
+                row.losses.to_string(),
+                row.kills.to_string(),
+                row.deaths.to_string(),
+                row.objectives.to_string(),
+                played(row.seconds),
+            ];
+            for (i, cell) in cells.iter().enumerate() {
+                ui.table_next_column();
+                ui.text_colored(if i == 0 { MUTED } else { color }, cell);
+            }
+        }
+    }
+
     fn account_page(&self, ui: &Ui) {
         let name = &crate::config().username;
         if name.is_empty() {
@@ -431,6 +546,16 @@ impl Overlay {
                 .unwrap_or(0.0);
             y += height + gap;
         }
+    }
+}
+
+/// Time played, as `2h 05m` or `19m`.
+fn played(seconds: u32) -> String {
+    let minutes = seconds / 60;
+    if minutes >= 60 {
+        format!("{}h {:02}m", minutes / 60, minutes % 60)
+    } else {
+        format!("{minutes}m")
     }
 }
 
@@ -591,5 +716,7 @@ mod tests {
         assert_eq!(rgb(0xff0000), [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(capitalised("multiplayer"), "Multiplayer");
         assert_eq!(capitalised(""), "");
+        assert_eq!(played(1140), "19m");
+        assert_eq!(played(7500), "2h 05m");
     }
 }

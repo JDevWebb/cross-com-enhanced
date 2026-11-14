@@ -7,6 +7,7 @@
 //!   an account, else `401 {"error": ...}`. Failures count against the same limits as the game's
 //!   own sign-in (`rate_limit.rs`), so the two together give no more guesses than either:
 //!   `429` once over them.
+//! - `GET /api/leaderboard?mode=...`: every player ranked (see `leaderboard.rs`).
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use slog::Logger;
 
 use crate::accounts;
 use crate::accounts::Accounts;
+use crate::leaderboard;
 use crate::news;
 use crate::online::Online;
 use crate::rate_limit::FailedSignIns;
@@ -36,6 +38,8 @@ pub struct Api {
     failed: Arc<FailedSignIns>,
     news: PathBuf,
     online: Arc<Online>,
+    stats: Option<Arc<crate::stats::Store>>,
+    leaderboards: leaderboard::Cache,
 }
 
 #[derive(Serialize)]
@@ -54,7 +58,41 @@ struct Login {
 
 impl Api {
     pub fn new(accounts: Arc<Accounts>, failed: Arc<FailedSignIns>, news: PathBuf, online: Arc<Online>) -> Self {
-        Self { accounts, failed, news, online }
+        Self {
+            accounts,
+            failed,
+            news,
+            online,
+            stats: None,
+            leaderboards: leaderboard::Cache::default(),
+        }
+    }
+
+    /// The statistics the leaderboard is made from.
+    #[must_use]
+    pub fn with_stats(mut self, stats: Arc<crate::stats::Store>) -> Self {
+        self.stats = Some(stats);
+        self
+    }
+
+    /// The `GET /api/leaderboard` answer for `query` (`mode=...`).
+    pub fn leaderboard(&self, query: &str) -> Answer {
+        let Some(mode) = leaderboard::mode_of(query) else {
+            let modes: Vec<_> = leaderboard::MODES.iter().map(|(name, _)| *name).collect();
+            return error("400 Bad Request", &format!("mode is one of {}", modes.join(", ")));
+        };
+        let Some(stats) = &self.stats else {
+            return ("200 OK", leaderboard::answer(mode, Vec::new()));
+        };
+        let made = self.leaderboards.get(mode, || {
+            let stored = stats.everyone(leaderboard::BOARD).ok()?;
+            let rows = leaderboard::table(&stored, leaderboard::MODES[mode].1, |pid| self.accounts.name(pid).ok().flatten());
+            Some(leaderboard::answer(mode, rows))
+        });
+        match made {
+            Some(json) => ("200 OK", json),
+            None => error("500 Internal Server Error", "couldn't read the statistics"),
+        }
     }
 
     /// The `GET /api/info` answer.
@@ -125,6 +163,18 @@ pub(crate) mod tests {
         assert_eq!(news[0]["shows"], serde_json::Value::Null);
         let date = news[0]["date"].as_str().unwrap();
         assert!(date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-', "{date}");
+    }
+
+    #[test]
+    fn leaderboard_answers_a_mode_or_says_which() {
+        let (api, _) = api();
+        let (status, json) = api.leaderboard("mode=conflict");
+        assert_eq!(status, "200 OK");
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["mode"], "conflict");
+        assert_eq!(json["rows"].as_array().unwrap().len(), 0);
+        assert_eq!(api.leaderboard("").0, "200 OK");
+        assert_eq!(api.leaderboard("mode=tdm").0, "400 Bad Request");
     }
 
     #[test]

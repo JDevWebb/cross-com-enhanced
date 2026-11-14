@@ -1,5 +1,6 @@
 //! What the server says about itself at `GET /api/info`, on its HTTP port (80), for the overlay:
-//! its version, how many players are online and its news.
+//! its version, how many players are online and its news; and its leaderboard
+//! (`GET /api/leaderboard?mode=...`).
 //!
 //! A small HTTP/1.0 client over a plain `TcpStream`, as the server answers on plain HTTP and the
 //! client DLL shouldn't carry a TLS stack. Every field is optional; a server without the page
@@ -76,6 +77,53 @@ pub fn address(server: &str) -> (String, u16) {
 
 /// Asks `server` for its info, giving up after `timeout` at each step.
 pub fn fetch(server: &str, timeout: Duration) -> Result<Reply, Unreachable> {
+    reply(&get(server, PATH, timeout)?)
+}
+
+/// The leaderboard's page.
+pub const LEADERBOARD_PATH: &str = "/api/leaderboard";
+/// The modes the leaderboard has, as the server names them, and as shown.
+pub const LEADERBOARD_MODES: [(&str, &str); 7] = [
+    ("all", "All modes"),
+    ("conflict", "Conflict"),
+    ("decoy", "Decoy"),
+    ("saboteur", "Saboteur"),
+    ("siege", "Siege"),
+    ("stockade", "Stockade"),
+    ("takeover", "Takeover"),
+];
+
+/// One player on the leaderboard.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Ranked {
+    pub rank: u32,
+    pub name: String,
+    pub wins: u32,
+    pub losses: u32,
+    pub kills: u32,
+    pub deaths: u32,
+    pub objectives: u32,
+    pub seconds: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Leaderboard {
+    pub mode: String,
+    pub rows: Vec<Ranked>,
+}
+
+/// Asks `server` for its leaderboard of `mode` (one of [`LEADERBOARD_MODES`]). `Ok(None)`: the
+/// server answered without one (an older server).
+pub fn fetch_leaderboard(server: &str, mode: &str, timeout: Duration) -> Result<Option<Leaderboard>, Unreachable> {
+    let mode: String = mode.chars().filter(char::is_ascii_alphanumeric).collect();
+    let response = get(server, &format!("{LEADERBOARD_PATH}?mode={mode}"), timeout)?;
+    Ok(body(&response)?.ok().and_then(|body| serde_json::from_slice(&body).ok()))
+}
+
+/// Asks `server` for `path` over plain HTTP/1.0, and reads the whole answer.
+fn get(server: &str, path: &str, timeout: Duration) -> Result<Vec<u8>, Unreachable> {
     let (host, port) = address(server);
     let addr = (host.as_str(), port)
         .to_socket_addrs()
@@ -87,15 +135,26 @@ pub fn fetch(server: &str, timeout: Duration) -> Result<Reply, Unreachable> {
     stream.set_read_timeout(Some(timeout)).map_err(io)?;
     stream.set_write_timeout(Some(timeout)).map_err(io)?;
     let host_header = if host.contains(':') { format!("[{host}]") } else { host.clone() };
-    let request = format!("GET {PATH} HTTP/1.0\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: Cross-Com\r\n\r\n");
+    let request = format!("GET {path} HTTP/1.0\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: Cross-Com\r\n\r\n");
     stream.write_all(request.as_bytes()).map_err(io)?;
     let mut response = Vec::new();
     stream.take(MAX_RESPONSE as u64).read_to_end(&mut response).map_err(io)?;
-    reply(&response)
+    Ok(response)
 }
 
-/// Reads an HTTP response.
+/// Reads an HTTP response as the info page.
 pub fn reply(response: &[u8]) -> Result<Reply, Unreachable> {
+    Ok(match body(response)? {
+        Ok(body) => match serde_json::from_slice(&body) {
+            Ok(info) => Reply::Info(info),
+            Err(e) => Reply::NoInfo(format!("its info isn't as expected: {e}")),
+        },
+        Err(status) => Reply::NoInfo(format!("HTTP {status}")),
+    })
+}
+
+/// An HTTP response's body, or its status when that isn't 200.
+fn body(response: &[u8]) -> Result<Result<Vec<u8>, u16>, Unreachable> {
     let Some(head_end) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
         return Err(Unreachable("the server's answer isn't HTTP".into()));
     };
@@ -108,7 +167,7 @@ pub fn reply(response: &[u8]) -> Result<Reply, Unreachable> {
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| Unreachable("the server's answer isn't HTTP".into()))?;
     if status != 200 {
-        return Ok(Reply::NoInfo(format!("HTTP {status}")));
+        return Ok(Err(status));
     }
     let header = |name: &str| {
         head.lines()
@@ -121,10 +180,7 @@ pub fn reply(response: &[u8]) -> Result<Reply, Unreachable> {
     } else if let Some(len) = header("content-length").and_then(|v| v.parse::<usize>().ok()) {
         body.truncate(len);
     }
-    Ok(match serde_json::from_slice(&body) {
-        Ok(info) => Reply::Info(info),
-        Err(e) => Reply::NoInfo(format!("its info isn't as expected: {e}")),
-    })
+    Ok(Ok(body))
 }
 
 /// A chunked body's data (as much as came).
@@ -235,6 +291,18 @@ mod tests {
         assert!(matches!(reply(&ok("not json")), Ok(Reply::NoInfo(_))));
         assert!(reply(b"SSH-2.0-OpenSSH\r\n").is_err());
         assert!(reply(b"garbage\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn reads_the_leaderboard() {
+        let body = r#"{"mode":"siege","modes":["all"],"rows":[{"rank":1,"name":"Kozak","wins":3,"losses":1,"kills":9,"deaths":2,"objectives":1,"seconds":1140}]}"#;
+        let board: Leaderboard = serde_json::from_slice(&body_of(&ok(body))).unwrap();
+        assert_eq!(board.mode, "siege");
+        assert_eq!((board.rows[0].name.as_str(), board.rows[0].wins, board.rows[0].seconds), ("Kozak", 3, 1140));
+    }
+
+    fn body_of(response: &[u8]) -> Vec<u8> {
+        body(response).unwrap().unwrap()
     }
 
     #[test]

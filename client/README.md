@@ -15,6 +15,7 @@ F5 (or `overlay_key`, F1 to F12) opens a panel over the game; it or Esc closes i
 
 - **Server**: the address from `crosscom.toml`, whether it answers, its version and how many players are online.
 - **News**: the server's news.
+- **Leaderboards**: every player on the server, by mode (All, Conflict, Decoy, Saboteur, Siege, Stockade, Takeover): wins, losses, kills, deaths, objectives and time played. Your own row is highlighted. The game's own Leaderboards screen (friends only) can't be opened on PC.
 - **Account**: the account the game signs in with.
 - **Help**: the keys, and how to report a problem.
 

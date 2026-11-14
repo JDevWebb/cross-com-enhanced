@@ -145,6 +145,17 @@ sign-in until their game disconnects, or a minute after it stops answering.
 Failed tries count with the game's own sign-in: after 10 in 15 minutes from one address, or for
 one name, it answers `429`. Like sign-up, it's plain HTTP.
 
+`GET /api/leaderboard?mode=conflict` ranks every player who has played that mode (`all`,
+`conflict`, `decoy`, `saboteur`, `siege`, `stockade` or `takeover`; `all` without one), from
+the numbers the game saves after each match: most wins first, then kills, then objectives, at
+most 100. The in-game overlay shows it.
+
+```json
+{"mode": "conflict", "modes": ["all", "conflict", ...], "rows": [
+  {"rank": 1, "name": "Kozak", "wins": 3, "losses": 1, "kills": 9, "deaths": 2, "objectives": 1, "seconds": 1140}
+]}
+```
+
 ## Checking it works
 
 `crosscom-testbot` signs in the way the game does and checks each step:

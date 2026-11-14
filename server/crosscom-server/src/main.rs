@@ -20,6 +20,7 @@ mod fixed;
 mod friends;
 mod game_session;
 mod invitations;
+mod leaderboard;
 mod maps;
 mod menu;
 mod nat;
@@ -164,10 +165,17 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     // Failed sign-ins count together, from the game and from the launcher.
     let failed_sign_ins = Arc::new(rate_limit::FailedSignIns::default());
     let online = Arc::new(online::Online::default());
+    let stats = match stats::Store::open(&config.database) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            error!(logger, "couldn't open the statistics in {}: {e}", config.database.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let http = online_config::Http {
         content: online_config::content(public_ip, config.auth_port),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
-        api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)),
+        api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)).with_stats(Arc::clone(&stats)),
     };
     if config.signup && config.signup_code.is_none() {
         info!(logger, "Sign-up is open to anyone who can reach this server (no signup_code)");
@@ -194,13 +202,6 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         }
     };
     let news = config.news.clone();
-    let stats = match stats::Store::open(&config.database) {
-        Ok(store) => Arc::new(store),
-        Err(e) => {
-            error!(logger, "couldn't open the statistics in {}: {e}", config.database.display());
-            return ExitCode::FAILURE;
-        }
-    };
 
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
