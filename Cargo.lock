@@ -1122,7 +1122,6 @@ dependencies = [
  "hmac",
  "md-5",
  "miniz_oxide",
- "num-traits",
  "num_enum",
  "quazal-macros",
  "rand",
