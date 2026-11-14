@@ -51,7 +51,7 @@ pub(crate) fn install() {
         let _ = BINK_GOTO.set(std::mem::transmute::<unsafe extern "system" fn() -> isize, BinkGotoFn>(goto));
         std::mem::transmute::<unsafe extern "system" fn() -> isize, BinkOpenFn>(proc)
     };
-    let result = unsafe { BinkOpen.initialize(target, |name, flags| open(name, flags)).and_then(|hook| hook.enable()) };
+    let result = unsafe { BinkOpen.initialize(target, open).and_then(|hook| hook.enable()) };
     match result {
         Ok(()) => info!("Skipping the intro videos"),
         Err(e) => error!("Couldn't hook BinkOpen; the intro videos will play: {e}"),

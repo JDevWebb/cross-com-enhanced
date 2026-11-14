@@ -36,11 +36,7 @@ pub(crate) fn install() {
         };
         std::mem::transmute::<unsafe extern "system" fn() -> isize, GetAddrInfoFn>(proc)
     };
-    let result = unsafe {
-        GetAddrInfo
-            .initialize(target, |node, service, hints, res| lookup(node, service, hints, res))
-            .and_then(|hook| hook.enable())
-    };
+    let result = unsafe { GetAddrInfo.initialize(target, lookup).and_then(|hook| hook.enable()) };
     match result {
         Ok(()) => info!("Redirecting lookups of {}", crosscom_client_common::config::ONLINE_CONFIG_HOST),
         Err(e) => error!("Couldn't hook getaddrinfo: {e}"),
