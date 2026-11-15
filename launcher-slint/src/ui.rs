@@ -548,6 +548,15 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
             }
         });
     }
+    {
+        let weak = weak.clone();
+        w.on_open_link(move |id| {
+            let opened = core::about_link(&id).ok_or_else(|| "Not a link the launcher opens.".to_owned()).and_then(core::open_url);
+            if let (Err(e), Some(w)) = (opened, weak.upgrade()) {
+                w.set_toast(s(e));
+            }
+        });
+    }
     w.on_send_logs_now(on(|w, l| send_logs(w, l, None)));
     w.on_open_logs(on(|w, l| {
         if let Err(e) = l.open_logs() {

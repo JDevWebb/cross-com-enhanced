@@ -13,6 +13,7 @@ import { TitleBar, SideMenu, Toast } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
+import { AboutScreen } from "about.slint";
 import { InfoView, NewsRow } from "types.slint";
 
 export { Theme, InfoView, NewsRow }
@@ -31,7 +32,7 @@ export component AppWindow inherits Window {
 
     in property <string> release;
     in property <bool> maximised;
-    // "play", "setup" or "settings". Play needs everything set up: until then it's the setup.
+    // "play", "setup", "settings" or "about". Play needs everything set up: until then it's the setup.
     in-out property <string> screen: "play";
     out property <string> shown: screen == "play" && !info.ready ? "setup" : screen;
     // The first look at the game is in.
@@ -119,6 +120,8 @@ export component AppWindow inherits Window {
     callback send-logs-now();
     callback open-logs();
     callback restore();
+    // About: one of its links, by id.
+    callback open-link(string);
 
     VerticalLayout {
         TitleBar {
@@ -213,6 +216,10 @@ export component AppWindow inherits Window {
                     send-logs-now => { root.send-logs-now(); }
                     open-logs => { root.open-logs(); }
                     restore => { root.restore(); }
+                }
+                if root.loaded && root.shown == "about": AboutScreen {
+                    release: root.release;
+                    link(id) => { root.open-link(id); }
                 }
                 if !root.loaded: VerticalLayout {
                     alignment: center;

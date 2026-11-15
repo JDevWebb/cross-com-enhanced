@@ -10,6 +10,7 @@ export global Icons {
     out property <string> setup: "M4 7h10 M4 17h6 M18 7h2 M14 17h6 M18 7a2 2 0 1 1-4 0a2 2 0 1 1 4 0z M14 17a2 2 0 1 1-4 0a2 2 0 1 1 4 0z";
     out property <string> settings: "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M12 3v3 M12 18v3 M3 12h3 M18 12h3 M5.6 5.6l2.1 2.1 M16.3 16.3l2.1 2.1 M5.6 18.4l2.1-2.1 M16.3 7.7l2.1-2.1";
     out property <string> refresh: "M20 12a8 8 0 1 1-2.3-5.6 M20 4v4.5h-4.5";
+    out property <string> about: "M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0z M12 11v6 M12 7.5v.01";
 }
 
 export component Icon inherits Path {
@@ -171,6 +172,7 @@ export component SideMenu inherits Rectangle {
         HorizontalLayout { alignment: center; MenuItem { label: "Play"; icon: Icons.play; on: current == "play"; clicked => { root.go("play"); } } }
         HorizontalLayout { alignment: center; MenuItem { label: "Set up"; icon: Icons.setup; on: current == "setup"; clicked => { root.go("setup"); } } }
         Rectangle { vertical-stretch: 1; }
+        HorizontalLayout { alignment: center; MenuItem { label: "About"; icon: Icons.about; on: current == "about"; clicked => { root.go("about"); } } }
         HorizontalLayout { alignment: center; MenuItem { label: "Settings"; icon: Icons.settings; on: current == "settings"; clicked => { root.go("settings"); } } }
     }
     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }

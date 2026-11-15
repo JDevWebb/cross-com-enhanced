@@ -24,6 +24,44 @@ const NO_CD_KEY: &str = "CROSSCOM";
 /// The launcher's release.
 pub const RELEASE: &str = env!("CARGO_PKG_VERSION");
 
+/// Where About's links go, by their button's id; `None` for an id About doesn't have.
+#[must_use]
+pub fn about_link(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "source" => "https://github.com/JDevWebb/cross-com-enhanced",
+        "releases" => "https://github.com/JDevWebb/cross-com-enhanced/releases",
+        "issues" => "https://github.com/JDevWebb/cross-com-enhanced/issues",
+        "profile" => "https://github.com/JDevWebb",
+        "sister" => "https://github.com/JDevWebb/5th-echelon-enhanced",
+        "upstream" => "https://github.com/unixoide/5th-echelon",
+        "phoenix" => "https://github.com/Phoenix-Network-Ltd/Ghost-Recon-Future-Soldier-Research",
+        "grobackend" => "https://github.com/zeroKilo/GROBackendWV",
+        "prudp" => "https://github.com/Kinnay/NintendoClients/wiki/PRUDP-Protocol",
+        "kofi" => "https://ko-fi.com/jdevwebb",
+        _ => return None,
+    })
+}
+
+/// Opens a web address in the default browser. Only a plain `https` address: nothing a program
+/// handed it could take as its own options (explorer.exe reads commas as switches).
+pub fn open_url(url: &str) -> Result<(), String> {
+    let plain = url.strip_prefix("https://").is_some_and(|rest| {
+        !rest.is_empty()
+            && !rest.starts_with('/')
+            && !rest.split('/').next().unwrap_or_default().contains('@')
+            && !rest.chars().any(|c| c.is_whitespace() || matches!(c, ',' | '"' | '\\' | '^' | '&' | '|' | '<' | '>'))
+    });
+    if !plain {
+        return Err("Not a link the launcher opens.".into());
+    }
+    // Windows' own handler for web addresses (the default browser), not explorer.exe's command line.
+    #[cfg(windows)]
+    let opened = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(url).spawn();
+    #[cfg(not(windows))]
+    let opened = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(url).spawn();
+    opened.map(|_| ()).map_err(|e| format!("Couldn't open {url}: {e}"))
+}
+
 pub struct Launcher {
     prefs_path: PathBuf,
     prefs: Mutex<Prefs>,
@@ -421,6 +459,26 @@ fn unencrypted_note(sent: server::Sent) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_opens_only_its_own_plain_links() {
+        for id in ["source", "releases", "issues", "profile", "sister", "upstream", "phoenix", "grobackend", "prudp", "kofi"] {
+            let url = about_link(id).unwrap();
+            assert!(url.starts_with("https://"), "{id}");
+            assert!(!url.contains(',') && !url.contains(' '), "{id}");
+        }
+        assert_eq!(about_link("file"), None);
+        for bad in [
+            "http://example.org",
+            "https://",
+            "https://user@example.org",
+            "https://a.org/x,y",
+            "file:///c:/x",
+            "https://a.org/\\x",
+        ] {
+            assert!(open_url(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn checks_the_account_form() {

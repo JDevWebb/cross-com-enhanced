@@ -1,0 +1,244 @@
+// About: what Cross-Com Enhanced is and its release, who makes it, the work it's built on, how
+// to help pay for the community servers, and the small print with Slint's own attribution (its
+// royalty-free licence asks for it on the About screen).
+
+import { ScrollView, AboutSlint } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { CrossMark } from "brand.slint";
+import { Btn, Caps, Card, Para } from "widgets.slint";
+
+// A person: their picture (the developer) or initials in a circle, name, what they are beside it,
+// a line on what they did, and their links.
+component Person inherits HorizontalLayout {
+    in property <string> initials;
+    in property <bool> picture: false;
+    in property <string> name;
+    in property <string> sub;
+    in property <string> line;
+    in property <length> size: 56px;
+    // The developer: larger, ringed in the accent.
+    in property <bool> lead: false;
+    in property <[{id: string, label: string}]> links;
+    callback link(string);
+    spacing: 16px;
+    VerticalLayout {
+        alignment: start;
+        Rectangle {
+            width: root.size;
+            height: root.size;
+            border-radius: root.size / 2;
+            background: root.lead ? Theme.accent : Theme.control-line;
+            Rectangle {
+                x: root.lead ? 2px : 1px;
+                y: self.x;
+                width: parent.width - 2 * self.x;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.surface;
+                clip: true;
+                if root.picture: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    image-fit: cover;
+                    source: @image-url("assets/avatars/jdevwebb.png");
+                    accessible-role: image;
+                    accessible-label: root.name + "'s picture";
+                }
+                if !root.picture: Text {
+                    text: root.initials;
+                    font-size: parent.width * 0.38;
+                    font-weight: 700;
+                    color: Theme.fg;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text {
+                text: root.name;
+                color: Theme.fg;
+                font-family: root.lead || root.size >= 56px ? Type.cond : Type.sans;
+                font-weight: root.lead || root.size >= 56px ? 700 : 600;
+                font-size: root.lead ? 26px : root.size >= 56px ? 22px : 18px;
+                vertical-alignment: center;
+            }
+            if root.sub != "": Text { text: root.sub; font-size: 14px; color: Theme.muted; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+            if root.sub == "": Rectangle { horizontal-stretch: 1; }
+        }
+        if root.line != "": Text { text: root.line; wrap: word-wrap; font-size: 15px; color: Theme.soft; }
+        if root.links.length > 0: HorizontalLayout {
+            spacing: 16px;
+            alignment: start;
+            for l in root.links: Btn { text: l.label; kind: "ghost"; clicked => { root.link(l.id); } }
+        }
+    }
+}
+
+component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.line;
+}
+
+export component AboutScreen inherits Rectangle {
+    in property <string> release;
+    // Opens one of About's links, by its id (see `core::about_link`).
+    callback link(string);
+
+    ScrollView {
+        VerticalLayout {
+            padding-left: 40px;
+            padding-right: 40px;
+            padding-top: 30px;
+            padding-bottom: 28px;
+            spacing: 14px;
+            alignment: start;
+
+            Caps { text: "ABOUT"; color: Theme.accent; }
+
+            // Its head: the mark, what it is, its release, and where it's made.
+            Card {
+                min-height: head.preferred-height;
+                head := HorizontalLayout {
+                    padding: 26px;
+                    spacing: 24px;
+                    VerticalLayout { alignment: center; CrossMark { size: 96px; glow: true; } }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 8px;
+                        Caps { text: "GHOST RECON: FUTURE SOLDIER · ONLINE AGAIN"; color: Theme.accent; }
+                        Text {
+                            text: "CROSS-COM ENHANCED";
+                            wrap: word-wrap;
+                            font-family: Type.cond;
+                            font-weight: 700;
+                            font-size: 34px;
+                            color: Theme.fg;
+                            accessible-role: AccessibleRole.text;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Rectangle {
+                                border-width: 1px;
+                                border-color: Theme.control-line;
+                                border-radius: 4px;
+                                width: version-text.preferred-width + 16px;
+                                height: version-text.preferred-height + 4px;
+                                version-text := Text { text: root.release; font-family: Type.mono; font-size: 13px; color: Theme.fg; }
+                            }
+                            Text { text: "First test build"; font-size: Type.small; color: Theme.warn; vertical-alignment: center; }
+                        }
+                        Para {
+                            text: "Free servers and launcher that bring back Ghost Recon: Future Soldier's online play: every adversarial mode, Guerrilla and co-op, kept running by its players.";
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            padding-top: 6px;
+                            Btn { text: "Source on GitHub"; kind: "ghost"; clicked => { root.link("source"); } }
+                            Btn { text: "Release notes"; kind: "ghost"; clicked => { root.link("releases"); } }
+                            Btn { text: "Report a problem"; kind: "ghost"; clicked => { root.link("issues"); } }
+                        }
+                    }
+                }
+            }
+
+            // Who makes it, and the work it stands on.
+            Card {
+                min-height: people.preferred-height;
+                people := VerticalLayout {
+                    padding: 22px;
+                    spacing: 16px;
+                    Caps { text: "DEVELOPED BY"; }
+                    Person {
+                        picture: true;
+                        name: "JDevWebb";
+                        line: "Builds the launcher, the server and the game client, and runs the community test network.";
+                        size: 76px;
+                        lead: true;
+                        links: [{ id: "profile", label: "github.com/JDevWebb" }, { id: "sister", label: "5th Echelon Enhanced" }];
+                        link(id) => { root.link(id); }
+                    }
+                    Rule { }
+                    Caps { text: "BUILT ON THE SHOULDERS OF"; color: Theme.accent; }
+                    Person {
+                        initials: "U";
+                        name: "unixoide";
+                        sub: "· creator of 5th Echelon";
+                        line: "Reverse-engineered the Quazal online services Future Soldier shares with Splinter Cell: Blacklist, and wrote 5th Echelon's server, whose Quazal library Cross-Com's server is built on.";
+                        size: 64px;
+                        links: [{ id: "upstream", label: "github.com/unixoide/5th-echelon" }];
+                        link(id) => { root.link(id); }
+                    }
+                    Person {
+                        initials: "PN";
+                        name: "Phoenix Network";
+                        sub: "(Michał Kapała)";
+                        line: "The first Future Soldier backend research: much of the sign-in, and what the official servers answered.";
+                        links: [{ id: "phoenix", label: "Ghost Recon Future Soldier research" }];
+                        link(id) => { root.link(id); }
+                    }
+                    Person {
+                        initials: "ZK";
+                        name: "zeroKilo and Michał Kapała";
+                        line: "GROBackendWV, a Ghost Recon Online backend on the same online stack.";
+                        links: [{ id: "grobackend", label: "github.com/zeroKilo/GROBackendWV" }];
+                        link(id) => { root.link(id); }
+                    }
+                    Person {
+                        initials: "K";
+                        name: "Kinnay";
+                        line: "The PRUDP documentation.";
+                        links: [{ id: "prudp", label: "PRUDP protocol" }];
+                        link(id) => { root.link(id); }
+                    }
+                    Rule { }
+                    Para { text: "And every player who reports a problem, sends a log or tests a build."; color: Theme.muted; }
+                }
+            }
+
+            // Helping pay for the community servers: optional.
+            Card {
+                min-height: support.preferred-height;
+                support := VerticalLayout {
+                    padding: 22px;
+                    spacing: 10px;
+                    Caps { text: "SUPPORT THE COMMUNITY SERVERS"; color: Theme.accent; }
+                    Para {
+                        text: "Cross-Com Enhanced is free, and always will be. If you'd like to, you can chip in towards hosting the community test network. It's entirely optional: there are no perks, and any amount is appreciated.";
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Btn { text: "Support on Ko-fi"; kind: "primary"; clicked => { root.link("kofi"); } }
+                    }
+                }
+            }
+
+            // The small print, and Slint's attribution beside it.
+            HorizontalLayout {
+                alignment: start;
+                spacing: 20px;
+                padding-top: 4px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Free, and provided as is, without warranty of any kind. Not affiliated with or endorsed by Ubisoft; Ghost Recon: Future Soldier is a trademark of Ubisoft Entertainment. The launcher is made with Slint (slint.dev), under its royalty-free licence; its type is IBM Plex (SIL Open Font License).";
+                    wrap: word-wrap;
+                    font-size: Type.small;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                AboutSlint {
+                    max-width: 360px;
+                    max-height: 120px;
+                }
+            }
+        }
+    }
+}

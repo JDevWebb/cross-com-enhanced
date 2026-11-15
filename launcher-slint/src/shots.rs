@@ -26,6 +26,8 @@ use crate::AppWindow;
 const WIDTH: u32 = 1180;
 const HEIGHT: u32 = 780;
 const TALL: u32 = 920;
+/// About, whole, down to its small print and Slint's attribution.
+const ABOUT_HEIGHT: u32 = 1480;
 /// Where the made-up game is.
 const GAME: &str = r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Tom Clancy's Ghost Recon Future Soldier";
 const NAME: &str = "Kozak";
@@ -135,6 +137,11 @@ fn settings(w: &AppWindow) {
     w.set_logs_said(s("Logs sent: report 20261115-123456-ab12cd."));
 }
 
+fn about(w: &AppWindow) {
+    w.set_info(ui::info_view(&ready()));
+    w.set_screen(s("about"));
+}
+
 pub fn run(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -148,7 +155,12 @@ pub fn run(dir: &Path) -> Result<(), String> {
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     w.show().map_err(|e| e.to_string())?;
 
-    let shots: [Shot; 3] = [("launcher-play", play, HEIGHT), ("launcher-setup", setup, HEIGHT), ("launcher-settings", settings, TALL)];
+    let shots: [Shot; 4] = [
+        ("launcher-play", play, HEIGHT),
+        ("launcher-setup", setup, HEIGHT),
+        ("launcher-settings", settings, TALL),
+        ("launcher-about", about, ABOUT_HEIGHT),
+    ];
     for (name, set, height) in shots {
         window.set_size(slint::PhysicalSize::new(WIDTH, height));
         set(&w);
