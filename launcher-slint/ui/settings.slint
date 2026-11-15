@@ -1,0 +1,254 @@
+// The game options (with the in-game overlay and its key), sending the game's logs, the server
+// (changing it, or going back to the community test network), signing in to another account or
+// making one on the same server, and taking Cross-Com out of the game.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { Btn, Caps, Tag, Card, CardHead, Para, Check, Choice } from "widgets.slint";
+import { AccountForm } from "setup.slint";
+import { InfoView } from "types.slint";
+
+export component SettingsScreen inherits Rectangle {
+    in property <InfoView> info;
+    in property <string> release;
+    in property <string> community-name;
+    // The options as shown; changed => saved at once.
+    in-out property <bool> skip-intro;
+    in-out property <bool> dx9;
+    in-out property <bool> overlay;
+    in-out property <int> overlay-key;
+    in-out property <bool> send-logs;
+    in property <string> options-said;
+    in property <bool> options-failed;
+    // The account form.
+    in-out property <bool> new-account;
+    in-out property <string> name;
+    in-out property <string> password;
+    in-out property <string> again;
+    in-out property <string> code;
+    in property <bool> account-ready;
+    in property <bool> account-busy;
+    in property <string> account-said;
+    in property <bool> account-failed;
+    // The logs: the last report, what the last sending said, and whether it's sending now.
+    in property <string> logs-last;
+    in property <string> logs-said;
+    in property <bool> logs-sending;
+    // Taking Cross-Com out of the game.
+    in-out property <bool> confirming;
+    in property <string> restore-said;
+    in property <bool> restore-failed;
+    callback options-changed();
+    callback account-changed();
+    callback account-run();
+    // To Setup with the community test network chosen (true), or another server.
+    callback change-server(bool);
+    callback send-logs-now();
+    callback open-logs();
+    callback restore();
+
+    ScrollView {
+        VerticalLayout {
+            padding-left: 40px;
+            padding-right: 40px;
+            padding-top: 30px;
+            padding-bottom: 28px;
+            spacing: 0px;
+            alignment: start;
+
+            Caps { text: "SETTINGS"; color: Theme.accent; }
+            Text {
+                text: "SETTINGS";
+                font-family: Type.cond;
+                font-weight: 700;
+                font-size: 40px;
+                color: Theme.fg;
+                accessible-role: AccessibleRole.text;
+            }
+
+            HorizontalLayout {
+                padding-top: 18px;
+                spacing: 14px;
+                // The game, its logs and its files.
+                VerticalLayout {
+                    spacing: 14px;
+                    // Two equal columns, between the page's sides (40 px) and the gap.
+                    width: (root.width - 94px) / 2;
+                    alignment: start;
+                    Card {
+                        min-height: gl.preferred-height;
+                        gl := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 8px;
+                            CardHead { title: "Game"; }
+                            Check { text: "Skip the intro videos"; checked <=> root.skip-intro; toggled => { root.options-changed(); } }
+                            Check { text: "Use DirectX 9 (for older graphics cards)"; checked <=> root.dx9; toggled => { root.options-changed(); } }
+                            Check { text: "In-game overlay"; checked <=> root.overlay; toggled => { root.options-changed(); } }
+                            HorizontalLayout {
+                                padding-left: 28px;
+                                spacing: 10px;
+                                alignment: start;
+                                opacity: root.overlay ? 1 : 0.5;
+                                Text { text: "Opens with"; color: Theme.soft; vertical-alignment: center; }
+                                Choice {
+                                    label: "The key that opens the overlay";
+                                    model: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                                    current <=> root.overlay-key;
+                                    enabled: root.overlay;
+                                    chosen => { root.options-changed(); }
+                                }
+                            }
+                            if root.options-said != "": Text {
+                                text: root.options-said;
+                                color: root.options-failed ? Theme.bad : Theme.muted;
+                                font-size: Type.small;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Card {
+                        min-height: ll.preferred-height;
+                        ll := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { title: "Logs"; }
+                            Check {
+                                text: "Send game logs to the server after each game (helps fix problems; your Windows user name and password are removed)";
+                                checked <=> root.send-logs;
+                                toggled => { root.options-changed(); }
+                            }
+                            Text { text: root.logs-last; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Btn {
+                                    text: "Send logs now";
+                                    busy: root.logs-sending;
+                                    enabled: root.send-logs && root.info.game-dir != "" && !root.logs-sending;
+                                    clicked => { root.send-logs-now(); }
+                                }
+                                Btn { text: "Open logs folder"; enabled: root.info.game-dir != ""; clicked => { root.open-logs(); } }
+                            }
+                            if root.logs-said != "": Text { text: root.logs-said; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+                            Text {
+                                text: "The server only takes logs from a PC its account has played online from in the last day. They help whoever runs it see what went wrong; each game's log stays in the game's logs folder.";
+                                color: Theme.muted;
+                                font-size: Type.small;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Card {
+                        min-height: fl.preferred-height;
+                        fl := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { title: "The game's files"; }
+                            Text {
+                                text: root.info.game-dir != "" ? root.info.game-dir : "No game set up.";
+                                font-family: Type.mono;
+                                font-size: 12.5px;
+                                color: Theme.soft;
+                                wrap: char-wrap;
+                            }
+                            Para { text: "Cross-Com replaces two of the game's files and keeps the originals. Putting them back leaves the game as it was installed."; }
+                            if !root.confirming: HorizontalLayout {
+                                alignment: start;
+                                Btn {
+                                    text: "Restore the game's own files";
+                                    enabled: root.info.game-dir != "" && root.info.client != "no";
+                                    clicked => { root.confirming = true; }
+                                }
+                            }
+                            if root.confirming: HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Btn { text: "Restore them"; kind: "primary"; clicked => { root.confirming = false; root.restore(); } }
+                                Btn { text: "Keep Cross-Com"; clicked => { root.confirming = false; } }
+                            }
+                            if root.restore-said != "": Para { text: root.restore-said; color: root.restore-failed ? Theme.bad : Theme.soft; }
+                        }
+                    }
+                }
+                // The server and the account.
+                VerticalLayout {
+                    spacing: 14px;
+                    // Two equal columns, between the page's sides (40 px) and the gap.
+                    width: (root.width - 94px) / 2;
+                    alignment: start;
+                    Card {
+                        min-height: al.preferred-height;
+                        al := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { title: "Server and account"; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Text {
+                                    text: root.info.server != "" ? root.info.server : "No server set up";
+                                    color: Theme.fg;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                if root.info.community: VerticalLayout { alignment: center; Tag { text: root.community-name; } }
+                            }
+                            Text {
+                                text: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account.";
+                                color: Theme.soft;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Btn { text: "Change server"; clicked => { root.change-server(false); } }
+                                if !root.info.community: Btn { text: "Use the " + root.community-name.to-lowercase(); kind: "ghost"; clicked => { root.change-server(true); } }
+                            }
+                            // Another account on the same server: signing in to it, or making it.
+                            if root.info.server != "" && root.info.game-dir != "": AccountForm {
+                                make-first: false;
+                                new-account <=> root.new-account;
+                                name <=> root.name;
+                                password <=> root.password;
+                                again <=> root.again;
+                                code <=> root.code;
+                                enabled: !root.account-busy;
+                                changed => { root.account-changed(); }
+                                accepted => { if root.account-ready && !root.account-busy { root.account-run(); } }
+                            }
+                            if root.info.server != "" && root.info.game-dir != "": HorizontalLayout {
+                                alignment: start;
+                                Btn {
+                                    text: root.new-account ? "Make the account" : "Sign in";
+                                    kind: "primary";
+                                    busy: root.account-busy;
+                                    enabled: root.account-ready && !root.account-busy;
+                                    clicked => { root.account-run(); }
+                                }
+                            }
+                            if root.account-said != "": Text {
+                                text: root.account-said;
+                                color: root.account-failed ? Theme.bad : Theme.good;
+                                font-size: Type.small;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                padding-top: 18px;
+                Text {
+                    text: "Cross-Com Enhanced " + root.release + " · an open-source community server for Ghost Recon: Future Soldier. The launcher is made with Slint.";
+                    color: Theme.muted;
+                    font-size: Type.small;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

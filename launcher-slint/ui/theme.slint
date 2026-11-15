@@ -1,0 +1,43 @@
+// Cross-Com's look: the logo's HUD cyan on deep blue-grey panels. Every colour on a screen is one
+// of these, never a literal. HUD labels in Plex Mono caps, titles in Plex Sans Condensed, the
+// rest in Plex Sans. The in-game overlay draws with the same colours (client/orbit's overlay).
+
+export global Theme {
+    // Surfaces, from the window's floor up.
+    out property <color> bg: #0b1216;
+    out property <color> rail: #081014;
+    out property <color> surface: #0f181d;
+    out property <color> sunken: #081014;
+    out property <color> control: #15232a;
+    out property <color> control-hover: #1b2d36;
+    out property <color> line: #1a2830;
+    out property <color> control-line: #263540;
+    out property <color> selected: #0e2129;
+    // Text: the body, the softer second line, the quiet labels.
+    out property <color> fg: #e2edf1;
+    out property <color> soft: #a6bbc4;
+    out property <color> muted: #7f97a2;
+    // The one accent (the logo's cyan), what sits on it, and the states.
+    out property <color> accent: #5fd0e6;
+    out property <color> accent-dim: #5fd0e659;
+    out property <color> accent-glow: #5fd0e61a;
+    out property <color> on-accent: #04161b;
+    out property <color> warn: #f0b44c;
+    out property <color> bad: #ff7a6b;
+    out property <color> on-bad: #1a0503;
+    out property <color> good: #7fe0a8;
+
+    // Motion: short and eased; none while the screenshots are taken.
+    in-out property <bool> reduced-motion: false;
+    out property <duration> quick: reduced-motion ? 0ms : 150ms;
+    out property <duration> calm: reduced-motion ? 0ms : 240ms;
+}
+
+export global Type {
+    out property <string> sans: "IBM Plex Sans";
+    out property <string> cond: "IBM Plex Sans Condensed";
+    out property <string> mono: "IBM Plex Mono";
+    out property <length> body: 15px;
+    out property <length> small: 13px;
+    out property <length> caps: 11.5px;
+}

@@ -1,0 +1,237 @@
+// The launcher's window: its own title bar, the side menu, and the screen chosen. Until the game,
+// a server and an account are set up, the guided setup is the screen.
+
+import "../../assets/fonts/IBMPlexSans-Regular.ttf";
+import "../../assets/fonts/IBMPlexSans-SemiBold.ttf";
+import "../../assets/fonts/IBMPlexSansCondensed-Bold.ttf";
+import "../../assets/fonts/IBMPlexMono-Regular.ttf";
+
+import { Theme, Type } from "theme.slint";
+import { CrossMark } from "brand.slint";
+import { Spinner } from "widgets.slint";
+import { TitleBar, SideMenu, Toast } from "chrome.slint";
+import { PlayScreen } from "play.slint";
+import { SetupScreen } from "setup.slint";
+import { SettingsScreen } from "settings.slint";
+import { InfoView, NewsRow } from "types.slint";
+
+export { Theme, InfoView, NewsRow }
+
+export component AppWindow inherits Window {
+    title: "Cross-Com Enhanced";
+    icon: @image-url("../../docs/logo.svg");
+    preferred-width: 1180px;
+    preferred-height: 780px;
+    min-width: 940px;
+    min-height: 600px;
+    no-frame: true;
+    background: Theme.bg;
+    default-font-family: Type.sans;
+    default-font-size: Type.body;
+
+    in property <string> release;
+    in property <bool> maximised;
+    // "play", "setup" or "settings". Play needs everything set up: until then it's the setup.
+    in-out property <string> screen: "play";
+    out property <string> shown: screen == "play" && !info.ready ? "setup" : screen;
+    // The first look at the game is in.
+    in property <bool> loaded;
+    in property <InfoView> info;
+    in property <string> community-host;
+    in property <string> community-name;
+    // What the launcher just did, for a few seconds.
+    in property <string> toast;
+
+    // Play.
+    in property <string> server-state: "asking";
+    in property <string> server-detail;
+    in property <[NewsRow]> news;
+    in property <string> news-note;
+    in property <bool> news-loading;
+    in property <bool> starting;
+    in property <string> play-said;
+    in property <bool> play-failed;
+
+    // Setup.
+    in-out property <string> setup-game-dir;
+    in property <bool> setup-game-finding;
+    in property <string> setup-game-error;
+    in-out property <bool> setup-community: true;
+    in-out property <string> setup-server-typed;
+    in property <string> setup-server-ok;
+    in property <bool> setup-server-checking;
+    in property <string> setup-server-error;
+    in-out property <bool> setup-new-account: true;
+    in-out property <string> setup-name;
+    in-out property <string> setup-password;
+    in-out property <string> setup-again;
+    in-out property <string> setup-code;
+    in-out property <bool> setup-skip-intro: true;
+    in-out property <bool> setup-dx9;
+    in property <bool> setup-account-done;
+    in property <string> setup-missing;
+    in property <bool> setup-busy;
+    in property <string> setup-error;
+
+    // Settings.
+    in-out property <bool> opt-skip-intro;
+    in-out property <bool> opt-dx9;
+    in-out property <bool> opt-overlay;
+    in-out property <int> opt-overlay-key;
+    in-out property <bool> opt-send-logs;
+    in property <string> options-said;
+    in property <bool> options-failed;
+    in-out property <bool> acc-new;
+    in-out property <string> acc-name;
+    in-out property <string> acc-password;
+    in-out property <string> acc-again;
+    in-out property <string> acc-code;
+    in property <bool> acc-ready;
+    in property <bool> acc-busy;
+    in property <string> acc-said;
+    in property <bool> acc-failed;
+    in property <string> logs-last;
+    in property <string> logs-said;
+    in property <bool> logs-sending;
+    in-out property <bool> restore-confirming;
+    in property <string> restore-said;
+    in property <bool> restore-failed;
+
+    // The window.
+    callback drag();
+    callback minimise();
+    callback maximise();
+    callback close-window();
+    callback go(string);
+    // Play.
+    callback play();
+    callback refresh-news();
+    // Setup.
+    callback setup-choose-game();
+    callback setup-check-server();
+    callback setup-changed();
+    callback setup-run();
+    // Settings.
+    callback options-changed();
+    callback account-changed();
+    callback account-run();
+    callback change-server(bool);
+    callback send-logs-now();
+    callback open-logs();
+    callback restore();
+
+    VerticalLayout {
+        TitleBar {
+            release: root.release;
+            maximised: root.maximised;
+            drag => { root.drag(); }
+            minimise => { root.minimise(); }
+            maximise => { root.maximise(); }
+            close => { root.close-window(); }
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            SideMenu {
+                current: root.shown;
+                go(s) => { root.go(s); }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                if root.loaded && root.shown == "play": PlayScreen {
+                    info: root.info;
+                    community-name: root.community-name;
+                    server-state: root.server-state;
+                    server-detail: root.server-detail;
+                    news: root.news;
+                    news-note: root.news-note;
+                    news-loading: root.news-loading;
+                    starting: root.starting;
+                    said: root.play-said;
+                    failed: root.play-failed;
+                    play => { root.play(); }
+                    refresh => { root.refresh-news(); }
+                }
+                if root.loaded && root.shown == "setup": SetupScreen {
+                    first: !root.info.ready;
+                    community-host: root.community-host;
+                    community-name: root.community-name;
+                    game-dir: root.setup-game-dir;
+                    game-finding: root.setup-game-finding;
+                    game-error: root.setup-game-error;
+                    community <=> root.setup-community;
+                    server-typed <=> root.setup-server-typed;
+                    server-ok: root.setup-server-ok;
+                    server-checking: root.setup-server-checking;
+                    server-error: root.setup-server-error;
+                    new-account <=> root.setup-new-account;
+                    name <=> root.setup-name;
+                    password <=> root.setup-password;
+                    again <=> root.setup-again;
+                    code <=> root.setup-code;
+                    skip-intro <=> root.setup-skip-intro;
+                    dx9 <=> root.setup-dx9;
+                    account-done: root.setup-account-done;
+                    missing: root.setup-missing;
+                    busy: root.setup-busy;
+                    error: root.setup-error;
+                    choose-game => { root.setup-choose-game(); }
+                    check-server => { root.setup-check-server(); }
+                    changed => { root.setup-changed(); }
+                    run => { root.setup-run(); }
+                    cancel => { root.go("play"); }
+                }
+                if root.loaded && root.shown == "settings": SettingsScreen {
+                    info: root.info;
+                    release: root.release;
+                    community-name: root.community-name;
+                    skip-intro <=> root.opt-skip-intro;
+                    dx9 <=> root.opt-dx9;
+                    overlay <=> root.opt-overlay;
+                    overlay-key <=> root.opt-overlay-key;
+                    send-logs <=> root.opt-send-logs;
+                    options-said: root.options-said;
+                    options-failed: root.options-failed;
+                    new-account <=> root.acc-new;
+                    name <=> root.acc-name;
+                    password <=> root.acc-password;
+                    again <=> root.acc-again;
+                    code <=> root.acc-code;
+                    account-ready: root.acc-ready;
+                    account-busy: root.acc-busy;
+                    account-said: root.acc-said;
+                    account-failed: root.acc-failed;
+                    logs-last: root.logs-last;
+                    logs-said: root.logs-said;
+                    logs-sending: root.logs-sending;
+                    confirming <=> root.restore-confirming;
+                    restore-said: root.restore-said;
+                    restore-failed: root.restore-failed;
+                    options-changed => { root.options-changed(); }
+                    account-changed => { root.account-changed(); }
+                    account-run => { root.account-run(); }
+                    change-server(c) => { root.change-server(c); }
+                    send-logs-now => { root.send-logs-now(); }
+                    open-logs => { root.open-logs(); }
+                    restore => { root.restore(); }
+                }
+                if !root.loaded: VerticalLayout {
+                    alignment: center;
+                    spacing: 18px;
+                    HorizontalLayout { alignment: center; CrossMark { size: 96px; glow: true; } }
+                    HorizontalLayout { alignment: center; Spinner { size: 18px; } }
+                }
+                if root.toast != "": Toast {
+                    text: root.toast;
+                    x: parent.width - self.width - 22px;
+                    y: parent.height - self.height - 22px;
+                }
+            }
+        }
+    }
+
+    // The window's edge, when it isn't maximised.
+    if !root.maximised: Rectangle {
+        border-width: 1px;
+        border-color: Theme.control-line;
+    }
+}

@@ -1,0 +1,43 @@
+# The Cross-Com launcher: one native window (Slint), no web view to install, on the launcher
+# library (../launcher). A workspace of its own, so Slint's dependencies stay out of the main
+# workspace's lock.
+[package]
+name = "crosscom-launcher-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "crosscom-launcher"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+# Slint's royalty-free licence for desktop apps: this project's code is MIT. winit for the
+# window's own title bar (dragging, maximising); OpenGL (femtovg), with the software renderer
+# where there's no OpenGL 2 (a virtual machine without its driver), and for the screenshots.
+slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "unstable-winit-030"] }
+crosscom-launcher = { path = "../launcher" }
+crosscom-client-common = { path = "../client/common" }
+# The README's screenshots (--shots) as PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Windows' own folder picker.
+[target.'cfg(windows)'.dependencies]
+rfd = "0.15"
+
+[build-dependencies]
+slint-build = "~1.18"
+winres = "0.1.12"
+
+[features]
+# The client DLLs built in (scripts/build-launcher.sh sets CROSSCOM_CLIENT_DIR).
+embed-dlls = ["crosscom-launcher/embed-dlls"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
