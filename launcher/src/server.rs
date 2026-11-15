@@ -80,7 +80,7 @@ fn may_send_unencrypted(host: &str) -> bool {
 /// Whether an HTTPS attempt failed before reaching anything: refused, unreachable or timed out
 /// while connecting. A failure after that (a certificate that isn't valid, a broken handshake)
 /// may be someone in the way, and never leads to plain HTTP.
-fn nothing_answered(error: &ureq::Error) -> bool {
+pub(crate) fn nothing_answered(error: &ureq::Error) -> bool {
     use std::io::ErrorKind;
     match error {
         ureq::Error::ConnectionFailed | ureq::Error::Timeout(ureq::Timeout::Connect) => true,

@@ -239,10 +239,15 @@ impl Private {
 /// A password or name shorter than 3 characters is only hidden in home folders.
 #[must_use]
 pub fn redact(text: &str, private: &Private) -> String {
+    // The password first, on its own: nothing kept (such as the account name inside it) can
+    // leave part of it.
+    let text = if private.password.chars().count() >= MIN_HIDDEN {
+        hide(text, &[(private.password.clone(), false, "<password>")], &[])
+    } else {
+        text.to_owned()
+    };
+    let text = text.as_str();
     let mut needles: Vec<(String, bool, &str)> = Vec::new();
-    if private.password.chars().count() >= MIN_HIDDEN {
-        needles.push((private.password.clone(), false, "<password>"));
-    }
     for name in &private.names {
         if name.chars().count() >= MIN_HIDDEN {
             needles.push((name.to_ascii_lowercase(), true, "<user>"));
@@ -532,6 +537,17 @@ pub fn send_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_password_holding_the_account_name_is_hidden_whole() {
+        let private = Private {
+            names: vec![],
+            password: "kozak2024".into(),
+            account: "Kozak".into(),
+        };
+        let out = redact("login kozak2024 for Kozak", &private);
+        assert_eq!(out, "login <password> for Kozak");
+    }
 
     fn private() -> Private {
         Private {

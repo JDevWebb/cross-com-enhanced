@@ -55,6 +55,11 @@ const WINDOW: Duration = Duration::from_secs(60 * 60);
 const MAX_AT_ONCE: usize = 4;
 /// Addresses (and runs, for repeats) remembered.
 const MAX_ENTRIES: usize = 10_000;
+/// What one account may send in [`ACCOUNT_WINDOW`], so one can't push everyone else's logs out
+/// of the space kept (`logs_max_mb`).
+const MAX_PER_ACCOUNT: u32 = 48;
+const MAX_BYTES_PER_ACCOUNT: u64 = 64 * 1024 * 1024;
+const ACCOUNT_WINDOW: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 /// The longest header value kept.
 const MAX_VALUE: usize = 128;
 /// The longest account name in a file name.
@@ -95,6 +100,8 @@ pub struct Logs {
     online: Arc<Online>,
     /// Uploads per address (as `address_key` counts it): when its window began, and how many.
     uploads: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    /// Per account: since when, how many logs and how many bytes.
+    by_account: Mutex<HashMap<u32, (Instant, u32, u64)>>,
     /// Runs already taken (account, run name) and their reports: the same run sent again (by the
     /// launcher and the DLL at once) gets the same report.
     taken: Mutex<HashMap<(String, String), String>>,
@@ -190,6 +197,7 @@ impl Logs {
             accounts,
             online,
             uploads: Mutex::default(),
+            by_account: Mutex::default(),
             taken: Mutex::default(),
             at_once: Arc::default(),
             store: Mutex::default(),
@@ -212,16 +220,21 @@ impl Logs {
         if len > MAX_BODY {
             return Err(error("413 Content Too Large", "the log is too big: 4 MiB at most"));
         }
-        if !self.allow(client, now) {
-            return Err(error("429 Too Many Requests", "too many logs from here; try again later"));
-        }
+        // Who it is first: only addresses a player signed in from are counted below, so others
+        // can't fill the counts' tables.
         let account = header(head, "x-crosscom-account").map(text).unwrap_or_default();
-        let pid = self.accounts.pid(&account).ok().flatten();
-        if !pid.is_some_and(|pid| self.online.played_from(pid, client)) {
+        let pid = self.accounts.pid(&account).ok().flatten().filter(|pid| self.online.played_from(*pid, client));
+        let Some(pid) = pid else {
             return Err(error(
                 "403 Forbidden",
                 "sign in to the game first; logs are taken from players who have played from this address recently",
             ));
+        };
+        if !self.allow(client, now) {
+            return Err(error("429 Too Many Requests", "too many logs from here; try again later"));
+        }
+        if !self.allow_account(pid, len as u64, now) {
+            return Err(error("429 Too Many Requests", "too many logs from this account today; try again tomorrow"));
         }
         if self.at_once.fetch_add(1, Ordering::AcqRel) >= MAX_AT_ONCE {
             self.at_once.fetch_sub(1, Ordering::AcqRel);
@@ -239,8 +252,11 @@ impl Logs {
         let key = address_key(client);
         if uploads.len() >= MAX_ENTRIES && !uploads.contains_key(&key) {
             uploads.retain(|_, (since, _)| now.duration_since(*since) < WINDOW);
+            // Still full: the oldest goes, rather than refusing every new address.
             if uploads.len() >= MAX_ENTRIES {
-                return false;
+                if let Some(oldest) = uploads.iter().min_by_key(|(_, (since, _))| *since).map(|(k, _)| *k) {
+                    uploads.remove(&oldest);
+                }
             }
         }
         let (since, count) = uploads.entry(key).or_insert((now, 0));
@@ -250,6 +266,29 @@ impl Logs {
         }
         *count += 1;
         *count <= MAX_PER_ADDRESS
+    }
+
+    /// Counts a log of `bytes` from account `pid`; whether it's within the account's share.
+    fn allow_account(&self, pid: u32, bytes: u64, now: Instant) -> bool {
+        let mut accounts = self.by_account.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if accounts.len() >= MAX_ENTRIES && !accounts.contains_key(&pid) {
+            accounts.retain(|_, (since, ..)| now.duration_since(*since) < ACCOUNT_WINDOW);
+            if accounts.len() >= MAX_ENTRIES {
+                if let Some(oldest) = accounts.iter().min_by_key(|(_, (since, ..))| *since).map(|(k, _)| *k) {
+                    accounts.remove(&oldest);
+                }
+            }
+        }
+        let (since, count, total) = accounts.entry(pid).or_insert((now, 0, 0));
+        if now.duration_since(*since) >= ACCOUNT_WINDOW {
+            (*since, *count, *total) = (now, 0, 0);
+        }
+        if *count >= MAX_PER_ACCOUNT || *total + bytes > MAX_BYTES_PER_ACCOUNT {
+            return false;
+        }
+        *count += 1;
+        *total += bytes;
+        true
     }
 
     /// Keeps a log [`Self::check`] let through: its body and headers, from `client`.
@@ -448,6 +487,25 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn strangers_arent_counted_and_an_account_has_a_daily_share() {
+        let dir = tempfile::tempdir().unwrap();
+        let (logs, _) = logs(dir.path(), true);
+        let now = Instant::now();
+        for i in 0..100u32 {
+            let stranger = IpAddr::from([203, 0, 113, (i % 250) as u8]);
+            assert!(logs.check_at(stranger, &head("Kozak", 10), now).is_err());
+        }
+        assert!(logs.uploads.lock().unwrap().is_empty(), "refused addresses aren't counted");
+        let pid = logs.accounts.pid("Kozak").unwrap().unwrap();
+        for _ in 0..MAX_PER_ACCOUNT {
+            assert!(logs.allow_account(pid, 10, now));
+        }
+        assert!(!logs.allow_account(pid, 10, now), "the count");
+        assert!(logs.allow_account(pid, 10, now + ACCOUNT_WINDOW), "a new day");
+        assert!(!logs.allow_account(pid, MAX_BYTES_PER_ACCOUNT, now + ACCOUNT_WINDOW), "the bytes");
     }
 
     #[test]

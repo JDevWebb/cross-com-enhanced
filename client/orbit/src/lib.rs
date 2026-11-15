@@ -75,7 +75,10 @@ fn start() {
     let loaded = Config::load(&dir);
     let level = loaded.as_ref().ok().and_then(|c| c.log_level.clone());
     logging::init(&dir, "orbit", level.as_deref());
-    let exe = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default();
     log::info!("Cross-Com {} loaded in {exe} from {}", env!("CARGO_PKG_VERSION"), dir.display());
     if let Some(os) = crosscom_client_common::system::os_version() {
         log::info!("{os}");

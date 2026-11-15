@@ -97,10 +97,12 @@ fn agent() -> ureq::Agent {
 /// Windows user name and the password are taken out before it's sent), so unlike a password it
 /// may go unencrypted; the game's own DLL only sends it that way.
 fn post(host: &str, headers: &[(&'static str, String)], body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    // Plain HTTP only when nothing answered on HTTPS (a server without it): never after a
+    // certificate or handshake failure, which may be someone in the way.
     match post_to(&format!("https://{host}{}", runs::PATH), headers, body) {
-        // A redirect is a proxy sending it on to its HTTPS, which didn't work from here.
-        Ok((status, answer)) if !(300..400).contains(&status) => return Ok((status, answer)),
-        Ok(_) | Err(_) => {}
+        Ok(answer) => return Ok(answer),
+        Err(e) if !server::nothing_answered(&e) => return Err(format!("{host}'s HTTPS failed: {e}; the logs weren't sent")),
+        Err(_) => {}
     }
     post_to(&format!("http://{host}{}", runs::PATH), headers, body).map_err(|e| format!("couldn't reach {host}: {e}"))
 }
