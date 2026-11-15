@@ -78,7 +78,7 @@ Parties and matches are **GameSession** sessions (42), not Gatherings. The match
 - **Properties** the game sets: 3 public slots, 4 private (invite-only) slots, 7 whether the session wasn't matchmade (1 for a party or a custom match), and 100-117 the match's settings.
 - **Quick match** searches (`SearchSessions`, query 2) with the public slots it needs (property 3) and the settings it wants; when it finds nothing it creates a match with the same settings and waits in its lobby. A match is offered when it's matchmade, has that many free public slots and the same settings.
 - **Station URLs**: the game registers its peer-to-peer address with `RegisterURLs` (21) as `udp:/address=...;port=...;PID=...;RVCID=...`, learning its public address and port from the server's echo (PRUDP user packets on port 1: the server answers with the packet and `udp:/address=IP;port=PORT`).
-- **Map list (121)**: `GetAvailableMapCategories()` and `GetMapList(u32 category)` both answer a `list<u32>` of world keys. The category is the player's match preferences: a bit per game mode (`1 << mode`: 1 Stockade, 2 Conflict, 3 Decoy, 4 Safehouse, 5 Siege, 6 Team Deathmatch, 7 Touchdown, 8 Guerrilla) and a bit per map pack (`0x4000`, `0x8000`, `0x10000`). Each map has one world per mode; the world loaded decides the mode. The keys of all 18 adversarial maps and 6 Guerrilla maps are in [`server/crosscom-server/src/maps.rs`](../server/crosscom-server/src/maps.rs).
+- **Map list (121)**: `GetAvailableMapCategories()` and `GetMapList(u32 category)` both answer a `list<u32>` of world keys. The category has a bit per game mode, `1 << (n + 2)` in the menu's numbering (2 Conflict, 3 Decoy, 4 Saboteur, 5 Siege, 6 Stockade, 7 Takeover, 8 Guerrilla), a bit per DLC pack the lobby's players have (`0x4000` the base game, `0x8000` Arctic Strike, `0x10000` Khyber Strike; the game leaves `0x4000` out unless the lobby has both packs or neither; Raven Strike adds no adversarial content and has no bit), and the match size in the low bits (1 for 8 players, 2 for 12). Each map has one world per mode, and the world loaded decides the mode. Stockade needs Arctic Strike and Takeover Khyber Strike on every map (the game refuses them otherwise, and their worlds are in those packs); the two night maps are the base game's. The world keys, and which pack each needs, are in [`server/crosscom-server/src/maps.rs`](../server/crosscom-server/src/maps.rs).
 - **The server time** (`Misc.1`) is asked right after a match's map list: an 8-byte Quazal date-time (seconds in bits 0-5, minutes 6-11, hours 12-16, day 17-21, month 22-25, year from 26).
 
 ## 7. NAT traversal
@@ -103,7 +103,7 @@ Cross-Com's client replaces both. The game plays its videos with Bink; the clien
 
 ## 10. Still to work out
 
-- Which map pack each of the category's pack bits is (the order is a guess), and the packs of the two newest Guerrilla maps.
+- Whether Guerrilla's maps are chosen through the map list at all (Raven Strike's Sawmill can't be asked for there).
 - The dare-info object (5008.1), and what Clans method 28 is.
 - Statistics ops other than 2 (set), if the game sends any.
 - What the game needs to run without PunkBuster, whose servers are gone (so far: nothing).
