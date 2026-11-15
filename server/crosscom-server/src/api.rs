@@ -162,7 +162,7 @@ pub(crate) mod tests {
     #[test]
     fn info_gives_the_version_players_and_news() {
         let (api, online) = api();
-        online.signed_in(0x10_0000);
+        online.signed_in(0x10_0000, "192.0.2.1".parse().unwrap());
         let logger = Logger::root(slog::Discard, slog::o!());
         let json: serde_json::Value = serde_json::from_str(&api.info(&logger)).unwrap();
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));

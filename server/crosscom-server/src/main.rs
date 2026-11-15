@@ -2,13 +2,14 @@
 //!
 //! Three services, each on its own thread:
 //! - the online config, over HTTP, which tells the game where to sign in (and the launcher's
-//!   API);
+//!   API, and players' logs);
 //! - the auth server, where the game signs in and gets a ticket for the secure server;
 //! - the secure server, where the game's online services are.
 //!
 //! ```text
 //! crosscom-server [--config crosscom-server.toml]
 //! crosscom-server [--config crosscom-server.toml] add-account NAME PASSWORD
+//! crosscom-server [--config crosscom-server.toml] logs [list | show REPORT]
 //! ```
 
 mod accounts;
@@ -21,6 +22,7 @@ mod friends;
 mod game_session;
 mod invitations;
 mod leaderboard;
+mod logs;
 mod maps;
 mod menu;
 mod nat;
@@ -64,7 +66,14 @@ use crate::config::Config;
 
 enum Command {
     Serve,
-    AddAccount { name: String, password: String },
+    AddAccount {
+        name: String,
+        password: String,
+    },
+    /// The players' logs kept: all of them, newest first.
+    ListLogs,
+    /// One report's log.
+    ShowLog(String),
 }
 
 fn parse_args() -> Result<(PathBuf, Command), String> {
@@ -84,7 +93,10 @@ fn parse_args() -> Result<(PathBuf, Command), String> {
             name: name.clone(),
             password: password.clone(),
         },
-        _ => return Err("usage: crosscom-server [--config FILE] [add-account NAME PASSWORD]".into()),
+        [cmd] if cmd == "logs" => Command::ListLogs,
+        [cmd, sub] if cmd == "logs" && sub == "list" => Command::ListLogs,
+        [cmd, sub, id] if cmd == "logs" && sub == "show" => Command::ShowLog(id.clone()),
+        _ => return Err("usage: crosscom-server [--config FILE] [add-account NAME PASSWORD | logs [list | show REPORT]]".into()),
     };
     Ok((config, command))
 }
@@ -113,6 +125,30 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    match &command {
+        Command::ListLogs => {
+            print!("{}", logs::listing(&logs::list(&config.logs_dir)));
+            return ExitCode::SUCCESS;
+        }
+        Command::ShowLog(id) => {
+            let Some(path) = logs::find(&config.logs_dir, id) else {
+                eprintln!("no report {id} in {}", config.logs_dir.display());
+                return ExitCode::FAILURE;
+            };
+            return match std::fs::read(&path) {
+                Ok(log) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(&log);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("couldn't read {}: {e}", path.display());
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Command::Serve | Command::AddAccount { .. } => {}
+    }
     let accounts = match Accounts::open(&config.database) {
         Ok(accounts) => Arc::new(accounts),
         Err(e) => {
@@ -133,6 +169,7 @@ fn main() -> ExitCode {
             }
         },
         Command::Serve => serve(&config, accounts),
+        Command::ListLogs | Command::ShowLog(_) => ExitCode::SUCCESS,
     }
 }
 
@@ -179,7 +216,11 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)).with_stats(Arc::clone(&stats)),
         // Checked as the settings were read.
         proxies: config.trusted_proxies().unwrap_or_default(),
+        logs: logs::Logs::new(config.logs(), Arc::clone(&accounts), Arc::clone(&online)),
     };
+    if config.accept_logs {
+        info!(logger, "Players' logs kept in {}", config.logs_dir.display());
+    }
     if !config.trusted_proxies.is_empty() {
         info!(logger, "HTTP behind a proxy at {}", config.trusted_proxies.join(", "));
     }
@@ -286,7 +327,7 @@ fn run_server(logger: &Logger, ctx: &Context, online: Option<Arc<online::Online>
     server.expired_client_handler = Some(gone.clone());
     server.disconnect_handler = Some(gone);
     if let Some(online) = online {
-        server.login_handler = Some(Box::new(move |pid, _| online.signed_in(pid)));
+        server.login_handler = Some(Box::new(move |pid, client: SocketAddr| online.signed_in(pid, client.ip())));
     }
     server.user_handler = Some(address_echo);
     // Every game also signs in to the shared telemetry account (on a connection of its own): one

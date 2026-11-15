@@ -1,6 +1,6 @@
 //! The HTTP server: the online config, the first thing the game asks (it answers with where to
-//! sign in), the launcher's API (see `api`), and account sign-up for the launcher when it's
-//! turned on (see `signup`).
+//! sign in), the launcher's API (see `api`), account sign-up for the launcher when it's turned
+//! on (see `signup`), and players' logs (see `logs`).
 
 use std::io::Read;
 use std::io::Write;
@@ -70,6 +70,8 @@ pub struct Http {
     pub api: Api,
     /// Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed (see `proxy`).
     pub proxies: crate::proxy::Trusted,
+    /// Players' logs.
+    pub logs: crate::logs::Logs,
 }
 
 /// Serves the online config, the launcher's API and sign-up if on, until the process ends.
@@ -122,7 +124,12 @@ fn answer(logger: &Logger, mut stream: TcpStream, http: &Http) -> std::io::Resul
         len += n;
         if wanted.is_none() {
             if let Some(end) = buf[..len].windows(4).position(|w| w == b"\r\n\r\n") {
-                let body = content_length(&String::from_utf8_lossy(&buf[..end])).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..end]);
+                if route(head.lines().next().unwrap_or_default()) == Route::Logs {
+                    // A log is bigger than the buffer, and slower: read on its own terms.
+                    return answer_logs(logger, stream, http, peer.ip(), &head, &buf[end + 4..len]);
+                }
+                let body = content_length(&head).unwrap_or(0);
                 wanted = Some(end + 4 + body.min(buf.len()));
             }
         }
@@ -130,11 +137,57 @@ fn answer(logger: &Logger, mut stream: TcpStream, http: &Http) -> std::io::Resul
     let Some((status, body)) = respond(logger, http, peer, &buf[..len]) else {
         return Ok(());
     };
+    send(&mut stream, status, &body)
+}
+
+fn send(stream: &mut TcpStream, status: &str, body: &str) -> std::io::Result<()> {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes())
+}
+
+/// `POST /api/logs`: refused before its body is read when it won't be taken (too big, too many,
+/// not from a player's address); else its body is read, within [`crate::logs::DEADLINE`], and
+/// kept. `start` is what of the body came with the headers.
+fn answer_logs(logger: &Logger, mut stream: TcpStream, http: &Http, peer: IpAddr, head: &str, start: &[u8]) -> std::io::Result<()> {
+    let deadline = Instant::now() + crate::logs::DEADLINE;
+    stream.set_write_timeout(Some(crate::logs::DEADLINE))?;
+    let client = crate::proxy::client(peer, head, &http.proxies).address;
+    let slot = match http.logs.check(client, head) {
+        Ok(slot) => slot,
+        Err((status, body)) => {
+            info!(logger, "{client}: logs refused, {status}");
+            send(&mut stream, status, &body)?;
+            // Without reading what's still coming: closing on it may cut the answer short, so
+            // say no more is wanted first.
+            return stream.shutdown(std::net::Shutdown::Write);
+        }
+    };
+    let mut body = start[..start.len().min(slot.len)].to_vec();
+    body.resize(slot.len, 0);
+    let mut len = body.len().min(start.len());
+    while len < slot.len {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "log upload too slow"));
+        }
+        stream.set_read_timeout(Some(left))?;
+        let n = stream.read(&mut body[len..])?;
+        if n == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "log upload cut short"));
+        }
+        len += n;
+    }
+    let ((status, json), report) = http.logs.store(client, head, &body);
+    drop(slot);
+    match report {
+        Some(r) => info!(logger, "{client}: logs of {} kept as report {} ({} bytes)", r.account, r.id, r.bytes),
+        None if status.starts_with("201") => info!(logger, "{client}: logs sent again, already kept"),
+        None => warn!(logger, "{client}: logs not kept, {status}: {json}"),
+    }
+    send(&mut stream, status, &json)
 }
 
 /// What a request asks for.
@@ -145,6 +198,7 @@ enum Route {
     Info,
     Login,
     Leaderboard,
+    Logs,
     /// A connection that sends nothing, such as the container's health check.
     Nothing,
     Other,
@@ -159,6 +213,7 @@ fn route(request_line: &str) -> Route {
         ("GET", crate::api::INFO_PATH) => Route::Info,
         ("GET", crate::leaderboard::PATH) => Route::Leaderboard,
         ("POST", crate::api::LOGIN_PATH) => Route::Login,
+        ("POST", crate::logs::PATH) => Route::Logs,
         ("POST", p) if p == crate::signup::PATH => Route::SignUp,
         _ => Route::Other,
     }
@@ -192,6 +247,14 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             ("200 OK", http.content.clone())
         }
         Route::Info => ("200 OK", http.api.info(logger)),
+        // Read as it comes by `answer_logs`; here when the whole request is in hand (the tests).
+        Route::Logs => match http.logs.check(peer, &head) {
+            Err(answer) => answer,
+            Ok(slot) => match body(slot.len) {
+                None => too_big(),
+                Some(body) => http.logs.store(peer, &head, body).0,
+            },
+        },
         Route::Leaderboard => {
             let target = line.split(' ').nth(1).unwrap_or_default();
             http.api.leaderboard(target.split_once('?').map_or("", |(_, query)| query))
@@ -264,21 +327,42 @@ mod tests {
         assert_eq!(route("POST /api/info HTTP/1.1"), Route::Other);
         assert_eq!(route("POST /api/login HTTP/1.1"), Route::Login);
         assert_eq!(route("GET /api/login HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /api/logs HTTP/1.1"), Route::Logs);
+        assert_eq!(route("GET /api/logs HTTP/1.1"), Route::Other, "never served back");
+        assert_eq!(route("GET /api/logs/20261115-123456-ab12cd HTTP/1.1"), Route::Other);
         assert_eq!(route(""), Route::Nothing);
         assert_eq!(content_length("POST /accounts HTTP/1.1\r\nHost: x\r\ncontent-length: 42"), Some(42));
         assert_eq!(content_length("GET / HTTP/1.1\r\nHost: x"), None);
     }
 
     fn server(signup: bool) -> Http {
-        let (api, _) = crate::api::tests::api();
+        server_in(signup, &std::env::temp_dir().join("crosscom-no-logs"), PLAYER)
+    }
+
+    fn server_in(signup: bool, logs: &std::path::Path, player: &str) -> Http {
+        let (api, online) = crate::api::tests::api();
         let accounts = Arc::new(crate::accounts::Accounts::open(std::path::Path::new(":memory:")).unwrap());
+        let pid = accounts.add("Kozak", "hunter2").unwrap();
+        // Played from there earlier today, and gone since.
+        online.signed_in(pid, player.parse().unwrap());
+        online.gone(pid);
+        let settings = crate::logs::Settings {
+            accept: true,
+            dir: logs.to_owned(),
+            max_bytes: 1 << 30,
+            keep_days: 30,
+        };
         Http {
             content: "[]".into(),
-            signup: signup.then(|| SignUp::new(accounts, None)),
+            signup: signup.then(|| SignUp::new(Arc::clone(&accounts), None)),
             api,
             proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
+            logs: crate::logs::Logs::new(settings, accounts, online),
         }
     }
+
+    /// Where the test server's player played from.
+    const PLAYER: &str = "198.51.100.1";
 
     /// The proxy the test server trusts.
     const PROXY: &str = "172.31.80.10";
@@ -359,6 +443,65 @@ mod tests {
         }
         let spoofed = proxied("/api/login", right, "198.51.100.99", "https");
         assert_eq!(ask_from(&http, "203.0.113.9", &spoofed).unwrap().0, "429 Too Many Requests");
+    }
+
+    fn log_upload(account: &str, body: &str, forwarded_for: Option<&str>) -> String {
+        let forwarded = forwarded_for.map_or(String::new(), |f| format!("X-Forwarded-For: {f}\r\nX-Forwarded-Proto: http\r\n"));
+        format!(
+            "POST /api/logs HTTP/1.1\r\nHost: x\r\n{forwarded}Content-Type: text/plain; charset=utf-8\r\nX-Crosscom-Account: {account}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[test]
+    fn takes_logs_from_where_the_player_played() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = server_in(false, dir.path(), PLAYER);
+        let (status, json) = ask_from(&http, PLAYER, &log_upload("Kozak", "a log\n", None)).unwrap();
+        assert_eq!(status, "201 Created", "{json}");
+        let id = serde_json::from_str::<serde_json::Value>(&json).unwrap()["id"].as_str().unwrap().to_owned();
+        assert_eq!(std::fs::read(crate::logs::find(dir.path(), &id).unwrap()).unwrap(), b"a log\n");
+        assert_eq!(ask_from(&http, "203.0.113.9", &log_upload("Kozak", "a log\n", None)).unwrap().0, "403 Forbidden");
+        // Behind the trusted proxy, the client it names.
+        assert_eq!(ask_from(&http, PROXY, &log_upload("Kozak", "a log\n", Some(PLAYER))).unwrap().0, "201 Created");
+        assert_eq!(ask_from(&http, PROXY, &log_upload("Kozak", "a log\n", Some("203.0.113.9"))).unwrap().0, "403 Forbidden");
+        // Not from the proxy, the header is ignored.
+        assert_eq!(ask_from(&http, "203.0.113.9", &log_upload("Kozak", "a log\n", Some(PLAYER))).unwrap().0, "403 Forbidden");
+        let cut_short = "POST /api/logs HTTP/1.1\r\nX-Crosscom-Account: Kozak\r\nContent-Length: 50\r\n\r\n{}";
+        assert_eq!(ask_from(&http, PLAYER, cut_short).unwrap().0, "413 Content Too Large");
+    }
+
+    #[test]
+    fn a_log_upload_over_a_real_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // The test's own connections come from 127.0.0.1: the player played from there.
+        let http = Arc::new(server_in(false, dir.path(), "127.0.0.1"));
+        let served = Arc::clone(&http);
+        std::thread::spawn(move || {
+            let logger = Logger::root(slog::Discard, slog::o!());
+            for stream in listener.incoming().flatten() {
+                let _ = answer(&logger, stream, &served);
+            }
+        });
+        let talk = |request: &[u8]| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            let _ = stream.write_all(request);
+            let mut answer = String::new();
+            let _ = stream.read_to_string(&mut answer);
+            answer
+        };
+        // Far more than the 4 KiB buffer the other requests are read into.
+        let log = "a line of the log\n".repeat(100_000);
+        let answer = talk(log_upload("Kozak", &log, None).as_bytes());
+        assert!(answer.starts_with("HTTP/1.1 201 Created"), "{answer}");
+        let reports = crate::logs::list(dir.path());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].bytes as usize, log.len());
+        // Too big: refused from its headers alone.
+        let head = "POST /api/logs HTTP/1.1\r\nX-Crosscom-Account: Kozak\r\nContent-Length: 999999999\r\n\r\n";
+        assert!(talk(head.as_bytes()).starts_with("HTTP/1.1 413"));
     }
 
     #[test]
