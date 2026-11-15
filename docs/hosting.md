@@ -52,6 +52,9 @@ In `docker/.env` (or the environment):
 | `CROSSCOM_LOG_LEVEL` | `info` | `error`, `warning`, `info`, `debug` or `trace` |
 | `CROSSCOM_DOMAIN` | (none) | The server's domain, for [HTTPS](#https-with-caddy) (`compose.https.yaml` only) |
 | `CROSSCOM_TRUSTED_PROXIES` | (none) | Reverse proxies in front of port 80, by address or network, separated by commas (`compose.https.yaml` sets it) |
+| `CROSSCOM_ACCEPT_LOGS` | `true` | `false` turns [players' logs](#players-logs) off |
+| `CROSSCOM_LOGS_MAX_MB` | `2048` | The most players' logs may take in all, in MiB; past it the oldest go |
+| `CROSSCOM_LOGS_KEEP_DAYS` | `30` | Days players' logs are kept |
 
 Everything else can go in `crosscom-server.toml` in the volume (see below); the environment wins
 over the file.
@@ -90,6 +93,8 @@ What stays on plain HTTP, on port 80, and why:
 - `GET /OnlineConfigService.svc/GetOnlineConfig`: the game asks for it there and can't use HTTPS.
 - `GET /api/...` (the server's info, news and other read-only answers): the in-game overlay reads
   them and has no TLS. None carries a password.
+- `POST /api/logs`: [players' logs](#players-logs), sent by the client DLL, which has no TLS.
+  They carry no password, and Caddy takes up to 5 MB of one (the server, 4 MiB).
 
 Everything else on port 80, notably `POST /accounts` and `POST /api/login`, is redirected to
 `https://` the domain. Certificates' challenges are answered on port 80 too. The UDP ports aren't
@@ -110,8 +115,8 @@ Without a domain (a server only on a LAN or VPN), leave `compose.https.yaml` out
 answers everything on port 80 as before.
 
 With a reverse proxy of your own instead, have it set `X-Forwarded-For` (appending the client's
-address on the right) and `X-Forwarded-Proto`, keep the two plain-HTTP paths above on port 80,
-and name it in `trusted_proxies`.
+address on the right) and `X-Forwarded-Proto`, keep the plain-HTTP paths above on port 80 (with
+bodies of 4 MiB allowed on `POST /api/logs`), and name it in `trusted_proxies`.
 
 ### Sharing a machine with another game's server
 
@@ -161,6 +166,10 @@ log_level = "info"
 # signup = true
 # signup_code = "at least 12 random characters"
 # trusted_proxies = ["127.0.0.1"]   # a reverse proxy on this machine, giving HTTPS
+# accept_logs = true                 # players' logs (see below)
+# logs_dir = "logs"
+# logs_max_mb = 2048
+# logs_keep_days = 30
 ```
 
 and run `target/release/crosscom-server --config crosscom-server.toml`. Port 80 needs root or, on
@@ -251,6 +260,64 @@ most 100. The in-game overlay shows it.
   {"rank": 1, "name": "Kozak", "wins": 3, "losses": 1, "kills": 9, "deaths": 2, "objectives": 1, "seconds": 1140}
 ]}
 ```
+
+## Players' logs
+
+After each game, the player's client sends its log (`crosscom.log`, what the client DLLs did:
+signing in, the overlay, anything that failed) to the server, so when something breaks you can
+read what happened on their PC without asking them for files.
+
+**What and when.** Each run of the game has its own log: as the game starts, the last run's
+`crosscom.log` moves to `logs\crosscom-<date>-<time>.log` in the game's folder (the 20 newest are
+kept). The launcher sends the run that just ended as soon as a game it started exits (with the
+game's exit code), and any others still waiting as it starts. A game started without the launcher
+sends the earlier runs itself, over plain HTTP, a little after it signs in. Each run is sent once;
+it's then renamed `*.sent.log`, and the player keeps it.
+
+**What's taken out first.** Before a log leaves the PC, the client takes out the Windows user
+name (wherever it appears, and the folder name in `C:\Users\<name>`) and the account's password,
+should either be in it; both become `<user>` and `<password>`. The account name stays: the server
+knows it. A log over 2 MiB is cut to its first 256 KiB and its last 1.75 MiB. The copies on the
+player's PC aren't changed.
+
+**Who may send.** `POST /api/logs` is only taken from an address the account it names
+(`X-Crosscom-Account`) signed in to the game from in the last 24 hours (IPv4 exactly, IPv6 by its
+/64; behind Caddy, the player's own address), otherwise `403`. It isn't a password check because
+the game's own DLL sends logs over plain HTTP, where a password would cross the network
+unencrypted; where the player plays from stands in for it, so strangers can't fill your disk. On
+top of that: 20 an hour from one address (`429`), 4 MiB at most (`413`, refused from the
+`Content-Length` before the body is read), 4 at once. The same run sent twice gets the same report.
+
+**Where they're kept.** In `logs_dir` (`logs` beside the database: `/srv/crosscom/logs` in the
+Docker volume), a folder a day: `<YYYY-MM-DD>/<report id>-<account>.log`, with a `.json` beside it
+holding what the client said (account, client and launcher versions, DX11 or DX9, Windows
+version, the run's file name, the exit code), the client's address and when it came. A report ID
+is the time it came (UTC) and six random hex digits: `20261115-123456-ab12cd`; the launcher shows
+the player the last one in its Settings, so they can tell you which is theirs. Logs older than
+`logs_keep_days` (30), and the oldest past `logs_max_mb` (2048) in all, are deleted as new ones
+come. They're never served over HTTP.
+
+**Reading them:**
+
+```sh
+docker compose -f docker/compose.yaml exec server /app/crosscom-server \
+  --config /srv/crosscom/crosscom-server.toml logs list          # newest first
+docker compose -f docker/compose.yaml exec server /app/crosscom-server \
+  --config /srv/crosscom/crosscom-server.toml logs show 20261115-123456-ab12cd
+```
+
+(Without Docker: `crosscom-server --config crosscom-server.toml logs list`.) The files are plain
+text in the volume too.
+
+**Turning it off.** `accept_logs = false` (`CROSSCOM_ACCEPT_LOGS=false`) and the server refuses
+them all (`403`). Players turn sending off in the launcher's Settings ("Send game logs to the
+server after each game") or with `send_logs = false` in `crosscom.toml`.
+
+**Tell your players.** Something like: "After each game, your Cross-Com client sends its log to
+this server so we can fix problems. It says what the client did (signing in, errors), your
+account name, your Windows version and your IP address; your Windows user name and your password
+are taken out first. Logs are kept for 30 days and only the server's hosts read them. Turn it off
+in the launcher's Settings."
 
 ## Checking it works
 

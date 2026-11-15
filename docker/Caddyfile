@@ -5,7 +5,8 @@
 #
 # Passwords (POST /accounts, POST /api/login) are taken over HTTPS only. Port 80 still answers
 # what carries none, over plain HTTP: the game asks for its online config there and can't do
-# HTTPS, and the in-game overlay reads the API without TLS.
+# HTTPS, the in-game overlay reads the API without TLS, and the client DLL sends players' logs
+# (POST /api/logs, up to 4 MiB; the server takes them only from players' own addresses).
 {
 	# Port 80 is set out below rather than redirecting everything to HTTPS.
 	auto_https disable_redirects
@@ -24,6 +25,16 @@
 		not path /api/login
 	}
 	handle @plain {
+		reverse_proxy server:80
+	}
+	@logs {
+		method POST
+		path /api/logs
+	}
+	handle @logs {
+		request_body {
+			max_size 5MB
+		}
 		reverse_proxy server:80
 	}
 	handle {
