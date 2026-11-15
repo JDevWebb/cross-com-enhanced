@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crosscom_launcher::dlc;
 use crosscom_launcher::server;
 use crosscom_launcher::settings::OVERLAY_KEYS;
 use slint::ComponentHandle;
@@ -18,6 +19,7 @@ use crate::core;
 use crate::core::ClientState;
 use crate::core::Launcher;
 use crate::AppWindow;
+use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
 
@@ -61,8 +63,27 @@ pub fn info_view(info: &core::Info) -> InfoView {
         overlay: info.overlay,
         overlay_key: key_index(&info.overlay_key),
         send_logs: info.send_logs,
+        dlc: dlc_rows(&info.dlc),
+        dlc_note: s(dlc::warning(&info.dlc).unwrap_or_default()),
         ready: info.ready(),
     }
+}
+
+/// The packs as the screens list them.
+pub fn dlc_rows(scan: &[(dlc::Pack, dlc::State)]) -> ModelRc<DlcRow> {
+    let rows: Vec<DlcRow> = scan
+        .iter()
+        .map(|(pack, state)| DlcRow {
+            name: s(pack.name),
+            state: s(match state {
+                dlc::State::Installed => "yes",
+                dlc::State::Missing => "no",
+                dlc::State::Incomplete(_) => "incomplete",
+            }),
+            adds: s(pack.adds),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
 }
 
 fn key_index(key: &str) -> i32 {
@@ -242,6 +263,11 @@ fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
 
 /// What Setup still needs, after any change to it.
 fn setup_changed(w: &AppWindow) {
+    // The packs in the folder chosen, looked at again whenever it changes.
+    let dir = w.get_setup_game_dir();
+    let scan = if dir.is_empty() { Vec::new() } else { dlc::scan(std::path::Path::new(dir.as_str())) };
+    w.set_setup_dlc(dlc_rows(&scan));
+    w.set_setup_dlc_note(s(dlc::warning(&scan).unwrap_or_default()));
     let host = setup_host(w);
     // A server changed since it was checked: checked again before it's trusted.
     if CHECKED.with(|c| *c.borrow() != host) {
@@ -464,6 +490,9 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
     w.set_starting(true);
     w.set_play_said(s(""));
     w.set_play_failed(false);
+    // The check before the game starts: the packs looked at again (they can change between
+    // starts), and the warning shown if one is missing. It only warns: the game still starts.
+    refresh_info(w, l);
     let worker = l.clone();
     let after = l.clone();
     let weak = w.as_weak();

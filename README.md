@@ -72,7 +72,11 @@ The base game is enough to play online, including the two night maps (Market and
 
 A map from one pack in the other pack's mode (Takeover on Riot, say) needs both.
 
-To check, look in the game's `DLC` folder: each pack you have is a `dlc1`, `dlc2` or `dlc3` folder with a `.big` file inside. (`DLC\dlc` is the game's own update, not a pack.) Cross-Com's servers turn on every pack you have installed, so there's nothing else to do: no Uplay or Ubisoft Connect sign-in.
+**The launcher checks for you.** Its setup lists the packs it finds in the game's folder, and the Play screen checks again each time you press Play. If a pack is missing, or its files look incomplete, you'll see a warning saying what you can't play without it. It's only a warning: the game still starts. (By hand: each pack you have is a `dlc1`, `dlc2` or `dlc3` folder in the game's `DLC` folder, with a `.big` file inside; `DLC\dlc` is the game's own update, not a pack.) Cross-Com's servers turn on every pack you have installed, so there's nothing else to do: no Uplay or Ubisoft Connect sign-in.
+
+<p align="center">
+  <img src="./docs/screenshots/launcher-play-missing-dlc.png" width="640" alt="The launcher's Play screen warning that Khyber Strike isn't installed: Takeover and the Switchback, Palace and Transit maps can't be played without it">
+</p>
 
 Without a pack, you can still play every base-game map and mode, but a lobby on that pack's maps or modes removes you with *"The host is using content that you have not yet downloaded"*.
 

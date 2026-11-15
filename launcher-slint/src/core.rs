@@ -12,6 +12,7 @@ use std::sync::MutexGuard;
 
 use crosscom_client_common::config::Config;
 use crosscom_launcher::client;
+use crosscom_launcher::dlc;
 use crosscom_launcher::game;
 use crosscom_launcher::game::Installed;
 use crosscom_launcher::logs;
@@ -96,6 +97,8 @@ pub struct Info {
     pub overlay_key: String,
     /// Send the game's logs to the server after each game.
     pub send_logs: bool,
+    /// The DLC packs, and how each stands in the game's folder (empty with no game).
+    pub dlc: Vec<(dlc::Pack, dlc::State)>,
 }
 
 impl Info {
@@ -216,6 +219,7 @@ impl Launcher {
         let dir = prefs.game_dir.filter(|d| game::is_game_dir(d));
         let config = dir.as_deref().map(settings::client).unwrap_or_default();
         let overlay = dir.as_deref().map(settings::overlay).unwrap_or_default();
+        let dlc = dir.as_deref().map(dlc::scan).unwrap_or_default();
         Info {
             client: client_state(dir.as_deref()),
             game_dir: dir,
@@ -227,6 +231,7 @@ impl Launcher {
             overlay: overlay.on,
             overlay_key: overlay.key,
             send_logs: config.send_logs,
+            dlc,
         }
     }
 
@@ -504,6 +509,7 @@ mod tests {
             overlay: true,
             overlay_key: "F5".into(),
             send_logs: true,
+            dlc: Vec::new(),
         };
         assert!(info.ready());
         assert!(
@@ -519,6 +525,8 @@ mod tests {
             ..info.clone()
         }
         .ready());
-        assert!(!Info { account: None, ..info }.ready());
+        assert!(!Info { account: None, ..info.clone() }.ready());
+        let no_packs = dlc::PACKS.iter().map(|&p| (p, dlc::State::Missing)).collect();
+        assert!(Info { dlc: no_packs, ..info }.ready(), "missing packs only warn: Play still goes");
     }
 }

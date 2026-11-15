@@ -8,6 +8,7 @@ import { CrossMark } from "brand.slint";
 import { Btn, Caps, Tag, Dot, Card, Spinner } from "widgets.slint";
 import { Icon, Icons } from "chrome.slint";
 import { InfoView, NewsRow } from "types.slint";
+import { DlcNotice } from "dlc.slint";
 
 // A card of the status row: its label, its value, and a line under it.
 component StatusCard inherits Card {
@@ -195,6 +196,9 @@ export component PlayScreen inherits Rectangle {
                     if root.said != "": Text { text: root.said; color: root.failed ? Theme.bad : Theme.fg; wrap: word-wrap; }
                 }
             }
+
+            // Missing or incomplete DLC packs, checked again as Play is pressed: a warning only.
+            if root.info.dlc-note != "": DlcNotice { text: root.info.dlc-note; }
 
             // The server's news.
             HorizontalLayout {
