@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#first-test-build"><b>First test build</b></a> ·
+  <a href="#the-community-test-network">Community test network</a> ·
   <a href="#play">Play</a> ·
   <a href="#what-works">What works</a> ·
   <a href="#reporting-a-problem">Report a problem</a> ·
@@ -32,16 +33,29 @@ What that means for you:
 - **Accounts and stats may be reset** before a later build. Don't get attached to your leaderboard rank yet.
 - **The files aren't code-signed yet,** so Windows and antivirus programs may warn about them: see [Antivirus warnings](#antivirus-warnings).
 
+## The community test network
+
+**There is a community test network that anyone can play on, for free: `grfs-test.jdevwebb.net`.** It's the launcher's default, so there's nothing to type: everyone testing signs in to the same server, so every Quick Match search finds the other testers. It runs this test build, and it may be reset between builds.
+
+<table>
+<tr><td><b>Address</b></td><td><code>grfs-test.jdevwebb.net</code>: the launcher's default</td></tr>
+<tr><td><b>Modes</b></td><td>Every adversarial mode, ranked and player matches, the campaign and Guerrilla in co-op</td></tr>
+<tr><td><b>Your account</b></td><td>Made in the launcher, the first time you play; your password goes over HTTPS</td></tr>
+<tr><td><b>Logs</b></td><td>Each online game's log goes to the network, so problems can be found (see <a href="#whats-sent-and-when">What's sent, and when</a>)</td></tr>
+</table>
+
+To play on another server (your group's own, or one on your LAN), change the server in the launcher's **Settings**; it can go back to the community test network there too.
+
 ## Play
 
-You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11, and the address of a Cross-Com server: one your group runs, or one you [run yourself](#run-your-own-server).
+You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11.
 
 1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file; put it anywhere.
-2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose).
-3. **Enter the server's address,** then sign in, or make an account if the server allows it.
+2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose), and the [community test network](#the-community-test-network) is already picked.
+3. **Make an account** (choose the name other players will see), or sign in to the one you have.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
-The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It needs Microsoft's WebView2 runtime, which comes with Windows 11 and Edge; without it, the launcher opens Microsoft's download page.
+The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back.
 
 <p align="center">
   <img src="./docs/screenshots/launcher-play.jpg" width="640" alt="The launcher's Play screen: the server card (online, 7 players, server 0.1.0), the Play button, and the server's news">
