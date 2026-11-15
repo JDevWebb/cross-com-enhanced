@@ -34,27 +34,29 @@ What that means for you:
 
 ## Play
 
-You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11, and the address of a Cross-Com server: one your group runs, or one you [run yourself](#run-your-own-server).
+You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11.
 
 1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file; put it anywhere.
 2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose).
-3. **Enter the server's address,** then sign in, or make an account if the server allows it.
+3. **Make an account, or sign in.** The launcher starts on the **community test network** (`grfs-test.jdevwebb.net`), the server for testing Cross-Com that anyone can join.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
-The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It needs Microsoft's WebView2 runtime, which comes with Windows 11 and Edge; without it, the launcher opens Microsoft's download page.
+To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Change server** switches later, and **Use the community test network** goes back to it.
+
+The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.jpg" width="640" alt="The launcher's Play screen: the server card (online, 7 players, server 0.1.0), the Play button, and the server's news">
+  <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the community test network online (7 players, server 0.1.0), the account signed in, the client installed, the Play button, and the server's news">
 </p>
 
 <table>
 <tr>
-<td><img src="./docs/screenshots/launcher-setup.jpg" alt="The launcher's setup: the game folder, the server, signing in or making an account, and the game options"></td>
-<td><img src="./docs/screenshots/launcher-settings.jpg" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, the account, and restoring the game's files"></td>
+<td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup: the game folder found, the community test network chosen and answering, making an account, and the game options"></td>
+<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, and the server and account"></td>
 </tr>
 <tr>
 <td align="center"><sub>Setup: the game, the server, your account</sub></td>
-<td align="center"><sub>Settings: the overlay, your account, the game's files</sub></td>
+<td align="center"><sub>Settings: the overlay, the logs, your server and account</sub></td>
 </tr>
 </table>
 
@@ -156,7 +158,7 @@ Matches themselves are still hosted by the players, as they always were.
 | **Hosting a server** | [docs/hosting.md](docs/hosting.md): Docker or not, settings, accounts, news, HTTPS with Caddy, sharing a machine, the API, players' logs |
 | **The client** | [client/README.md](client/README.md): what the DLLs do, the overlay, `crosscom.toml` |
 | **The protocols** | [docs/protocol.md](docs/protocol.md): what the server answers, worked out from the game |
-| **Building** | `scripts/build-launcher.sh` builds the client DLLs, the launcher's page and the launcher into `dist/crosscom-launcher.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests |
+| **Building** | `scripts/build-launcher.sh` builds the client DLLs and the launcher (`launcher-slint/`, with the DLLs built in) into `dist/crosscom-launcher.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests; `scripts/launcher-shots.sh` redraws the launcher screenshots |
 
 ## Standing on the shoulders of
 
@@ -167,7 +169,7 @@ Cross-Com Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), as a
 - **[zeroKilo](https://github.com/zeroKilo)** and **[Michał Kapała](https://github.com/michal-kapala)**: [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), a Ghost Recon Online backend on the same online stack.
 - **[Kinnay](https://github.com/Kinnay)**: the [PRUDP documentation](https://github.com/Kinnay/NintendoClients/wiki/PRUDP-Protocol).
 
-Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the launcher and overlay, [Tauri](https://tauri.app) and [Vue](https://vuejs.org) for the launcher, [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay, and [Caddy](https://caddyserver.com) for HTTPS.
+Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the launcher and overlay, [Slint](https://slint.dev) for the launcher (under its royalty-free licence for desktop apps), [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay, and [Caddy](https://caddyserver.com) for HTTPS.
 
 ## Contributing
 
