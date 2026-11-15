@@ -18,6 +18,11 @@ const ONLINE_CONFIG: &str = "/OnlineConfigService.svc/GetOnlineConfig?onlineConf
 const TIMEOUT: Duration = Duration::from_secs(8);
 /// How long to wait for a connection: a server without HTTPS should be found out quickly.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+/// The community test network: the server a new setup starts with, so a new player only signs in
+/// or makes an account. Players can choose any other server instead, and come back to it.
+pub const COMMUNITY: &str = "grfs-test.jdevwebb.net";
+/// What the launcher calls it.
+pub const COMMUNITY_NAME: &str = "Community test network";
 /// Where a server's host learns to set up HTTPS.
 pub const HTTPS_HELP: &str = "https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md#https-with-caddy";
 
@@ -28,6 +33,12 @@ pub fn host(typed: &str) -> String {
     let t = typed.trim();
     let t = t.strip_prefix("http://").or_else(|| t.strip_prefix("https://")).unwrap_or(t);
     t.trim_end_matches('/').to_owned()
+}
+
+/// Whether `server` (as typed) is the community test network.
+#[must_use]
+pub fn is_community(server: &str) -> bool {
+    host(server).eq_ignore_ascii_case(COMMUNITY)
 }
 
 fn agent() -> ureq::Agent {
@@ -279,6 +290,14 @@ mod tests {
         assert_eq!(host(" http://203.0.113.10/ "), "203.0.113.10");
         assert_eq!(host("play.example.org"), "play.example.org");
         assert_eq!(host("https://play.example.org/"), "play.example.org");
+    }
+
+    #[test]
+    fn knows_the_community_network_as_typed() {
+        assert!(is_community(COMMUNITY));
+        assert!(is_community(" https://GRFS-test.jdevwebb.net/ "));
+        assert!(!is_community("play.example.org"));
+        assert!(!is_community(""));
     }
 
     #[test]
