@@ -11,7 +11,7 @@ const sample = {
     game_dir: fresh ? null : "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\games\\Tom Clancy's Ghost Recon Future Soldier",
     client: fresh ? 'none' : 'yes', carries_client: true,
     server: fresh ? null : 'play.example.org', account: fresh ? null : 'Kozak',
-    skip_intro: true, dx9: false, overlay: true, overlay_key: 'F5', ready: !fresh,
+    skip_intro: true, dx9: false, overlay: true, overlay_key: 'F5', send_logs: true, ready: !fresh,
   },
   find_game: "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\games\\Tom Clancy's Ghost Recon Future Soldier",
   check_game: (a) => a.dir,
@@ -28,6 +28,9 @@ const sample = {
   play: () => 'The game is starting.',
   restore: () => "The game's own files are back.",
   set_options: () => null,
+  logs_status: () => ({ last_id: fresh ? null : '20261115-123456-ab12cd', last_at: 1794746096, said: null, sending: false }),
+  send_logs: () => 'Logs sent: report 20261115-123456-ab12cd.',
+  open_logs: () => null,
 };
 
 /** Calls a command; in the browser, answers from the samples after a short wait. */

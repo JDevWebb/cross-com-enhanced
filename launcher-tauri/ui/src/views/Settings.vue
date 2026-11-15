@@ -59,6 +59,21 @@
       </div>
 
       <div class="card">
+        <h2>Logs</h2>
+        <label class="check"><input v-model="sendLogs" type="checkbox" @change="save" /> Send game logs to the server after each game (helps fix problems; your Windows user name and password are removed)</label>
+        <p class="soft small">{{ logs.last_id ? `Last logs sent: ${logs.last_id} at ${when(logs.last_at)}` : 'No logs sent yet.' }}</p>
+        <div class="row">
+          <button type="button" class="btn" :disabled="!sendLogs || !info.game_dir || logs.sending || sending" @click="sendNow">
+            <i v-if="logs.sending || sending" class="spin"></i>
+            Send logs now
+          </button>
+          <button type="button" class="btn" :disabled="!info.game_dir" @click="openLogs">Open logs folder</button>
+        </div>
+        <p v-if="logs.said" class="muted small">{{ logs.said }}</p>
+        <p class="muted small">The server only takes logs from a PC its account has played online from in the last day. They help whoever runs it see what went wrong; each game's log stays in the game's <span class="path">logs</span> folder.</p>
+      </div>
+
+      <div class="card">
         <h2>The game's files</h2>
         <p class="path">{{ info.game_dir || 'No game set up.' }}</p>
         <p class="soft">Cross-Com replaces two of the game's files and keeps the originals. Putting them back leaves the game as it was installed.</p>
@@ -76,9 +91,10 @@
 </template>
 
 <script setup>
-// The game options (with the in-game overlay and its key), signing in to another account or
-// making one on the same server, changing server, and taking Cross-Com out of the game.
-import { computed, reactive, ref } from 'vue';
+// The game options (with the in-game overlay and its key), sending the game's logs, signing in
+// to another account or making one on the same server, changing server, and taking Cross-Com out
+// of the game.
+import { computed, onMounted, reactive, ref } from 'vue';
 import { call } from '../lib/tauri.js';
 
 const props = defineProps({ info: { type: Object, required: true } });
@@ -91,6 +107,9 @@ const skipIntro = ref(props.info.skip_intro);
 const dx9 = ref(props.info.dx9);
 const overlay = ref(props.info.overlay ?? true);
 const overlayKey = ref(props.info.overlay_key || 'F5');
+const sendLogs = ref(props.info.send_logs ?? true);
+const logs = reactive({ last_id: null, last_at: null, said: null, sending: false });
+const sending = ref(false);
 const saved = ref(false);
 const saveError = ref(null);
 const confirming = ref(false);
@@ -101,7 +120,9 @@ const accountReady = computed(() => NAME.test(account.name) && account.password 
 
 async function save() {
   try {
-    await call('set_options', { options: { skip_intro: skipIntro.value, dx9: dx9.value, overlay: overlay.value, overlay_key: overlayKey.value } });
+    await call('set_options', {
+      options: { skip_intro: skipIntro.value, dx9: dx9.value, overlay: overlay.value, overlay_key: overlayKey.value, send_logs: sendLogs.value },
+    });
     saved.value = true;
     saveError.value = null;
   } catch (e) {
@@ -130,6 +151,41 @@ async function setAccount() {
   }
 }
 
+/** A Unix time as the player's local date and time. */
+function when(secs) {
+  return secs ? new Date(secs * 1000).toLocaleString() : '';
+}
+
+async function refreshLogs() {
+  try {
+    Object.assign(logs, await call('logs_status'));
+  } catch {
+    // Settings still work without it.
+  }
+}
+
+async function sendNow() {
+  sending.value = true;
+  try {
+    logs.said = await call('send_logs');
+  } catch (e) {
+    logs.said = String(e);
+  } finally {
+    sending.value = false;
+    await refreshLogs();
+  }
+}
+
+async function openLogs() {
+  try {
+    await call('open_logs');
+  } catch (e) {
+    logs.said = String(e);
+  }
+}
+
+onMounted(refreshLogs);
+
 async function restore() {
   confirming.value = false;
   try {
@@ -147,7 +203,7 @@ async function restore() {
 .card { margin-bottom: 14px; max-width: 640px; }
 h2 { margin: 0 0 10px; font: 700 18px/1 PlexCond, sans-serif; text-transform: uppercase; letter-spacing: .02em; }
 .check { display: flex; align-items: center; gap: 10px; margin: 6px 0; color: var(--soft); }
-.check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
 .path { font: 12.5px PlexMono, monospace; color: var(--soft); word-break: break-all; }
 .row { display: flex; gap: 10px; align-items: center; }
 .key { margin-left: 26px; }

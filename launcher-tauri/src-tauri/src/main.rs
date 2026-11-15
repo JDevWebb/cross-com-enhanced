@@ -19,6 +19,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Launcher::new())
+        // Logs left from earlier games (one that crashed, or was started without the launcher)
+        // go as the launcher starts.
+        .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use tauri::Manager;
+                handle.state::<commands::Launcher>().send_logs(None);
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::info,
             commands::find_game,
@@ -30,6 +40,9 @@ fn main() {
             commands::set_options,
             commands::play,
             commands::restore,
+            commands::logs_status,
+            commands::send_logs,
+            commands::open_logs,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

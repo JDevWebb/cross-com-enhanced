@@ -1,5 +1,8 @@
 //! What the page asks of the launcher: how things stand, and the setup and play, done by the
 //! launcher library. Anything that waits on the network or the disk runs off the window's thread.
+//!
+//! The game's logs go to the server once a game the launcher started ends (on a thread that
+//! waits for it), and as the launcher starts (see `crosscom_launcher::logs`).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,11 +12,13 @@ use crosscom_client_common::config::Config;
 use crosscom_launcher::client;
 use crosscom_launcher::game;
 use crosscom_launcher::game::Installed;
+use crosscom_launcher::logs;
 use crosscom_launcher::server;
 use crosscom_launcher::settings;
 use crosscom_launcher::settings::Launcher as Prefs;
 use serde::Deserialize;
 use serde::Serialize;
+use tauri::Manager;
 
 /// What the game is given as its CD key when none was set: the server doesn't check it.
 const NO_CD_KEY: &str = "CROSSCOM";
@@ -21,6 +26,8 @@ const NO_CD_KEY: &str = "CROSSCOM";
 pub struct Launcher {
     prefs_path: PathBuf,
     prefs: Mutex<Prefs>,
+    /// What the last sending of logs said, and whether logs are being sent now.
+    logs: Mutex<(Option<String>, bool)>,
 }
 
 impl Launcher {
@@ -34,6 +41,7 @@ impl Launcher {
         Self {
             prefs_path,
             prefs: Mutex::new(prefs),
+            logs: Mutex::new((None, false)),
         }
     }
 
@@ -45,6 +53,35 @@ impl Launcher {
         prefs.save(&self.prefs_path)?;
         *self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = prefs;
         Ok(())
+    }
+
+    fn logs(&self) -> std::sync::MutexGuard<'_, (Option<String>, bool)> {
+        self.logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Sends the game's pending logs (after moving the last run's aside, when no game has it
+    /// open), unless they're being sent already; what came of it. Waits on the network: call it
+    /// off the window's thread.
+    pub fn send_logs(&self, exit: Option<i32>) -> String {
+        let Some(dir) = self.prefs().game_dir.filter(|d| game::is_game_dir(d)) else {
+            return "No game set up.".into();
+        };
+        if std::mem::replace(&mut self.logs().1, true) {
+            return "Logs are being sent.".into();
+        }
+        let ended = logs::finish_run(&dir);
+        let outcome = logs::send(&dir, env!("CARGO_PKG_VERSION"), ended.zip(exit));
+        let said = logs::said(&outcome);
+        if let Some(latest) = outcome.sent.first() {
+            let mut prefs = self.prefs();
+            prefs.last_logs = Some(settings::LastLogs {
+                id: latest.id.clone(),
+                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+            });
+            let _ = self.save(prefs);
+        }
+        *self.logs() = (Some(said.clone()), false);
+        said
     }
 }
 
@@ -65,6 +102,8 @@ pub struct Info {
     /// The in-game overlay, and the key that opens it (`F1` to `F12`).
     overlay: bool,
     overlay_key: String,
+    /// Send the game's logs to the server after each game.
+    send_logs: bool,
     /// Everything's set: Play can go.
     ready: bool,
 }
@@ -104,6 +143,7 @@ pub fn info(state: tauri::State<'_, Launcher>) -> Info {
         dx9: prefs.dx9,
         overlay: overlay.on,
         overlay_key: overlay.key,
+        send_logs: config.send_logs,
     }
 }
 
@@ -272,6 +312,7 @@ pub struct Options {
     dx9: bool,
     overlay: bool,
     overlay_key: String,
+    send_logs: bool,
 }
 
 /// The game options: written into the client's settings and the launcher's.
@@ -282,6 +323,7 @@ pub fn set_options(state: tauri::State<'_, Launcher>, options: Options) -> Resul
         let mut config = settings::client(&dir);
         if !config.username.is_empty() {
             config.skip_intro_videos = options.skip_intro;
+            config.send_logs = options.send_logs;
             let overlay = settings::Overlay {
                 on: options.overlay,
                 key: options.overlay_key,
@@ -294,8 +336,9 @@ pub fn set_options(state: tauri::State<'_, Launcher>, options: Options) -> Resul
 }
 
 /// Starts the game, bringing the client up to date first if this launcher carries a newer one.
+/// Once it ends, its logs go to the server (on a thread of their own).
 #[tauri::command]
-pub async fn play(state: tauri::State<'_, Launcher>) -> Result<String, String> {
+pub async fn play(app: tauri::AppHandle, state: tauri::State<'_, Launcher>) -> Result<String, String> {
     let prefs = state.prefs();
     let dir = prefs.game_dir.clone().filter(|d| game::is_game_dir(d)).ok_or("Set the game up first.")?;
     let exe = dir.join(if prefs.dx9 { game::EXE_DX9 } else { game::EXE_DX11 });
@@ -307,10 +350,14 @@ pub async fn play(state: tauri::State<'_, Launcher>) -> Result<String, String> {
                 updated = true;
             }
         }
-        std::process::Command::new(&exe)
+        let mut child = std::process::Command::new(&exe)
             .current_dir(&dir)
             .spawn()
             .map_err(|e| format!("Couldn't start {}: {e}", exe.display()))?;
+        std::thread::spawn(move || {
+            let exit = child.wait().ok().and_then(|status| status.code());
+            app.state::<Launcher>().send_logs(exit);
+        });
         Ok(if updated {
             "Cross-Com's client was brought up to date. The game is starting.".into()
         } else {
@@ -319,6 +366,51 @@ pub async fn play(state: tauri::State<'_, Launcher>) -> Result<String, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// How the logs stand, for Settings.
+#[derive(Serialize)]
+pub struct LogsStatus {
+    /// The last report the server took, and when (Unix time).
+    last_id: Option<String>,
+    last_at: Option<u64>,
+    /// What the last sending said.
+    said: Option<String>,
+    sending: bool,
+}
+
+#[tauri::command]
+pub fn logs_status(state: tauri::State<'_, Launcher>) -> LogsStatus {
+    let last = state.prefs().last_logs;
+    let (said, sending) = state.logs().clone();
+    LogsStatus {
+        last_id: last.as_ref().map(|l| l.id.clone()),
+        last_at: last.map(|l| l.at),
+        said,
+        sending,
+    }
+}
+
+/// Sends the logs waiting to go now.
+#[tauri::command]
+pub async fn send_logs(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Launcher>().send_logs(None))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Opens the folder the game's logs are kept in.
+#[tauri::command]
+pub fn open_logs(state: tauri::State<'_, Launcher>) -> Result<(), String> {
+    let dir = state.prefs().game_dir.filter(|d| game::is_game_dir(d)).ok_or("No game set up.")?;
+    let logs = dir.join(crosscom_client_common::runs::DIR);
+    std::fs::create_dir_all(&logs).map_err(|e| format!("Couldn't make {}: {e}", logs.display()))?;
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    std::process::Command::new(opener)
+        .arg(&logs)
+        .spawn()
+        .map_err(|e| format!("Couldn't open {}: {e}", logs.display()))?;
+    Ok(())
 }
 
 /// Puts the game's own files back (Cross-Com's client comes out of it).

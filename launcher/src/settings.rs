@@ -1,6 +1,6 @@
 //! What the launcher writes: the client's `crosscom.toml` in the game's folder (the server, the
-//! account the game signs in with and the in-game overlay), and its own choices in the user's
-//! settings folder.
+//! account the game signs in with, the in-game overlay and whether the logs are sent), and its
+//! own choices in the user's settings folder.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,6 +17,15 @@ pub struct Launcher {
     pub game_dir: Option<PathBuf>,
     /// Start the DirectX 9 version instead of DirectX 11.
     pub dx9: bool,
+    /// The last logs the server took.
+    pub last_logs: Option<LastLogs>,
+}
+
+/// The last logs sent: the server's report ID, and when (Unix time).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastLogs {
+    pub id: String,
+    pub at: u64,
 }
 
 impl Launcher {
@@ -121,6 +130,14 @@ mod tests {
         };
         save_client(game.path(), &config, &Overlay::default()).unwrap();
         assert_eq!(client(game.path()), config);
+        let quiet = Config {
+            send_logs: false,
+            ..config.clone()
+        };
+        save_client(game.path(), &quiet, &Overlay::default()).unwrap();
+        let text = std::fs::read_to_string(game.path().join(FILE_NAME)).unwrap();
+        assert!(text.contains("\nsend_logs = false\n"), "{text}");
+        assert_eq!(client(game.path()), quiet);
         let too_long = Config {
             password: "x".repeat(80),
             ..config
@@ -160,6 +177,10 @@ mod tests {
         let mine = Launcher {
             game_dir: Some("C:/Games/GRFS".into()),
             dx9: true,
+            last_logs: Some(LastLogs {
+                id: "20261115-123456-ab12cd".into(),
+                at: 1_794_746_096,
+            }),
         };
         mine.save(&path).unwrap();
         assert_eq!(Launcher::load(&path), mine);
