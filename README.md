@@ -5,33 +5,158 @@
 <h1 align="center">Cross-Com Enhanced</h1>
 
 <p align="center">
-  <b>Community servers for <i>Tom Clancy's Ghost Recon: Future Soldier</i> multiplayer.</b><br>
-  Conflict, Guerrilla and co-op, years after the official servers went dark.
+  <b>Community servers for <i>Tom Clancy's Ghost Recon: Future Soldier</i> multiplayer, and a launcher that sets the game up for you.</b><br>
+  Every adversarial mode, Guerrilla and co-op, years after the official servers went dark.
+</p>
+
+<p align="center">
+  <a href="#first-test-build"><b>First test build</b></a> ·
+  <a href="#play">Play</a> ·
+  <a href="#what-works">What works</a> ·
+  <a href="#reporting-a-problem">Report a problem</a> ·
+  <a href="#run-your-own-server">Run your own</a> ·
+  <a href="#documentation">Docs</a> ·
+  <a href="#contributing">Contribute</a>
 </p>
 
 ---
 
-**Status: early development.** Nothing is playable yet. This repository will hold the server, the client DLLs the game loads to reach it, and a launcher that sets the game up for you.
+## First test build
+
+> [!IMPORTANT]
+> **This is the first test build (0.1.0), released for public testing.** Every mode has been played end to end on real copies of the game, under Wine on Linux; the Windows testing starts with this build. Expect rough edges: things may break, and servers may be reset between builds. **Your reports are what this build is for**: see [Reporting a problem](#reporting-a-problem).
+
+What that means for you:
+
+- **Logs are sent to the server after each game you play online**, so problems can be found without you having to describe them. What's sent and how to turn it off: [What's sent, and when](#whats-sent-and-when).
+- **Accounts and stats may be reset** before a later build. Don't get attached to your leaderboard rank yet.
+- **The files aren't code-signed yet,** so Windows and antivirus programs may warn about them: see [Antivirus warnings](#antivirus-warnings).
+
+## Play
+
+You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11, and the address of a Cross-Com server: one your group runs, or one you [run yourself](#run-your-own-server).
+
+1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file; put it anywhere.
+2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose).
+3. **Enter the server's address,** then sign in, or make an account if the server allows it.
+4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
+
+The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It needs Microsoft's WebView2 runtime, which comes with Windows 11 and Edge; without it, the launcher opens Microsoft's download page.
+
+<p align="center">
+  <img src="./docs/screenshots/launcher-play.jpg" width="640" alt="The launcher's Play screen: the server card (online, 7 players, server 0.1.0), the Play button, and the server's news">
+</p>
+
+<table>
+<tr>
+<td><img src="./docs/screenshots/launcher-setup.jpg" alt="The launcher's setup: the game folder, the server, signing in or making an account, and the game options"></td>
+<td><img src="./docs/screenshots/launcher-settings.jpg" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, the account, and restoring the game's files"></td>
+</tr>
+<tr>
+<td align="center"><sub>Setup: the game, the server, your account</sub></td>
+<td align="center"><sub>Settings: the overlay, your account, the game's files</sub></td>
+</tr>
+</table>
+
+<sub>The launcher screenshots show sample data.</sub>
+
+### The in-game overlay
+
+<kbd>F5</kbd> opens a panel over the game: the server's status and how many players are online, its news, and **leaderboards for every player on the server**, by mode. While it's open the game gets no mouse or keyboard; <kbd>F5</kbd> or <kbd>Esc</kbd> closes it.
+
+<table>
+<tr>
+<td><img src="./docs/screenshots/overlay-leaderboards.jpg" alt="The overlay's Leaderboards tab: players ranked by wins, losses, kills, deaths, objectives and time, your own row highlighted"></td>
+<td><img src="./docs/screenshots/overlay-news.jpg" alt="The overlay's News tab: the server's news items with their dates"></td>
+</tr>
+<tr>
+<td align="center"><sub>Leaderboards, by mode</sub></td>
+<td align="center"><sub>The server's news</sub></td>
+</tr>
+</table>
+
+### Antivirus warnings
+
+Some antivirus programs, Microsoft Defender included, may flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases). If it was quarantined, restore it and exclude its folder and the game's folder.
+
+### What's sent, and when
+
+After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time. Nothing else is collected.
+
+**Settings › Send game logs** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
+
+## What works
+
+Tested end to end on real copies of the game under Wine, with up to four players; the Windows tests start with this build.
+
+<table>
+<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the Arctic Strike and Raven Strike modes Stockade and Takeover. Quick Match starts with two players, and every map is offered.</td></tr>
+<tr><td><b>Co-op</b></td><td>The campaign and Guerrilla with friends, invited from the lobby.</td></tr>
+<tr><td><b>Friends and parties</b></td><td>Friends lists, requests, invites into a lobby, the party following its host, and lobby chat.</td></tr>
+<tr><td><b>Progression</b></td><td>XP, levels, unlocks, Gunsmith loadouts and stats, kept on the server; a friend's stats from View Player Stats.</td></tr>
+<tr><td><b>Squads</b></td><td>Make a squad, invite, accept, ranks, the motto and message of the day.</td></tr>
+<tr><td><b>Multiplayer Challenges</b></td><td>The Daily Friend Challenge and Beat Your Best, and daring a friend back.</td></tr>
+<tr><td><b>News</b></td><td>The server's own news in the main menu's Ghost Feed and on Community Messages.</td></tr>
+<tr><td><b>Leaderboards</b></td><td>The game's own Leaderboards screen can't be opened on PC, so the overlay has its own: every player on the server, by mode.</td></tr>
+<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too. If the host leaves, the match moves to another player.</td></tr>
+</table>
+
+<table>
+<tr>
+<td><img src="./docs/screenshots/game-ghost-feed-news.jpg" alt="The game's main menu with the server's news in the Ghost Feed"></td>
+<td><img src="./docs/screenshots/game-ranked-conflict.jpg" alt="A ranked Conflict match, defending an objective"></td>
+</tr>
+<tr>
+<td align="center"><sub>The server's news in the Ghost Feed</sub></td>
+<td align="center"><sub>A ranked Conflict match</sub></td>
+</tr>
+<tr>
+<td><img src="./docs/screenshots/game-squad-invite.jpg" alt="A squad invitation: the squad's name, tag, motto and number of members"></td>
+<td><img src="./docs/screenshots/game-challenge-back.jpg" alt="A completed challenge: the game offers to challenge the friend back"></td>
+</tr>
+<tr>
+<td align="center"><sub>Squads</sub></td>
+<td align="center"><sub>Multiplayer Challenges</sub></td>
+</tr>
+</table>
+
+**Not tested yet:** voice chat (it needs real microphones), and matches between players on different home networks over the internet. Both are on this build's test list.
+
+## Reporting a problem
+
+[Open an issue](https://github.com/JDevWebb/cross-com-enhanced/issues/new) and say:
+
+1. **What you did and what happened,** and roughly when (with your time zone).
+2. **The server** you played on, and your account name.
+3. **Your setup:** Windows version, Ubisoft Connect or Steam, DirectX 11 or 9.
+4. **The log,** if it's not already on the server: `crosscom.log` and the `logs` folder, next to the game's exe.
+
+Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab.
+
+## Run your own server
+
+The server runs in Docker on any small Linux machine, or as a single program without it. One command starts it; you make the accounts, or let players make their own with a sign-up code you give them. Put Caddy in front of it for HTTPS with one more compose file, and one machine can host this server and a [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) server side by side.
+
+**[docs/hosting.md](docs/hosting.md)** has every step: ports, settings, accounts, news, HTTPS, players' logs and upgrades.
 
 ## How it works
 
 Future Soldier's PC version talks to Ubisoft's Quazal-based online services, the same family *Splinter Cell: Blacklist* uses. Cross-Com Enhanced answers in their place:
 
-- **The server** speaks the game's online protocols: sign-in, profiles, matchmaking, friends and NAT traversal.
-- **The client DLLs** replace the game's platform libraries, so the game signs in to a Cross-Com server instead of Ubisoft's.
-- **The launcher** finds the game, installs the DLLs and creates your account.
+- **The server** speaks the game's online protocols: sign-in, profiles and stats, matchmaking and sessions, friends, squads, challenges, news and NAT traversal. Its HTTP side gives the game its online config, and the launcher and overlay their API.
+- **The client DLLs** replace the game's two Ubisoft libraries, so the game signs in to a Cross-Com server, and carry the in-game overlay.
+- **The launcher** finds the game, installs the client, signs you in and starts the game.
 
 Matches themselves are still hosted by the players, as they always were.
 
-## Playing
+## Documentation
 
-Download `crosscom-launcher.exe` and run it: that's the only file you need. It finds the game (Ubisoft Connect or Steam installs, or a folder you choose), checks your server, makes your account if the server allows sign-up, installs Cross-Com's client (which it carries; the game's own files are kept, and *Restore the game's own files* puts them back), and starts the game. When a newer launcher carries a newer client, Play brings the game up to date first.
-
-It needs Microsoft's WebView2 runtime, which comes with Windows 11 and Edge; on a PC without it, the launcher opens Microsoft's download page.
-
-Build it with `scripts/build-launcher.sh` (Docker): the client DLLs, the launcher's page (`launcher-tauri/ui`, Vue) and the launcher itself (`launcher-tauri/src-tauri`, Tauri) -> `dist/crosscom-launcher.exe`.
-
-To run a server for your group, see [docs/hosting.md](docs/hosting.md).
+| For | Where |
+|---|---|
+| **Hosting a server** | [docs/hosting.md](docs/hosting.md): Docker or not, settings, accounts, news, HTTPS with Caddy, sharing a machine, the API, players' logs |
+| **The client** | [client/README.md](client/README.md): what the DLLs do, the overlay, `crosscom.toml` |
+| **The protocols** | [docs/protocol.md](docs/protocol.md): what the server answers, worked out from the game |
+| **Building** | `scripts/build-launcher.sh` builds the client DLLs, the launcher's page and the launcher into `dist/crosscom-launcher.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests |
 
 ## Standing on the shoulders of
 
@@ -42,8 +167,18 @@ Cross-Com Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), as a
 - **[zeroKilo](https://github.com/zeroKilo)** and **[Michał Kapała](https://github.com/michal-kapala)**: [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), a Ghost Recon Online backend on the same online stack.
 - **[Kinnay](https://github.com/Kinnay)**: the [PRUDP documentation](https://github.com/Kinnay/NintendoClients/wiki/PRUDP-Protocol).
 
+Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the launcher and overlay, [Tauri](https://tauri.app) and [Vue](https://vuejs.org) for the launcher, [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay, and [Caddy](https://caddyserver.com) for HTTPS.
+
+## Contributing
+
+Testing reports are the most useful thing right now: play with friends and [report what breaks](#reporting-a-problem). Research, documentation and code are welcome too:
+
+- **Pull requests:** keep them focused, and say how you tested. Run `scripts/check.sh` first. Changes that affect the game should say whether they were tried in the game itself.
+- **Research:** write what you worked out in your own words. Game files, extracted game data and disassembly can't go in this repository.
+- **Servers:** running one for your group is one of the best ways to help.
+
 ## Licence
 
 Cross-Com Enhanced's own work is under the MIT licence. The code from upstream 5th Echelon isn't licensed by its authors yet. [LICENSE.md](LICENSE.md) says exactly which is which.
 
-Ghost Recon: Future Soldier is a trademark of Ubisoft Entertainment. This project isn't affiliated with Ubisoft and contains no game files: you need your own copy of the game.
+Ghost Recon: Future Soldier is a trademark of Ubisoft Entertainment. This project isn't affiliated with Ubisoft and contains no game files: you need your own copy of the game. The screenshots show the game running with Cross-Com.
