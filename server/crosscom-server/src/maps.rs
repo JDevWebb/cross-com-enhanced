@@ -141,13 +141,82 @@ pub fn worlds(category: u32) -> Vec<u32> {
 
 /// GetMapList(u32 category) -> list<u32>.
 pub fn map_list(parameters: &[u8]) -> Vec<u8> {
-    let category = parameters.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    let worlds = worlds(category);
+    let worlds = worlds(category(parameters));
     let mut out = (worlds.len() as u32).to_le_bytes().to_vec();
     for key in worlds {
         out.extend_from_slice(&key.to_le_bytes());
     }
     out
+}
+
+/// The map list protocol (121): its answers, and the packs each host's lobby uses, which
+/// searches go by (see `packs`).
+pub struct MapList {
+    packs: std::sync::Arc<crate::packs::Packs>,
+}
+
+impl MapList {
+    pub fn new(packs: std::sync::Arc<crate::packs::Packs>) -> Self {
+        Self { packs }
+    }
+}
+
+impl<CI> quazal::rmc::Protocol<CI> for MapList {
+    fn id(&self) -> u16 {
+        121
+    }
+
+    fn name(&self) -> String {
+        "MapListProtocol".into()
+    }
+
+    fn num_methods(&self) -> u32 {
+        2
+    }
+
+    fn method_name(&self, method_id: u32) -> Option<String> {
+        match method_id {
+            1 => Some("GetAvailableMapCategories".into()),
+            2 => Some("GetMapList".into()),
+            _ => None,
+        }
+    }
+
+    fn handle(
+        &self,
+        logger: &slog::Logger,
+        _ctx: &quazal::Context,
+        ci: &mut quazal::ClientInfo<CI>,
+        request: &quazal::rmc::Request,
+        _client_registry: &quazal::prudp::ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<Vec<u8>, quazal::rmc::Error> {
+        let pid = crate::ticket::player(ci)?;
+        let answer = match request.method_id {
+            // GetAvailableMapCategories: none (the game doesn't need any).
+            1 => vec![0, 0, 0, 0],
+            2 => {
+                let category = category(&request.parameters);
+                // Only the host of a lobby asks.
+                self.packs.hosting(pid, category);
+                map_list(&request.parameters)
+            }
+            _ => return Err(quazal::rmc::Error::UnknownMethod),
+        };
+        // The category and its worlds in full: what the game asked for is how answers are checked.
+        slog::debug!(
+            logger,
+            "MapListProtocol.{}: answer to {} is {}",
+            if request.method_id == 1 { "GetAvailableMapCategories" } else { "GetMapList" },
+            crate::fixed::hex(&request.parameters[..request.parameters.len().min(64)]),
+            crate::fixed::hex(&answer)
+        );
+        Ok(answer)
+    }
+}
+
+fn category(parameters: &[u8]) -> u32 {
+    parameters.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 #[cfg(test)]

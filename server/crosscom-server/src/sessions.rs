@@ -455,12 +455,19 @@ impl Sessions {
 
     /// Sessions of a type a search may offer: matchmade, with public slots, and matching the
     /// search's parameters (see [`Session::matches`]), up to `limit`, fullest first.
+    #[cfg(test)]
     pub fn find(&self, type_id: u32, parameters: &[(u32, u32)], limit: usize) -> Vec<(Key, Session)> {
+        self.find_where(type_id, parameters, limit, |_| true)
+    }
+
+    /// As [`Sessions::find`], of the sessions `keep` takes (before the limit, so sessions it
+    /// leaves out don't take others' places).
+    pub fn find_where(&self, type_id: u32, parameters: &[(u32, u32)], limit: usize, keep: impl Fn(&Session) -> bool) -> Vec<(Key, Session)> {
         let mut found: Vec<(Key, Session)> = self
             .lock()
             .sessions
             .iter()
-            .filter(|(k, s)| k.0 == type_id && s.matches(parameters))
+            .filter(|(k, s)| k.0 == type_id && s.matches(parameters) && keep(s))
             .map(|(k, s)| (*k, s.clone()))
             .collect();
         found.sort_by_key(|(_, s)| (std::cmp::Reverse(s.participants.len()), s.created));

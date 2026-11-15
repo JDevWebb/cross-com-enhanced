@@ -129,7 +129,7 @@ fn per_player(parameters: &[u8], entry: impl Fn(u32) -> Vec<u8>) -> Vec<u8> {
     out
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -210,24 +210,6 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     id: 9,
                     name: "SetActionsCompleted",
                     answer: |_| EMPTY_LIST.to_vec(),
-                },
-            ],
-        },
-        FixedProtocol {
-            id: 121,
-            name: "MapListProtocol",
-            // Both answer a list<u32> (worked out from the game's encoders): the map categories,
-            // and a category's maps (see `maps`).
-            methods: &[
-                Method {
-                    id: 1,
-                    name: "GetAvailableMapCategories",
-                    answer: |_| EMPTY_LIST.to_vec(),
-                },
-                Method {
-                    id: 2,
-                    name: "GetMapList",
-                    answer: crate::maps::map_list,
                 },
             ],
         },

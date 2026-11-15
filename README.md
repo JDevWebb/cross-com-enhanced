@@ -78,7 +78,7 @@ A map from one pack in the other pack's mode (Takeover on Riot, say) needs both.
   <img src="./docs/screenshots/launcher-play-missing-dlc.png" width="640" alt="The launcher's Play screen warning that Khyber Strike isn't installed: Takeover and the Switchback, Palace and Transit maps can't be played without it">
 </p>
 
-Without a pack, you can still play every base-game map and mode, but a lobby on that pack's maps or modes removes you with *"The host is using content that you have not yet downloaded"*.
+Without a pack, you can still play every base-game map and mode. **Quick Match only finds you lobbies your game can load**: Cross-Com's client tells the server which packs you have when you sign in, and the server leaves out lobbies that use a pack you're missing. (If a friend invites you into one anyway, the game itself refuses it with *"The host is using content that you have not yet downloaded"*.)
 
 > [!NOTE]
 > **We don't provide the game or its DLC, and can't help you get them.** Cross-Com only brings back the online services: you need your own copy of the game, and of any pack you want to play. Please don't ask for game files in issues or discussions.

@@ -42,14 +42,29 @@ pub struct Login {
     pub cd_key: CString,
 }
 
+/// The longest each sign-in detail may be: the game copies each into an 80-byte buffer.
+const MAX_DETAIL: usize = 79;
+
 impl Login {
+    /// `packs`: the numbers of the DLC packs installed (`dlc::installed_numbers`), which go to
+    /// the server after the CD key as `;packs=` (the server checks no CD keys, and searches go by
+    /// them), or `None` to say nothing.
     #[must_use]
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, packs: Option<&str>) -> Self {
+        let mut cd_key = config.cd_key.clone();
+        if let Some(packs) = packs {
+            let with = format!("{cd_key};packs={packs}");
+            // Too long for the game's buffer: the CD key alone, and the server takes it the player
+            // has every pack, as before.
+            if with.len() <= MAX_DETAIL {
+                cd_key = with;
+            }
+        }
         // The settings are checked for NULs when they're read, so these can't fail.
         Self {
             username: CString::new(config.username.as_str()).unwrap_or_default(),
             password: config.password.encode_utf16().chain(std::iter::once(0)).collect(),
-            cd_key: CString::new(config.cd_key.as_str()).unwrap_or_default(),
+            cd_key: CString::new(cd_key).unwrap_or_default(),
         }
     }
 }
@@ -123,7 +138,7 @@ mod tests {
             cd_key: "AAAA-BBBB".into(),
             ..Config::default()
         };
-        let login = Login::new(&config);
+        let login = Login::new(&config, None);
         assert_eq!(login.username.as_bytes_with_nul(), b"Kozak\0");
         assert_eq!(login.cd_key.as_bytes_with_nul(), b"AAAA-BBBB\0");
         assert_eq!(String::from_utf16(&login.password[..login.password.len() - 1]).unwrap(), "pässword");
@@ -132,8 +147,36 @@ mod tests {
 
     #[test]
     fn empty_settings_give_empty_strings() {
-        let login = Login::new(&Config::default());
+        let login = Login::new(&Config::default(), None);
         assert_eq!(login.username.as_bytes_with_nul(), b"\0");
         assert_eq!(login.password, vec![0]);
+    }
+
+    #[test]
+    fn the_dlc_packs_go_after_the_cd_key() {
+        let config = Config {
+            cd_key: "AAAA-BBBB".into(),
+            ..Config::default()
+        };
+        assert_eq!(Login::new(&config, Some("13")).cd_key.as_bytes(), b"AAAA-BBBB;packs=13");
+        assert_eq!(Login::new(&config, Some("")).cd_key.as_bytes(), b"AAAA-BBBB;packs=");
+        let long = Config {
+            cd_key: "K".repeat(70),
+            ..Config::default()
+        };
+        assert_eq!(Login::new(&long, Some("123")).cd_key.as_bytes(), "K".repeat(70).as_bytes(), "never past the game's buffer");
+        assert!(
+            Login::new(
+                &Config {
+                    cd_key: "K".repeat(69),
+                    ..Config::default()
+                },
+                Some("123")
+            )
+            .cd_key
+            .as_bytes()
+            .len()
+                <= MAX_DETAIL
+        );
     }
 }

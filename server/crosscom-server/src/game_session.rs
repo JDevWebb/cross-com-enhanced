@@ -25,6 +25,7 @@ use crate::accounts::Accounts;
 use crate::friends::Friends;
 use crate::invitations::Invitations;
 use crate::notify;
+use crate::packs::Packs;
 use crate::sessions;
 use crate::sessions::Sessions;
 use crate::ticket::player;
@@ -49,6 +50,7 @@ struct GameSessions {
     sessions: Arc<Sessions>,
     accounts: Arc<Accounts>,
     friends: Arc<Friends>,
+    packs: Arc<Packs>,
     invitations: Invitations,
 }
 
@@ -223,13 +225,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<SearchSessionsResponse, Error> {
         let pid = player(ci)?;
         let query = &request.game_session_query;
-        let found: Vec<_> = self
-            .sessions
-            .find(query.type_id, &properties(&query.parameters), MAX_RESULTS + 1)
-            .into_iter()
-            .filter(|(_, s)| s.host != pid)
-            .take(MAX_RESULTS)
-            .collect();
+        // Only lobbies the player's game can load: their packs and their mode's (see `packs`).
+        let playable = |s: &crate::sessions::Session| s.host != pid && self.packs.offer(pid, s.host, s.attribute(crate::packs::MODE));
+        let found = self.sessions.find_where(query.type_id, &properties(&query.parameters), MAX_RESULTS, playable);
         // The game joins a session it found by reaching its host (a NAT probe), who then adds
         // it. Being offered a session gives nothing yet; reaching for its host is the choice
         // (see `Sessions::choose`).
@@ -699,12 +697,13 @@ impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
     }
 }
 
-pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>, friends: Arc<Friends>) -> Box<dyn Protocol<CI>> {
+pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>, friends: Arc<Friends>, packs: Arc<Packs>) -> Box<dyn Protocol<CI>> {
     Box::new(GameSessionProtocol {
         generated: Box::new(GameSessionProtocolServer::new(GameSessions {
             sessions: Arc::clone(&sessions),
             accounts,
             friends,
+            packs,
             invitations: Invitations::default(),
         })),
         sessions,

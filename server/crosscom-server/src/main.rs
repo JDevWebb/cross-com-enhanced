@@ -30,6 +30,7 @@ mod news;
 mod notify;
 mod online;
 mod online_config;
+mod packs;
 mod privileges;
 mod proxy;
 mod rate_limit;
@@ -249,14 +250,18 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         }
     };
     let news = config.news.clone();
+    // The DLC packs players say they have (at sign-in, on the auth server) and their lobbies use
+    // (on the secure server): searches go by them.
+    let packs = Arc::new(packs::Packs::default());
 
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
         spawn("auth", logger.clone(), {
             let accounts = Arc::clone(&accounts);
+            let packs = Arc::clone(&packs);
             move |logger| {
                 run_server(&logger, &auth, None, |handler| {
-                    handler.register_protocol(ticket::new_protocol(accounts, failed_sign_ins));
+                    handler.register_protocol(ticket::new_protocol(accounts, failed_sign_ins, packs));
                 })
             }
         }),
@@ -265,7 +270,13 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             run_server(&logger, &secure, Some(online), |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
-                handler.register_protocol(game_session::new_protocol(Arc::clone(&sessions), Arc::clone(&accounts), Arc::clone(&friends)));
+                handler.register_protocol(game_session::new_protocol(
+                    Arc::clone(&sessions),
+                    Arc::clone(&accounts),
+                    Arc::clone(&friends),
+                    Arc::clone(&packs),
+                ));
+                handler.register_protocol(Box::new(maps::MapList::new(Arc::clone(&packs))));
                 handler.register_protocol(privileges::new_protocol());
                 let social = social::protocols(Arc::clone(&friends), Arc::clone(&accounts));
                 for protocol in menu::protocols().into_iter().chain(fixed::protocols()).chain(social) {

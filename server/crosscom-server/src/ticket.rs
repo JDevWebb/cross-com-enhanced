@@ -45,6 +45,7 @@ const TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 struct TicketGranting {
     accounts: Arc<Accounts>,
     failed: Arc<FailedSignIns>,
+    packs: Arc<crate::packs::Packs>,
 }
 
 /// The signed-in player. The tracking principal, which anyone can sign in as (its password is
@@ -157,7 +158,10 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
                 return Err(Error::InternalError);
             }
         };
-        info!(logger, "{:?} signed in from {} (PID {pid:#x})", login.user_name, ci.address());
+        // The DLC packs Cross-Com's client says the game has (see `packs`).
+        let packs = crate::packs::from_online_key(&login.online_key);
+        self.packs.signed_in(pid, packs);
+        info!(logger, "{:?} signed in from {} (PID {pid:#x}, DLC packs {packs:#x?})", login.user_name, ci.address());
         ci.user_id = Some(pid);
         Ok(LoginExResponse {
             return_value: QResult::Ok,
@@ -189,8 +193,8 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
 }
 
 /// The sign-in protocol. `failed` counts failed sign-ins, shared with the launcher's.
-pub fn new_protocol<CI: 'static>(accounts: Arc<Accounts>, failed: Arc<FailedSignIns>) -> Box<dyn Protocol<CI>> {
-    Box::new(TicketGrantingProtocolServer::new(TicketGranting { accounts, failed }))
+pub fn new_protocol<CI: 'static>(accounts: Arc<Accounts>, failed: Arc<FailedSignIns>, packs: Arc<crate::packs::Packs>) -> Box<dyn Protocol<CI>> {
+    Box::new(TicketGrantingProtocolServer::new(TicketGranting { accounts, failed, packs }))
 }
 
 #[cfg(test)]
