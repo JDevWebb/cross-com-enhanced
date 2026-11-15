@@ -92,6 +92,7 @@ pub unsafe extern "thiscall" fn OrbitClient_GetLoginDetails(_this: *mut c_void, 
     let login = login();
     info!("Signing in as {:?}", login.username);
     crate::overlay::login_given();
+    crate::logs::signing_in();
     unsafe {
         ((*(*listener).vtable).on_login_details)(listener, request_id, login.username.as_ptr(), login.password.as_ptr(), login.cd_key.as_ptr());
     }

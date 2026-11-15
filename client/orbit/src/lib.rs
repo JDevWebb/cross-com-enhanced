@@ -12,6 +12,8 @@ mod crash;
 #[cfg(windows)]
 mod dll;
 #[cfg(windows)]
+mod logs;
+#[cfg(windows)]
 mod net;
 #[cfg(all(windows, target_arch = "x86"))]
 mod orbit;
@@ -57,19 +59,32 @@ fn config() -> &'static Config {
     CONFIG.get_or_init(Config::default)
 }
 
-/// Reads the settings and starts the log; called once, when the game loads the library.
+/// Starts this run's log, reads the settings; called once, when the game loads the library.
 #[cfg(windows)]
 fn start() {
     use crosscom_client_common::game_dir;
     use crosscom_client_common::logging;
+    use crosscom_client_common::runs;
 
     let Some(dir) = game_dir() else {
         return;
     };
+    // The last run's log moves aside before this run's opens. Only this library writes the log
+    // (uplay_r1_loader.dll doesn't), so nothing else has it open.
+    let rotated = runs::rotate(&dir);
     let loaded = Config::load(&dir);
     let level = loaded.as_ref().ok().and_then(|c| c.log_level.clone());
     logging::init(&dir, "orbit", level.as_deref());
-    log::info!("Cross-Com {} loaded from {}", env!("CARGO_PKG_VERSION"), dir.display());
+    let exe = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    log::info!("Cross-Com {} loaded in {exe} from {}", env!("CARGO_PKG_VERSION"), dir.display());
+    if let Some(os) = crosscom_client_common::system::os_version() {
+        log::info!("{os}");
+    }
+    match rotated {
+        Ok(Some(last)) => log::info!("The last run's log is {}", last.display()),
+        Ok(None) => {}
+        Err(e) => log::warn!("Couldn't move the last run's log aside: {e}"),
+    }
     match loaded {
         Ok(config) => {
             if config.server.is_none() {
@@ -88,6 +103,7 @@ fn start() {
     if let Some(players) = CONFIG.get().and_then(|c| c.quick_match_min_players) {
         quick_match::install(players);
     }
+    logs::start(dir, config());
     overlay::start(config());
 }
 

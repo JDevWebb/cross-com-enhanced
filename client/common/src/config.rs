@@ -41,6 +41,9 @@ pub struct Config {
     pub overlay: bool,
     /// The key that opens the overlay's panel: `F1` to `F12`. An unknown name means F5.
     pub overlay_key: String,
+    /// Send each run's log to the server after it (on unless set to false), with the Windows
+    /// user name and the password taken out (see `runs`).
+    pub send_logs: bool,
 }
 
 impl Default for Config {
@@ -55,6 +58,7 @@ impl Default for Config {
             quick_match_min_players: None,
             overlay: true,
             overlay_key: DEFAULT_OVERLAY_KEY.to_owned(),
+            send_logs: true,
         }
     }
 }
@@ -267,6 +271,12 @@ mod tests {
         assert_eq!(Config::parse("overlay_key = \"f1\"").unwrap().overlay_key(), ("F1", 0x70));
         // A key it doesn't know doesn't stop the game signing in: F5 instead.
         assert_eq!(Config::parse("overlay_key = \"Insert\"").unwrap().overlay_key(), ("F5", 0x74));
+    }
+
+    #[test]
+    fn logs_are_sent_unless_turned_off() {
+        assert!(Config::parse("").unwrap().send_logs);
+        assert!(!Config::parse("send_logs = false").unwrap().send_logs);
     }
 
     #[test]

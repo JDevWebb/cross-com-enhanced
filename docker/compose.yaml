@@ -23,8 +23,10 @@ services:
       CROSSCOM_SIGNUP: ${CROSSCOM_SIGNUP:-false}
       CROSSCOM_SIGNUP_CODE: ${CROSSCOM_SIGNUP_CODE:-}
       CROSSCOM_LOG_LEVEL: ${CROSSCOM_LOG_LEVEL:-info}
+      # Players' logs, kept in the volume (logs/); false turns them off.
+      CROSSCOM_ACCEPT_LOGS: ${CROSSCOM_ACCEPT_LOGS:-true}
     ports:
-      - "80:80/tcp"          # online config (the game always asks on port 80), launcher API, sign-up
+      - "80:80/tcp"          # online config (the game always asks on port 80), launcher API, sign-up, players' logs
       - "21030:21030/udp"    # sign-in
       - "21031:21031/udp"    # game services
     # The server's own user may bind port 80; nothing else is needed.

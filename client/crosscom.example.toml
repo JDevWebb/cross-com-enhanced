@@ -21,3 +21,8 @@ overlay = true
 
 # The key that opens and closes the overlay: F1 to F12.
 overlay_key = "F5"
+
+# Send each game's log to the server after it, to help fix problems (true or false). Your
+# Windows user name and password are taken out first. Each game's log is kept in the logs
+# folder next to this file either way.
+send_logs = true

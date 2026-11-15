@@ -39,6 +39,15 @@ pub struct Config {
     /// `X-Forwarded-For` names, and passwords through it only over HTTPS (see `proxy.rs`). None by
     /// default: the headers are ignored.
     pub trusted_proxies: Vec<String>,
+    /// Whether players' clients may send their logs (`POST /api/logs`, see `logs.rs`). On by
+    /// default; they're only taken from addresses their account played from lately.
+    pub accept_logs: bool,
+    /// Where the logs are kept, in a folder a day.
+    pub logs_dir: PathBuf,
+    /// The most the logs may take in all, in MiB; past it the oldest go.
+    pub logs_max_mb: u64,
+    /// Days logs are kept.
+    pub logs_keep_days: u32,
 }
 
 impl Default for Config {
@@ -55,6 +64,10 @@ impl Default for Config {
             signup_code: None,
             news: "news.toml".into(),
             trusted_proxies: Vec::new(),
+            accept_logs: true,
+            logs_dir: "logs".into(),
+            logs_max_mb: 2048,
+            logs_keep_days: 30,
         }
     }
 }
@@ -71,8 +84,9 @@ impl Config {
 
     /// The settings with any given in the environment instead, as a container is set up:
     /// `CROSSCOM_PUBLIC_ADDRESS`, `CROSSCOM_LOG_LEVEL`, `CROSSCOM_SIGNUP` (`true` or `false`) and
-    /// `CROSSCOM_SIGNUP_CODE` and `CROSSCOM_TRUSTED_PROXIES` (separated by commas or spaces).
-    /// `var` looks one up.
+    /// `CROSSCOM_SIGNUP_CODE` and `CROSSCOM_TRUSTED_PROXIES` (separated by commas or spaces),
+    /// `CROSSCOM_ACCEPT_LOGS` (`true` or `false`), `CROSSCOM_LOGS_MAX_MB` and
+    /// `CROSSCOM_LOGS_KEEP_DAYS`. `var` looks one up.
     pub fn with_env(mut self, var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |name: &str| var(name).filter(|v| !v.trim().is_empty());
         if let Some(address) = var("CROSSCOM_PUBLIC_ADDRESS") {
@@ -82,11 +96,16 @@ impl Config {
             self.log_level = level.trim().into();
         }
         if let Some(signup) = var("CROSSCOM_SIGNUP") {
-            self.signup = match signup.trim() {
-                "true" | "1" | "yes" => true,
-                "false" | "0" | "no" => false,
-                other => return Err(format!("CROSSCOM_SIGNUP is true or false, not {other:?}")),
-            };
+            self.signup = flag("CROSSCOM_SIGNUP", &signup)?;
+        }
+        if let Some(accept) = var("CROSSCOM_ACCEPT_LOGS") {
+            self.accept_logs = flag("CROSSCOM_ACCEPT_LOGS", &accept)?;
+        }
+        if let Some(mb) = var("CROSSCOM_LOGS_MAX_MB") {
+            self.logs_max_mb = mb.trim().parse().map_err(|_| format!("CROSSCOM_LOGS_MAX_MB is a number of MiB, not {mb:?}"))?;
+        }
+        if let Some(days) = var("CROSSCOM_LOGS_KEEP_DAYS") {
+            self.logs_keep_days = days.trim().parse().map_err(|_| format!("CROSSCOM_LOGS_KEEP_DAYS is a number of days, not {days:?}"))?;
         }
         if let Some(code) = var("CROSSCOM_SIGNUP_CODE") {
             self.signup_code = Some(code);
@@ -96,6 +115,16 @@ impl Config {
         }
         self.check()?;
         Ok(self)
+    }
+
+    /// The logs' settings.
+    pub fn logs(&self) -> crate::logs::Settings {
+        crate::logs::Settings {
+            accept: self.accept_logs,
+            dir: self.logs_dir.clone(),
+            max_bytes: self.logs_max_mb.saturating_mul(1024 * 1024),
+            keep_days: self.logs_keep_days,
+        }
     }
 
     /// The proxies in `trusted_proxies`.
@@ -127,6 +156,15 @@ impl Config {
             .map(|a| a.ip())
             .find(IpAddr::is_ipv4)
             .ok_or_else(|| format!("{} has no IPv4 address", self.public_address))
+    }
+}
+
+/// A `true` or `false` setting from the environment.
+fn flag(name: &str, value: &str) -> Result<bool, String> {
+    match value.trim() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        other => Err(format!("{name} is true or false, not {other:?}")),
     }
 }
 
@@ -174,6 +212,26 @@ mod tests {
         assert_eq!(config.trusted_proxies, ["172.31.80.10", "10.0.0.0/8"]);
         assert!(Config::default().with_env(|n| (n == "CROSSCOM_TRUSTED_PROXIES").then(|| "caddy".into())).is_err());
         assert_eq!(Config::default().trusted_proxies().unwrap(), crate::proxy::Trusted::default(), "none by default");
+    }
+
+    #[test]
+    fn logs_are_taken_unless_turned_off() {
+        let config = Config::default();
+        assert!(config.accept_logs);
+        assert_eq!(config.logs().max_bytes, 2048 * 1024 * 1024);
+        assert_eq!(config.logs().dir, PathBuf::from("logs"));
+        let env = |name: &str| match name {
+            "CROSSCOM_ACCEPT_LOGS" => Some("false".to_string()),
+            "CROSSCOM_LOGS_MAX_MB" => Some("100".to_string()),
+            "CROSSCOM_LOGS_KEEP_DAYS" => Some("7".to_string()),
+            _ => None,
+        };
+        let config = Config::default().with_env(env).unwrap();
+        assert!(!config.accept_logs);
+        assert_eq!((config.logs_max_mb, config.logs_keep_days), (100, 7));
+        assert!(Config::default().with_env(|n| (n == "CROSSCOM_LOGS_MAX_MB").then(|| "lots".into())).is_err());
+        let config: Config = toml::from_str("accept_logs = false\nlogs_dir = \"/var/crosscom/logs\"").unwrap();
+        assert!(!config.logs().accept);
     }
 
     #[test]
