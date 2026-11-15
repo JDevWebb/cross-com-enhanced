@@ -1,6 +1,6 @@
 //! What the server says about itself at `GET /api/info`, on its HTTP port (80), for the overlay:
 //! its version, how many players are online and its news; and its leaderboard
-//! (`GET /api/leaderboard?mode=...`).
+//! (`GET /api/leaderboard?mode=...`). Also the post that sends the logs (`runs`).
 //!
 //! A small HTTP/1.0 client over a plain `TcpStream`, as the server answers on plain HTTP and the
 //! client DLL shouldn't carry a TLS stack. Every field is optional; a server without the page
@@ -131,6 +131,19 @@ pub fn fetch_leaderboard(server: &str, mode: &str, timeout: Duration) -> Result<
 
 /// Asks `server` for `path` over plain HTTP/1.0, and reads the whole answer.
 fn get(server: &str, path: &str, timeout: Duration) -> Result<Vec<u8>, Unreachable> {
+    request(server, "GET", path, &[("Accept", "application/json".into())], &[], timeout)
+}
+
+/// Posts `body` with `headers` to `path` on `server` over plain HTTP/1.0 (the logs, see `runs`):
+/// the answer's status and body. Header values must be on one line.
+pub fn post(server: &str, path: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>), Unreachable> {
+    let response = request(server, "POST", path, headers, body, timeout)?;
+    status_and_body(&response)
+}
+
+/// Sends one request and reads the whole answer. A server that answers before taking the whole
+/// body (one refusing it) may close on the rest: its answer is still read.
+fn request(server: &str, method: &str, path: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Vec<u8>, Unreachable> {
     let (host, port) = address(server);
     let addr = (host.as_str(), port)
         .to_socket_addrs()
@@ -142,11 +155,35 @@ fn get(server: &str, path: &str, timeout: Duration) -> Result<Vec<u8>, Unreachab
     stream.set_read_timeout(Some(timeout)).map_err(io)?;
     stream.set_write_timeout(Some(timeout)).map_err(io)?;
     let host_header = if host.contains(':') { format!("[{host}]") } else { host.clone() };
-    let request = format!("GET {path} HTTP/1.0\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\nUser-Agent: Cross-Com\r\n\r\n");
-    stream.write_all(request.as_bytes()).map_err(io)?;
+    let mut head = format!("{method} {path} HTTP/1.0\r\nHost: {host_header}\r\nConnection: close\r\nUser-Agent: Cross-Com\r\n");
+    for (name, value) in headers {
+        let value: String = value.chars().filter(|c| !c.is_control()).collect();
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if method != "GET" {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).map_err(io)?;
+    let wrote = stream.write_all(body);
     let mut response = Vec::new();
-    stream.take(MAX_RESPONSE as u64).read_to_end(&mut response).map_err(io)?;
+    let read = stream.take(MAX_RESPONSE as u64).read_to_end(&mut response);
+    if response.is_empty() {
+        wrote.map_err(io)?;
+        read.map_err(io)?;
+    }
     Ok(response)
+}
+
+/// An HTTP response's status and body.
+fn status_and_body(response: &[u8]) -> Result<(u16, Vec<u8>), Unreachable> {
+    match body(response)? {
+        Ok(body) => Ok((200, body)),
+        Err(status) => {
+            let start = response.windows(4).position(|w| w == b"\r\n\r\n").map_or(response.len(), |e| e + 4);
+            Ok((status, response[start..].to_vec()))
+        }
+    }
 }
 
 /// Reads an HTTP response as the info page.
@@ -322,6 +359,30 @@ mod tests {
 
     fn body_of(response: &[u8]) -> Vec<u8> {
         body(response).unwrap().unwrap()
+    }
+
+    #[test]
+    fn posts_a_body_with_its_headers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !request.ends_with(b"the log\n") {
+                let n = stream.read(&mut buf).unwrap();
+                request.extend_from_slice(&buf[..n]);
+            }
+            stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 10\r\n\r\n{\"id\":\"x\"}").unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let headers = [("X-Crosscom-Run", "crosscom-1.log\r\nX-Evil: 1".to_owned())];
+        let answer = post(&format!("127.0.0.1:{port}"), "/api/logs", &headers, b"the log\n", Duration::from_secs(5)).unwrap();
+        assert_eq!(answer, (201, br#"{"id":"x"}"#.to_vec()));
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /api/logs HTTP/1.0\r\n"), "{request}");
+        assert!(request.contains("\r\nContent-Length: 8\r\n"), "{request}");
+        assert!(request.contains("\r\nX-Crosscom-Run: crosscom-1.logX-Evil: 1\r\n"), "one line: {request}");
     }
 
     #[test]

@@ -2,10 +2,14 @@
 name = "crosscom-client-common"
 version = "0.1.0"
 edition = "2021"
-description = "What both client DLLs share: the settings file, the log, the saves and the server's info"
+description = "What both client DLLs share: the settings file, the log and its runs, the saves and the server's info"
 
 [dependencies]
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# The Windows version, for the logs sent to the server (system.rs).
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Registry"] }
