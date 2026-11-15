@@ -59,6 +59,24 @@ To play on another server instead (one your group runs, one on your own network,
 
 The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime.
 
+### The DLC packs
+
+The base game is enough to play online. The three DLC packs add maps and two modes, and **a match that uses a pack needs every player in it to have that pack installed**:
+
+<table>
+<tr><th>Pack</th><th>Folder in the game</th><th>Needed for</th></tr>
+<tr><td><b>Arctic Strike</b></td><td><code>DLC\dlc1</code></td><td>its maps and the <b>Stockade</b> mode (on every map)</td></tr>
+<tr><td><b>Raven Strike</b></td><td><code>DLC\dlc2</code></td><td>its maps (Guerrilla included) and the <b>Takeover</b> mode (on every map)</td></tr>
+<tr><td><b>Khyber Strike</b></td><td><code>DLC\dlc3</code></td><td>its maps</td></tr>
+</table>
+
+To check, look in the game's `DLC` folder: each pack you have is a `dlc1`, `dlc2` or `dlc3` folder with a `.big` file inside. (`DLC\dlc` is the game's own update, not a pack.) Cross-Com's servers turn on every pack you have installed, so there's nothing else to do: no Uplay or Ubisoft Connect sign-in.
+
+Without a pack, you can still play every base-game map and mode, but a lobby on that pack's maps or modes removes you with *"The host is using content that you have not yet downloaded"*.
+
+> [!NOTE]
+> **We don't provide the game or its DLC, and can't help you get them.** Cross-Com only brings back the online services: you need your own copy of the game, and of any pack you want to play. Please don't ask for game files in issues or discussions.
+
 <p align="center">
   <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the community test network online (7 players, server 0.1.0), the account signed in, the client installed, the Play button, and the server's news">
 </p>
