@@ -474,7 +474,11 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
             let (mut child, said) = worker.play()?;
             // The game's own thread: it waits for the game, then sends its logs.
             std::thread::spawn(move || {
-                let exit = child.wait().ok().and_then(|status| status.code());
+                let mut exit = child.wait().ok().and_then(|status| status.code());
+                // The game starts itself again and that first exe exits: wait for the game.
+                if after.game_dir().is_some_and(|dir| crosscom_launcher::logs::wait_for_game(&dir)) {
+                    exit = None;
+                }
                 let _ = weak.upgrade_in_event_loop(move |w| send_logs(&w, &after, exit));
             });
             Ok::<_, String>(said)

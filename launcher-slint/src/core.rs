@@ -207,7 +207,7 @@ impl Launcher {
     }
 
     /// The game's folder, while it still holds the game.
-    fn game_dir(&self) -> Option<PathBuf> {
+    pub fn game_dir(&self) -> Option<PathBuf> {
         self.prefs().game_dir.filter(|d| game::is_game_dir(d))
     }
 

@@ -69,9 +69,10 @@ fn start() {
     let Some(dir) = game_dir() else {
         return;
     };
-    // The last run's log moves aside before this run's opens. Only this library writes the log
+    // The last run's log moves aside before this run's opens (unless it's this launch's: the game
+    // starts itself again a moment after it's started). Only this library writes the log
     // (uplay_r1_loader.dll doesn't), so nothing else has it open.
-    let rotated = runs::rotate(&dir);
+    let rotated = runs::rotate_at_start(&dir);
     let loaded = Config::load(&dir);
     let level = loaded.as_ref().ok().and_then(|c| c.log_level.clone());
     logging::init(&dir, "orbit", level.as_deref());

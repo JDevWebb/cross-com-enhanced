@@ -142,6 +142,25 @@ pub fn rotate(game_dir: &Path) -> io::Result<Option<PathBuf>> {
     }
 }
 
+/// How soon after a log began a game loading this library is still the same launch: the game
+/// starts itself again through `Future Soldier.exe` a moment after it's first started, and that
+/// second process's log carries on the first's.
+pub const SAME_LAUNCH_SECS: u64 = 30;
+
+/// As the game loads this library: [`rotate`], unless `crosscom.log` began less than
+/// [`SAME_LAUNCH_SECS`] ago (the same launch, starting itself again), which carries on in it.
+pub fn rotate_at_start(game_dir: &Path) -> io::Result<Option<PathBuf>> {
+    rotate_at_start_at(game_dir, now())
+}
+
+fn rotate_at_start_at(game_dir: &Path, now: u64) -> io::Result<Option<PathBuf>> {
+    let log = game_dir.join(logging::FILE_NAME);
+    if first_line_time(&log).is_some_and(|began| now.saturating_sub(began) < SAME_LAUNCH_SECS) {
+        return Ok(None);
+    }
+    rotate(game_dir)
+}
+
 /// A run's log in the runs folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
@@ -537,6 +556,16 @@ pub fn send_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_game_starting_itself_again_carries_on_in_its_log() {
+        let game = tempdir();
+        let log = game.join(logging::FILE_NAME);
+        fs::write(&log, "1794708347.010 INFO  orbit Cross-Com loaded\n").unwrap();
+        assert_eq!(rotate_at_start_at(&game, 1_794_708_347).unwrap(), None, "this launch's");
+        assert!(log.exists());
+        assert!(rotate_at_start_at(&game, 1_794_708_347 + SAME_LAUNCH_SECS).unwrap().is_some(), "an earlier run's");
+    }
 
     #[test]
     fn a_password_holding_the_account_name_is_hidden_whole() {

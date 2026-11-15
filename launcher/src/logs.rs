@@ -47,6 +47,27 @@ fn in_use(_path: &Path) -> bool {
     false
 }
 
+/// After the game the launcher started has exited, waits for the game itself to end: the exe
+/// the launcher starts starts the game again through `Future Soldier.exe` a moment later and
+/// exits, so the game is running for as long as something has `crosscom.log` open. Whether the
+/// game was still running (the exit code the launcher saw is then the first exe's, not the
+/// game's).
+pub fn wait_for_game(game_dir: &Path) -> bool {
+    const SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+    const AT_MOST: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+    let log = game_dir.join(logging::FILE_NAME);
+    // The second exe opens the log a moment after the first one exits.
+    std::thread::sleep(SETTLE);
+    let started = std::time::Instant::now();
+    let mut waited = false;
+    while in_use(&log) && started.elapsed() < AT_MOST {
+        waited = true;
+        std::thread::sleep(EVERY);
+    }
+    waited
+}
+
 /// Moves the last run's `crosscom.log` in `game_dir` aside (see `runs::rotate`) unless a game
 /// still has it open; the run's file name.
 #[must_use]
