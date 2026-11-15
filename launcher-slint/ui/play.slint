@@ -1,0 +1,266 @@
+// The main screen once set up: where you'll play and as whom, how the server is (asked each time
+// the screen opens), its news, and Play, which brings the client up to date first when this
+// launcher carries a newer one.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { CrossMark } from "brand.slint";
+import { Btn, Caps, Tag, Dot, Card, Spinner } from "widgets.slint";
+import { Icon, Icons } from "chrome.slint";
+import { InfoView, NewsRow } from "types.slint";
+
+// A card of the status row: its label, its value, and a line under it.
+component StatusCard inherits Card {
+    in property <string> label;
+    in property <string> value;
+    in property <string> detail;
+    in property <color> value-color: Theme.fg;
+    // Under the value ("Community test network").
+    in property <string> tag;
+    min-height: lay.preferred-height;
+    lay := VerticalLayout {
+        alignment: start;
+        padding: 14px;
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 6px;
+        @children
+        Text { text: root.value; color: root.value-color; font-weight: 600; font-size: 16px; wrap: word-wrap; }
+        if root.tag != "": HorizontalLayout { alignment: start; Tag { text: root.tag; } }
+        if root.detail != "": Text { text: root.detail; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+    }
+}
+
+export component PlayScreen inherits Rectangle {
+    in property <InfoView> info;
+    in property <string> community-name;
+    // The server: "asking", "up" or "down", and the line under it.
+    in property <string> server-state;
+    in property <string> server-detail;
+    in property <[NewsRow]> news;
+    in property <string> news-note;
+    in property <bool> news-loading;
+    in property <bool> starting;
+    in property <string> said;
+    in property <bool> failed;
+    callback play();
+    callback refresh();
+
+    // The accent's light from the top right.
+    Rectangle {
+        background: @radial-gradient(circle, Theme.accent-glow 0%, transparent 60%);
+        x: parent.width * 0.35;
+        y: -parent.height * 0.6;
+        width: parent.width * 1.1;
+        height: parent.height * 1.1;
+    }
+
+    ScrollView {
+        VerticalLayout {
+            padding-left: 40px;
+            padding-right: 40px;
+            padding-top: 36px;
+            padding-bottom: 28px;
+            spacing: 0px;
+            alignment: start;
+
+            // The hero: the mark, the game, the title.
+            HorizontalLayout {
+                spacing: 26px;
+                padding-bottom: 30px;
+                VerticalLayout { alignment: center; CrossMark { size: 112px; glow: true; } }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    Caps { text: "GHOST RECON: FUTURE SOLDIER"; color: Theme.accent; }
+                    Text {
+                        text: "READY FOR DEPLOYMENT";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: 50px;
+                        color: Theme.fg;
+                        accessible-role: AccessibleRole.text;
+                    }
+                    Text {
+                        text: "Multiplayer on a Cross-Com server: every mode (Conflict, Decoy, Saboteur, Siege, Stockade, Takeover), Guerrilla and co-op.";
+                        color: Theme.soft;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // Where, as whom, and the client.
+            HorizontalLayout {
+                spacing: 14px;
+                StatusCard {
+                    label: "Server";
+                    // The three take equal shares of the row, between the page's sides and the gaps.
+                    width: (root.width - 108px) / 3;
+                    value: root.info.server;
+                    detail: root.server-detail;
+                    tag: root.info.community ? root.community-name : "";
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Caps { text: "SERVER"; horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; Dot { tone: root.server-state; } }
+                        Caps {
+                            text: root.server-state == "up" ? "ONLINE" : root.server-state == "down" ? "OFFLINE" : "CHECKING";
+                            color: root.server-state == "up" ? Theme.good : root.server-state == "down" ? Theme.bad : Theme.muted;
+                        }
+                    }
+                }
+                StatusCard {
+                    label: "Signed in as";
+                    width: (root.width - 108px) / 3;
+                    value: root.info.account;
+                    Caps { text: "SIGNED IN AS"; }
+                }
+                StatusCard {
+                    label: "Client";
+                    width: (root.width - 108px) / 3;
+                    value: root.info.client == "yes" ? "Installed" : root.info.client == "update" ? "Update ready: installed when you press Play" : root.info.client == "no" ? "Not installed" : "—";
+                    value-color: root.info.client == "update" ? Theme.warn : Theme.fg;
+                    Caps { text: "CLIENT"; }
+                }
+            }
+
+            // Play.
+            HorizontalLayout {
+                padding-top: 30px;
+                spacing: 22px;
+                alignment: start;
+                play-button := Rectangle {
+                    width: 200px;
+                    height: 60px;
+                    border-radius: 4px;
+                    background: pta.has-hover && !root.starting ? Theme.accent.brighter(7%) : Theme.accent;
+                    opacity: root.starting ? 0.6 : 1;
+                    // A slow pulse of the accent round it, while it waits to be pressed.
+                    drop-shadow-blur: root.starting || Theme.reduced-motion ? 14px : 6px + 14px * Math.abs(Math.sin(animation-tick() / 2800ms * 180deg));
+                    drop-shadow-color: Theme.accent.with-alpha(0.35);
+                    forward-focus: pfs;
+                    accessible-role: button;
+                    accessible-label: root.starting ? "Starting" : "Play";
+                    accessible-enabled: !root.starting;
+                    accessible-action-default => { if !root.starting { root.play(); } }
+                    pfs := FocusScope {
+                        key-pressed(e) => {
+                            if !root.starting && (e.text == Key.Return || e.text == " ") { root.play(); return accept; }
+                            reject
+                        }
+                    }
+                    pta := TouchArea { enabled: !root.starting; mouse-cursor: pointer; clicked => { root.play(); } }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        if root.starting: VerticalLayout { alignment: center; Spinner { size: 18px; } }
+                        if !root.starting: VerticalLayout {
+                            alignment: center;
+                            Path {
+                                width: 18px;
+                                height: 18px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: Icons.play;
+                                fill: Theme.on-accent;
+                            }
+                        }
+                        Text {
+                            text: root.starting ? "STARTING" : "PLAY";
+                            vertical-alignment: center;
+                            font-family: Type.cond;
+                            font-weight: 700;
+                            font-size: 22px;
+                            letter-spacing: 1.8px;
+                            color: Theme.on-accent;
+                        }
+                    }
+                    Rectangle {
+                        x: -3px;
+                        y: -3px;
+                        width: parent.width + 6px;
+                        height: parent.height + 6px;
+                        border-radius: 7px;
+                        border-width: pfs.has-focus ? 2px : 0px;
+                        border-color: Theme.fg;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    Text {
+                        text: (root.info.dx9 ? "DirectX 9" : "DirectX 11") + (root.info.skip-intro ? " · intro videos skipped" : "");
+                        color: Theme.muted;
+                    }
+                    if root.said != "": Text { text: root.said; color: root.failed ? Theme.bad : Theme.fg; wrap: word-wrap; }
+                }
+            }
+
+            // The server's news.
+            HorizontalLayout {
+                padding-top: 34px;
+                padding-bottom: 12px;
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    text: "NEWS";
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: 18px;
+                    letter-spacing: 0.4px;
+                    color: Theme.fg;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 6px;
+                    background: rta.has-hover && !root.news-loading ? Theme.control : transparent;
+                    accessible-role: button;
+                    accessible-label: "Refresh the news";
+                    accessible-action-default => { if !root.news-loading { root.refresh(); } }
+                    rta := TouchArea { enabled: !root.news-loading; mouse-cursor: pointer; clicked => { root.refresh(); } }
+                    Icon {
+                        size: 16px;
+                        commands: Icons.refresh;
+                        color: rta.has-hover ? Theme.fg : Theme.muted;
+                        transform-rotation: root.news-loading && !Theme.reduced-motion ? 360deg * Math.mod(animation-tick() / 800ms, 1) : 0deg;
+                    }
+                }
+            }
+            if root.news.length == 0: Text { text: root.news-note; color: Theme.muted; wrap: word-wrap; }
+            VerticalLayout {
+                spacing: 10px;
+                for item in root.news: Card {
+                    min-height: nl.preferred-height;
+                    Rectangle { x: 0; width: 2px; background: Theme.accent-dim; border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+                    nl := VerticalLayout {
+                        padding: 14px;
+                        padding-left: 18px;
+                        padding-right: 18px;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Caps { text: item.date; vertical-alignment: center; }
+                            if item.tag != "": Tag { text: item.tag; }
+                        }
+                        Text { text: item.title; color: Theme.fg; font-weight: 600; font-size: 16px; wrap: word-wrap; }
+                        Text { text: item.body; color: Theme.soft; wrap: word-wrap; }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                padding-top: 34px;
+                Text {
+                    text: root.info.game-dir;
+                    font-family: Type.mono;
+                    font-size: 11.5px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

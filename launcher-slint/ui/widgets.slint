@@ -1,0 +1,530 @@
+// The launcher's controls: buttons, text fields, check boxes, tabs, a drop-down, the spinner,
+// cards and labels. Each works by mouse and keyboard (Tab to it, Enter or Space to press) and
+// names itself for screen readers; the focus ring shows round the one with the focus.
+
+import { Theme, Type } from "theme.slint";
+
+// A focus ring round its parent, while `on`.
+component Ring inherits Rectangle {
+    in property <bool> on;
+    in property <length> radius: 4px;
+    x: -3px;
+    y: -3px;
+    border-radius: radius + 3px;
+    border-width: on ? 2px : 0px;
+    border-color: Theme.accent;
+}
+
+// The spinner: the accent turning on a dim ring.
+export component Spinner inherits Rectangle {
+    in property <length> size: 14px;
+    width: size;
+    height: size;
+    accessible-role: progress-indicator;
+    Rectangle {
+        border-radius: size / 2;
+        border-width: 2px;
+        border-color: Theme.control-line;
+    }
+    Path {
+        width: size;
+        height: size;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 8 1 A 7 7 0 0 1 15 8";
+        stroke: Theme.accent;
+        stroke-width: 2px;
+        fill: transparent;
+        transform-rotation: Theme.reduced-motion ? 0deg : 360deg * Math.mod(animation-tick() / 800ms, 1);
+    }
+}
+
+// A button. kind: "primary" (the accent, one per screen), "ghost" (accent outline), "plain".
+// `big`: a screen's main action, in the titles' type and capitals.
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "plain";
+    in property <bool> enabled: true;
+    in property <bool> big: false;
+    in property <bool> busy: false;
+    callback clicked();
+    forward-focus: fs;
+
+    min-height: big ? 46px : 38px;
+    min-width: lay.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    background: kind == "primary" ? (ta.has-hover && enabled ? Theme.accent.brighter(7%) : Theme.accent)
+        : kind == "ghost" ? (ta.has-hover && enabled ? Theme.selected : transparent)
+        : (ta.has-hover && enabled ? Theme.control-hover : Theme.control);
+    border-width: 1px;
+    border-color: kind == "primary" ? Theme.accent : kind == "ghost" ? (ta.has-hover ? Theme.accent : Theme.accent-dim) : Theme.control-line;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: Theme.quick; }
+
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled && !busy { clicked(); } }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if root.enabled && !root.busy && (e.text == Key.Return || e.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled && !root.busy;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    lay := HorizontalLayout {
+        padding-left: big ? 26px : 16px;
+        padding-right: self.padding-left;
+        spacing: 8px;
+        alignment: center;
+        if busy: VerticalLayout { alignment: center; Spinner { size: 14px; } }
+        Text {
+            text: big ? root.text.to-uppercase() : root.text;
+            vertical-alignment: center;
+            font-family: big ? Type.cond : Type.sans;
+            letter-spacing: big ? 1.2px : 0px;
+            font-weight: big || kind == "primary" || kind == "ghost" ? 600 : 400;
+            font-size: big ? 16px : Type.body;
+            color: kind == "primary" ? Theme.on-accent : kind == "ghost" ? Theme.accent : Theme.fg;
+        }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A HUD label: Plex Mono caps, spaced.
+export component Caps inherits Text {
+    color: Theme.muted;
+    font-family: Type.mono;
+    font-size: Type.caps;
+    letter-spacing: 1.6px;
+}
+
+// A small tag in the accent's outline ("MULTIPLAYER", "COMMUNITY TEST NETWORK").
+export component Tag inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.accent;
+    height: 18px;
+    width: t.preferred-width + 12px;
+    horizontal-stretch: 0;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: tint.with-alpha(0.4);
+    t := Text {
+        text: root.text.to-uppercase();
+        font-family: Type.mono;
+        font-size: 10.5px;
+        letter-spacing: 1.2px;
+        color: root.tint;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A status dot: "up" (good), "down" (bad), or asking (muted, blinking).
+export component Dot inherits Rectangle {
+    in property <string> tone: "asking";
+    width: 7px;
+    height: 7px;
+    border-radius: 3.5px;
+    background: tone == "up" ? Theme.good : tone == "down" ? Theme.bad : Theme.muted;
+    opacity: tone == "asking" && !Theme.reduced-motion ? 0.4 + 0.6 * Math.abs(Math.sin(animation-tick() / 1000ms * 180deg)) : 1;
+}
+
+// A panel: the surface with its edge; `edge` lights the left side in the accent (a step done).
+export component Card inherits Rectangle {
+    in property <bool> edge: false;
+    in property <bool> edged: false;
+    background: Theme.surface;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.line;
+    if edged: Rectangle {
+        x: 0;
+        width: 2px;
+        background: root.edge ? Theme.accent : Theme.control-line;
+        border-top-left-radius: 6px;
+        border-bottom-left-radius: 6px;
+        animate background { duration: Theme.calm; }
+    }
+    @children
+}
+
+// A card's heading: an optional step number, the title, and a note at the right.
+export component CardHead inherits HorizontalLayout {
+    in property <string> number;
+    in property <string> title;
+    in property <string> note;
+    spacing: 10px;
+    if number != "": Text {
+        text: root.number;
+        font-family: Type.mono;
+        font-size: 11px;
+        color: Theme.accent;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.title.to-uppercase();
+        font-family: Type.cond;
+        font-weight: 700;
+        font-size: 18px;
+        letter-spacing: 0.4px;
+        color: Theme.fg;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        accessible-role: AccessibleRole.text;
+    }
+    if note != "": Caps {
+        text: root.note.to-uppercase();
+        color: Theme.accent;
+        vertical-alignment: center;
+    }
+}
+
+// Running text that wraps: the soft second line by default.
+export component Para inherits Text {
+    wrap: word-wrap;
+    color: Theme.soft;
+    font-size: Type.body;
+}
+
+// A text field: one line, a placeholder, hidden text for a password.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> enabled: true;
+    in property <bool> mono: false;
+    in property <string> label;
+    callback edited(string);
+    callback accepted(string);
+    forward-focus: input;
+    height: 40px;
+    border-radius: 4px;
+    background: Theme.sunken;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.control-line;
+    opacity: enabled ? 1 : 0.55;
+    clip: true;
+    accessible-role: text-input;
+    accessible-label: label != "" ? label : placeholder;
+    accessible-value: secret ? "" : text;
+    TouchArea { mouse-cursor: MouseCursor.text; clicked => { input.focus(); } }
+    if text == "": Text {
+        x: 12px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 24px;
+        text: root.placeholder;
+        color: Theme.muted;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        vertical-alignment: center;
+        text <=> root.text;
+        enabled: root.enabled;
+        color: Theme.fg;
+        font-family: root.mono ? Type.mono : Type.sans;
+        font-size: root.mono ? 14px : Type.body;
+        selection-background-color: Theme.accent-dim;
+        selection-foreground-color: Theme.fg;
+        input-type: root.secret ? InputType.password : InputType.text;
+        single-line: true;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
+    }
+}
+
+// A labelled field: its HUD label above it.
+export component LabelledField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted(string);
+    spacing: 6px;
+    alignment: start;
+    horizontal-stretch: 1;
+    // Side by side, each takes an equal share.
+    preferred-width: 100px;
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        Caps { text: root.label.to-uppercase(); }
+        if hint != "": Text { text: root.hint; color: Theme.muted; font-size: 12px; overflow: elide; }
+    }
+    Field {
+        text <=> root.text;
+        label: root.label;
+        placeholder: root.placeholder;
+        secret: root.secret;
+        enabled: root.enabled;
+        edited(t) => { root.edited(t); }
+        accepted(t) => { root.accepted(t); }
+    }
+}
+
+// A check box with its label beside it, wrapping.
+export component Check inherits Rectangle {
+    in property <string> text;
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    forward-focus: fs;
+    min-height: max(26px, label.preferred-height + 4px);
+    opacity: enabled ? 1 : 0.5;
+    accessible-role: checkbox;
+    accessible-label: text;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { toggle(); }
+    function toggle() {
+        if !enabled { return; }
+        checked = !checked;
+        toggled(checked);
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { toggle(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { toggle(); } }
+    box := Rectangle {
+        x: 0;
+        y: 4px;
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        border-width: checked ? 0px : 1.5px;
+        border-color: ta.has-hover ? Theme.accent-dim : Theme.control-line;
+        background: checked ? Theme.accent : Theme.sunken;
+        animate background { duration: Theme.quick; }
+        Path {
+            visible: checked;
+            width: 12px;
+            height: 12px;
+            commands: "M 2 6 L 5 9 L 10 3";
+            viewbox-width: 12;
+            viewbox-height: 12;
+            stroke: Theme.on-accent;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+        Ring { on: fs.has-focus; radius: 3px; width: parent.width + 6px; height: parent.height + 6px; }
+    }
+    label := Text {
+        x: 28px;
+        y: 2px;
+        width: parent.width - 28px;
+        text: root.text;
+        wrap: word-wrap;
+        color: Theme.soft;
+        font-size: Type.body;
+    }
+}
+
+// A choice between two or three, as tabs in a box ("Make one" / "Sign in").
+export component Tabs inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current;
+    callback chosen(int);
+    height: 34px;
+    width: lay.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.control-line;
+    clip: true;
+    lay := HorizontalLayout {
+        for item[i] in root.model: Rectangle {
+            min-width: t.preferred-width + 28px;
+            background: i == root.current ? Theme.selected : ta.has-hover ? Theme.control : transparent;
+            accessible-role: tab;
+            accessible-label: item;
+            accessible-checked: i == root.current;
+            accessible-action-default => { root.current = i; root.chosen(i); }
+            forward-focus: fs;
+            fs := FocusScope {
+                key-pressed(e) => {
+                    if e.text == " " || e.text == Key.Return { root.current = i; root.chosen(i); return accept; }
+                    reject
+                }
+            }
+            ta := TouchArea { mouse-cursor: pointer; clicked => { root.current = i; root.chosen(i); } }
+            if i > 0: Rectangle { x: 0; width: 1px; background: Theme.control-line; }
+            t := Text {
+                text: item;
+                color: i == root.current ? Theme.accent : Theme.soft;
+                font-weight: i == root.current ? 600 : 400;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle { border-width: fs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+        }
+    }
+}
+
+// One of a few choices, drawn as a card to pick (the server: the community network, or another).
+export component Option inherits Rectangle {
+    in property <string> title;
+    in property <string> sub;
+    in property <bool> on;
+    callback clicked();
+    forward-focus: fs;
+    min-height: lay.preferred-height;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: on ? Theme.accent-dim : Theme.control-line;
+    background: on ? Theme.selected : ta.has-hover ? Theme.control : transparent;
+    animate background { duration: Theme.quick; }
+    accessible-role: radio-button;
+    accessible-label: title;
+    accessible-description: sub;
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    lay := HorizontalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 3px;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 1.5px;
+                border-color: root.on ? Theme.accent : Theme.control-line;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: root.on ? Theme.accent : transparent;
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            Text { text: root.title; color: Theme.fg; font-weight: 600; wrap: word-wrap; }
+            if root.sub != "": Text { text: root.sub; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+            @children
+        }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A drop-down of plain choices, in the launcher's own look (the overlay's key).
+export component Choice inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current: 0;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback chosen(int);
+    forward-focus: fs;
+    height: 32px;
+    width: 88px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.control-line;
+    background: ta.has-hover && enabled ? Theme.control : Theme.sunken;
+    opacity: enabled ? 1 : 0.5;
+    accessible-role: combobox;
+    accessible-label: label;
+    accessible-value: model[current];
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { menu.show(); } }
+    function step(by: int) {
+        current = Math.mod(current + by + model.length, model.length);
+        chosen(current);
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.DownArrow { step(1); return accept; }
+            if e.text == Key.UpArrow { step(-1); return accept; }
+            if e.text == " " || e.text == Key.Return { menu.show(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { menu.show(); } }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text { text: model[current]; vertical-alignment: center; color: Theme.fg; font-family: Type.mono; font-size: Type.small; horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Path {
+                width: 10px;
+                height: 6px;
+                viewbox-width: 10;
+                viewbox-height: 6;
+                commands: "M 1 1 L 5 5 L 9 1";
+                stroke: Theme.soft;
+                stroke-width: 1.5px;
+                fill: transparent;
+            }
+        }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+    menu := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        Rectangle {
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            border-radius: 4px;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000066;
+            VerticalLayout {
+                padding: 4px;
+                for item[i] in root.model: Rectangle {
+                    height: 26px;
+                    border-radius: 3px;
+                    background: ita.has-hover ? Theme.control-hover : (i == root.current ? Theme.selected : transparent);
+                    ita := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current = i;
+                            root.chosen(i);
+                        }
+                    }
+                    Text {
+                        x: 8px;
+                        text: item;
+                        vertical-alignment: center;
+                        color: i == root.current ? Theme.accent : Theme.fg;
+                        font-family: Type.mono;
+                        font-size: Type.small;
+                    }
+                }
+            }
+        }
+    }
+}

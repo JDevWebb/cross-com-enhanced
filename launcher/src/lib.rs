@@ -1,4 +1,4 @@
-//! The launcher's work, without its window (`launcher-tauri` is the window): finding the game,
+//! The launcher's work, without its window (`launcher-slint` is the window): finding the game,
 //! installing Cross-Com's client into it (and taking it out again), its settings, talking to a
 //! server, and sending it the game's logs.
 

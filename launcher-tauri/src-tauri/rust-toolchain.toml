@@ -1,8 +1,0 @@
-[toolchain]
-# quazal uses nightly features (seek_stream_len, cursor_split and others); the same toolchain as 5th Echelon Enhanced.
-channel = "nightly-2025-10-15"
-components = ["rustfmt"]
-targets = [
-    # for the client DLLs the game loads
-    "i686-pc-windows-msvc",
-]

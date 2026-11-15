@@ -1,5 +1,5 @@
 //! What the overlay draws: the panel and the toasts, in the launcher's colours
-//! (`launcher-tauri/ui/src/theme.css`) and fonts (IBM Plex).
+//! (`launcher-slint/ui/theme.slint`) and fonts (IBM Plex).
 //!
 //! Sizes are designed for 1080p and scale with the screen's height. A panic in here would end
 //! the game (it runs inside the game's `Present`), so each frame's drawing is caught, and after
@@ -632,10 +632,10 @@ fn add_fonts(ctx: &mut imgui::Context, scale: f32) -> Fonts {
             config: None,
         }])
     };
-    add(include_bytes!("../../../../launcher-tauri/ui/public/fonts/IBMPlexSans-Regular.ttf"), BODY_PX);
-    let strong = add(include_bytes!("../../../../launcher-tauri/ui/public/fonts/IBMPlexSans-SemiBold.ttf"), BODY_PX);
-    let small = add(include_bytes!("../../../../launcher-tauri/ui/public/fonts/IBMPlexSans-SemiBold.ttf"), SMALL_PX);
-    let heading = add(include_bytes!("../../../../launcher-tauri/ui/public/fonts/IBMPlexSansCondensed-Bold.ttf"), HEADING_PX);
+    add(include_bytes!("../../../../assets/fonts/IBMPlexSans-Regular.ttf"), BODY_PX);
+    let strong = add(include_bytes!("../../../../assets/fonts/IBMPlexSans-SemiBold.ttf"), BODY_PX);
+    let small = add(include_bytes!("../../../../assets/fonts/IBMPlexSans-SemiBold.ttf"), SMALL_PX);
+    let heading = add(include_bytes!("../../../../assets/fonts/IBMPlexSansCondensed-Bold.ttf"), HEADING_PX);
     Fonts { strong, small, heading }
 }
 

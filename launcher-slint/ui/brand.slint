@@ -1,0 +1,41 @@
+// Cross-Com Enhanced's mark (docs/logo.svg): four units in a cross, linked through the lit one in
+// the middle, the squad connected. Drawn here rather than loaded, so it's sharp at every size.
+
+import { Theme } from "theme.slint";
+
+export component CrossMark inherits Rectangle {
+    in property <length> size: 32px;
+    // On its rounded square (Play's hero, the side menu); without it, the units alone (the
+    // title bar).
+    in property <bool> tile: true;
+    // A soft glow of the accent round it.
+    in property <bool> glow: false;
+    width: size;
+    height: size;
+    accessible-role: image;
+    accessible-label: "Cross-Com Enhanced";
+
+    // Without the tile the units fill the square, centred.
+    property <float> k: tile ? 1 : 1.5;
+    property <length> o: (50 - 50 * k) * size / 100;
+    property <length> unit: 14 * size / 100 * k;
+
+    if tile: Rectangle {
+        x: 4 * size / 100;
+        y: 4 * size / 100;
+        width: 92 * size / 100;
+        height: 92 * size / 100;
+        border-radius: 18 * size / 100;
+        background: #121b20;
+        border-width: max(1px, 2 * size / 100);
+        border-color: #263540;
+        drop-shadow-blur: glow ? 22 * size / 100 : 0px;
+        drop-shadow-color: glow ? #5fd0e64d : transparent;
+    }
+    // Top, right, bottom, left, then the lit centre.
+    Rectangle { x: o + 43 * size / 100 * k; y: o + 19 * size / 100 * k; width: unit; height: unit; border-radius: unit / 7; background: #536a75; }
+    Rectangle { x: o + 67 * size / 100 * k; y: o + 43 * size / 100 * k; width: unit; height: unit; border-radius: unit / 7; background: #8ea3ad; }
+    Rectangle { x: o + 43 * size / 100 * k; y: o + 67 * size / 100 * k; width: unit; height: unit; border-radius: unit / 7; background: #6b838e; }
+    Rectangle { x: o + 19 * size / 100 * k; y: o + 43 * size / 100 * k; width: unit; height: unit; border-radius: unit / 7; background: #3f525c; }
+    Rectangle { x: o + 43 * size / 100 * k; y: o + 43 * size / 100 * k; width: unit; height: unit; border-radius: unit / 7; background: Theme.accent; }
+}

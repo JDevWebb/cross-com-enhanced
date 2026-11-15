@@ -1,0 +1,32 @@
+// What the launcher hands the screens (ui.rs fills them in).
+
+// How things stand.
+export struct InfoView {
+    // The game's folder, or "".
+    game-dir: string,
+    // Cross-Com's client in the game: "none" (no game), "no", "yes" or "update".
+    client: string,
+    // Whether this launcher carries the client (a release build does).
+    carries-client: bool,
+    // The server set up, or "", and whether it's the community test network.
+    server: string,
+    community: bool,
+    account: string,
+    skip-intro: bool,
+    dx9: bool,
+    overlay: bool,
+    // F1 to F12, as 0 to 11.
+    overlay-key: int,
+    send-logs: bool,
+    // Everything's set: Play can go.
+    ready: bool,
+}
+
+// One of the server's news items.
+export struct NewsRow {
+    date: string,
+    title: string,
+    body: string,
+    // The Ghost Feed view it's shown in ("Multiplayer"), or "".
+    tag: string,
+}

@@ -1,0 +1,320 @@
+// The guided setup: the game's folder (found on its own when it can be), the server (the
+// community test network unless the player chooses another, checked), the account (made here,
+// or an existing one, checked with the server) and the game options; then one press sets it all
+// up.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Check, Tabs, Option, Spinner } from "widgets.slint";
+
+// The account's fields and notes, as Setup and Settings both have them.
+export component AccountForm inherits VerticalLayout {
+    // Make an account (true) or sign in to one.
+    in-out property <bool> new-account;
+    in-out property <string> name;
+    in-out property <string> password;
+    in-out property <string> again;
+    in-out property <string> code;
+    in property <bool> enabled: true;
+    // "Make one" first (Setup) or "Sign in" first (Settings).
+    in property <bool> make-first: true;
+    callback changed();
+    callback accepted();
+    spacing: 12px;
+    alignment: start;
+    Tabs {
+        model: root.make-first ? ["Make one", "Sign in"] : ["Sign in", "Make an account"];
+        current: root.make-first == root.new-account ? 0 : 1;
+        chosen(i) => {
+            root.new-account = root.make-first == (i == 0);
+            root.changed();
+        }
+    }
+    HorizontalLayout {
+        spacing: 12px;
+        LabelledField {
+            label: "Name";
+            text <=> root.name;
+            enabled: root.enabled;
+            edited => { root.changed(); }
+        }
+        LabelledField {
+            label: "Password";
+            secret: true;
+            text <=> root.password;
+            enabled: root.enabled;
+            edited => { root.changed(); }
+            accepted => { if !root.new-account { root.accepted(); } }
+        }
+    }
+    if root.new-account: HorizontalLayout {
+        spacing: 12px;
+        LabelledField {
+            label: "Password again";
+            secret: true;
+            text <=> root.again;
+            enabled: root.enabled;
+            edited => { root.changed(); }
+        }
+        LabelledField {
+            label: "Sign-up code";
+            hint: "(if the server has one)";
+            text <=> root.code;
+            enabled: root.enabled;
+            edited => { root.changed(); }
+        }
+    }
+    Text {
+        text: root.new-account
+            ? "Letters, digits, \"-\", \"_\" and \".\" for your name, which other players see. Use a password you use nowhere else."
+            : "The server checks your name and password before the game uses them.";
+        color: Theme.muted;
+        font-size: Type.small;
+        wrap: word-wrap;
+    }
+    Text {
+        text: "Your password goes to the server over HTTPS. Only a server set up by its IP address on your own network or VPN, with no HTTPS at all, gets it unencrypted.";
+        color: Theme.muted;
+        font-size: Type.small;
+        wrap: word-wrap;
+    }
+}
+
+export component SetupScreen inherits Rectangle {
+    // No setup yet: the first run.
+    in property <bool> first;
+    // The game.
+    in property <string> game-dir;
+    in property <bool> game-finding;
+    in property <string> game-error;
+    // The server: the community test network, or the one typed.
+    in property <string> community-host;
+    in property <string> community-name;
+    in-out property <bool> community: true;
+    in-out property <string> server-typed;
+    // Where the server says the game will sign in, once it answered; or why it didn't.
+    in property <string> server-ok;
+    in property <bool> server-checking;
+    in property <string> server-error;
+    // The account.
+    in-out property <bool> new-account: true;
+    in-out property <string> name;
+    in-out property <string> password;
+    in-out property <string> again;
+    in-out property <string> code;
+    // The options.
+    in-out property <bool> skip-intro: true;
+    in-out property <bool> dx9;
+    // The account's filled in as the server takes it.
+    in property <bool> account-done;
+    // What's missing ("" when it can go), the press, and why it failed.
+    in property <string> missing;
+    in property <bool> busy;
+    in property <string> error;
+    callback choose-game();
+    callback check-server();
+    callback changed();
+    callback run();
+    callback cancel();
+
+    ScrollView {
+        VerticalLayout {
+            padding-left: 40px;
+            padding-right: 40px;
+            padding-top: 30px;
+            padding-bottom: 28px;
+            spacing: 0px;
+            alignment: start;
+
+            Caps { text: root.first ? "FIRST DEPLOYMENT" : "SET UP"; color: Theme.accent; }
+            Text {
+                text: (root.first ? "Get Cross-Com ready" : "Game, server and account").to-uppercase();
+                font-family: Type.cond;
+                font-weight: 700;
+                font-size: 40px;
+                color: Theme.fg;
+                accessible-role: AccessibleRole.text;
+            }
+            VerticalLayout {
+                padding-top: 4px;
+                padding-bottom: 22px;
+                Para { text: "Four steps, then the launcher does the rest: it installs Cross-Com's client into the game (keeping the game's own files), makes your account and writes your settings."; }
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: stretch;
+                // The game and the server.
+                VerticalLayout {
+                    spacing: 14px;
+                    // Two equal columns, between the page's sides (40 px) and the gap.
+                    width: (root.width - 94px) / 2;
+                    alignment: start;
+                    Card {
+                        edged: true;
+                        edge: root.game-dir != "";
+                        min-height: gl.preferred-height;
+                        gl := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { number: "01"; title: "The game"; note: root.game-dir != "" ? "Found" : ""; }
+                            if root.game-finding: HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                VerticalLayout { alignment: center; Spinner {} }
+                                Text { text: "Looking for Ghost Recon: Future Soldier…"; color: Theme.muted; }
+                            }
+                            if !root.game-finding && root.game-dir != "": Text {
+                                text: root.game-dir;
+                                font-family: Type.mono;
+                                font-size: 12.5px;
+                                color: Theme.soft;
+                                wrap: char-wrap;
+                            }
+                            if !root.game-finding && root.game-dir == "": Para {
+                                text: "Not found where Ubisoft Connect or Steam install it. Choose the folder that holds \"Future Soldier DX11.exe\".";
+                            }
+                            if root.game-error != "": Para { text: root.game-error; color: Theme.bad; }
+                            HorizontalLayout {
+                                alignment: start;
+                                Btn {
+                                    text: root.game-dir != "" ? "Choose another folder" : "Choose folder";
+                                    enabled: !root.busy && !root.game-finding;
+                                    clicked => { root.choose-game(); }
+                                }
+                            }
+                        }
+                    }
+                    Card {
+                        edged: true;
+                        edge: root.server-ok != "";
+                        min-height: sl.preferred-height;
+                        sl := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { number: "02"; title: "The server"; note: root.server-ok != "" ? "Answering" : ""; }
+                            Option {
+                                title: root.community-name;
+                                sub: root.community-host + " · open to everyone testing Cross-Com. Accounts and stats may be reset between test builds.";
+                                on: root.community;
+                                clicked => {
+                                    if !root.community {
+                                        root.community = true;
+                                        root.changed();
+                                        root.check-server();
+                                    }
+                                }
+                            }
+                            Option {
+                                title: "Another server";
+                                sub: "A group's own server, or one on your network.";
+                                on: !root.community;
+                                clicked => {
+                                    if root.community {
+                                        root.community = false;
+                                        root.changed();
+                                        if root.server-typed != "" { root.check-server(); }
+                                    }
+                                }
+                                if !root.community: HorizontalLayout {
+                                    padding-top: 8px;
+                                    spacing: 10px;
+                                    Field {
+                                        text <=> root.server-typed;
+                                        label: "The server's address";
+                                        placeholder: "play.example.org or 192.168.1.20";
+                                        mono: true;
+                                        enabled: !root.busy;
+                                        edited => { root.changed(); }
+                                        accepted => { root.check-server(); }
+                                    }
+                                    Btn {
+                                        text: "Check";
+                                        busy: root.server-checking;
+                                        enabled: root.server-typed != "" && !root.busy;
+                                        clicked => { root.check-server(); }
+                                    }
+                                }
+                            }
+                            if root.server-checking: HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                VerticalLayout { alignment: center; Spinner {} }
+                                Text { text: "Asking the server…"; color: Theme.muted; }
+                            }
+                            if !root.server-checking && root.server-ok != "": Text {
+                                text: "The game will sign in at " + root.server-ok + ".";
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            if !root.server-checking && root.server-error != "": Para { text: root.server-error; color: Theme.bad; }
+                        }
+                    }
+                }
+                // The account and the options.
+                VerticalLayout {
+                    spacing: 14px;
+                    // Two equal columns, between the page's sides (40 px) and the gap.
+                    width: (root.width - 94px) / 2;
+                    alignment: start;
+                    Card {
+                        edged: true;
+                        edge: root.account-done;
+                        min-height: al.preferred-height;
+                        al := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 12px;
+                            CardHead { number: "03"; title: "Your account"; }
+                            AccountForm {
+                                new-account <=> root.new-account;
+                                name <=> root.name;
+                                password <=> root.password;
+                                again <=> root.again;
+                                code <=> root.code;
+                                enabled: !root.busy;
+                                changed => { root.changed(); }
+                                accepted => { if root.missing == "" && !root.busy { root.run(); } }
+                            }
+                        }
+                    }
+                    Card {
+                        edged: true;
+                        edge: true;
+                        min-height: ol.preferred-height;
+                        ol := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 8px;
+                            CardHead { number: "04"; title: "Game options"; }
+                            Check { text: "Skip the intro videos"; checked <=> root.skip-intro; enabled: !root.busy; }
+                            Check { text: "Use DirectX 9 (for older graphics cards)"; checked <=> root.dx9; enabled: !root.busy; }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-top: 20px;
+                spacing: 12px;
+                alignment: start;
+                Btn {
+                    text: root.busy ? "Setting up…" : root.first ? "Set up and get ready" : "Save and set up";
+                    kind: "primary";
+                    big: true;
+                    busy: root.busy;
+                    enabled: root.missing == "" && !root.busy;
+                    clicked => { root.run(); }
+                }
+                if !root.first: Btn { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel(); } }
+                VerticalLayout {
+                    alignment: center;
+                    if root.missing != "" && !root.busy && root.error == "": Text { text: root.missing; color: Theme.muted; wrap: word-wrap; }
+                    if root.error != "": Text { text: root.error; color: Theme.bad; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}
