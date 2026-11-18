@@ -1,4 +1,4 @@
-//! The in-game overlay: a panel over the game (Server, News, Leaderboards, Account, Help), opened and closed
+//! The in-game overlay: a panel over the game (Server, Lobby, News, Leaderboards, Account, Help), opened and closed
 //! with the overlay key (`overlay_key`, F5 unless set), and toasts in the top-right corner when
 //! something changes (signed in, the server unreachable, news).
 //!

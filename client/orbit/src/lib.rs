@@ -13,6 +13,8 @@ mod crash;
 mod dll;
 #[cfg(any(test, windows))]
 mod late_signin;
+#[cfg(any(test, windows))]
+mod lobby;
 #[cfg(windows)]
 mod logs;
 #[cfg(windows)]
