@@ -11,8 +11,12 @@
 mod crash;
 #[cfg(windows)]
 mod dll;
+#[cfg(any(test, windows))]
+mod late_signin;
 #[cfg(windows)]
 mod logs;
+#[cfg(windows)]
+mod memory;
 #[cfg(windows)]
 mod net;
 #[cfg(all(windows, target_arch = "x86"))]
@@ -116,6 +120,8 @@ fn start() {
     #[cfg(target_arch = "x86")]
     crash::install();
     net::install();
+    #[cfg(target_arch = "x86")]
+    late_signin::install();
     if CONFIG.get().is_some_and(|c| c.skip_intro_videos) {
         video::install();
     }

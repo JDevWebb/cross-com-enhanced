@@ -6,7 +6,6 @@
 //! again. Its memory is only read and written through `ReadProcessMemory` / `WriteProcessMemory`,
 //! which fail (rather than crash the game) if the library goes away between a check and a write.
 
-use std::ffi::c_void;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -14,62 +13,20 @@ use crosscom_client_common::quick_match;
 use crosscom_client_common::quick_match::Patch;
 use log::info;
 use log::warn;
-use windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache;
-use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
-use windows_sys::Win32::System::Memory::VirtualProtect;
-use windows_sys::Win32::System::Memory::PAGE_EXECUTE_READWRITE;
-use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 /// How long to wait for the library the first time: it's loaded in the first seconds of the
 /// game's start.
 const WAIT: Duration = Duration::from_secs(180);
 /// How often the library and the minimums are looked at.
 const TICK: Duration = Duration::from_secs(1);
-/// A section that holds code.
-const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
-/// `len` bytes at `at` in this process, or `None` if they can't be read (not mapped).
-fn read(at: usize, len: usize) -> Option<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    let mut done = 0;
-    let ok = unsafe { ReadProcessMemory(GetCurrentProcess(), at as *const c_void, buf.as_mut_ptr().cast(), len, &raw mut done) };
-    (ok != 0 && done == len).then_some(buf)
-}
-
-fn read32(at: usize) -> Option<u32> {
-    read(at, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-fn write(at: usize, bytes: &[u8]) -> bool {
-    let mut done = 0;
-    let ok = unsafe { WriteProcessMemory(GetCurrentProcess(), at as *const c_void, bytes.as_ptr().cast(), bytes.len(), &raw mut done) };
-    ok != 0 && done == bytes.len()
-}
+use crate::memory::layout;
+use crate::memory::read;
+use crate::memory::write;
 
 /// The library's base address, if it's loaded.
 fn module() -> Option<usize> {
-    let name = format!("{}\0", quick_match::MODULE);
-    let module = unsafe { GetModuleHandleA(name.as_ptr()) };
-    (!module.is_null()).then_some(module as usize)
-}
-
-/// The module's code sections as loaded: (offset from its base, size), and its size in memory.
-fn layout(base: usize) -> Option<(Vec<(usize, usize)>, usize)> {
-    let nt = read32(base + 0x3c)? as usize;
-    let header = read(base + nt, 24 + 0x60)?;
-    let u16_at = |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
-    let image_size = u32::from_le_bytes(header[24 + 56..24 + 60].try_into().ok()?) as usize;
-    let sections = u16_at(6).min(96);
-    let table = read(base + nt + 24 + u16_at(20), sections * 40)?;
-    let code = table
-        .chunks_exact(40)
-        .map(|h| move |at: usize| u32::from_le_bytes([h[at], h[at + 1], h[at + 2], h[at + 3]]) as usize)
-        .filter(|field| field(36) as u32 & IMAGE_SCN_MEM_EXECUTE != 0)
-        .map(|field| (field(12), field(8)))
-        .collect();
-    Some((code, image_size))
+    crate::memory::module(quick_match::MODULE)
 }
 
 /// What was found in one load of the library: the code changes and the minimums' addresses.
@@ -111,20 +68,7 @@ fn plan(base: usize, players: u8) -> Result<Plan, String> {
 
 /// Makes the code changes; false if any couldn't be made.
 fn apply(base: usize, patches: &[Patch]) -> bool {
-    patches.iter().all(|patch| {
-        let at = base + patch.offset;
-        let len = patch.bytes.len();
-        let mut old = 0;
-        if unsafe { VirtualProtect(at as *const c_void, len, PAGE_EXECUTE_READWRITE, &raw mut old) } == 0 {
-            return false;
-        }
-        let written = write(at, &patch.bytes);
-        unsafe {
-            VirtualProtect(at as *const c_void, len, old, &raw mut old);
-            FlushInstructionCache(GetCurrentProcess(), at as *const c_void, len);
-        }
-        written
-    })
+    patches.iter().all(|patch| crate::memory::patch(base + patch.offset, &patch.bytes))
 }
 
 /// Whether the library at `base` still has the code changes (false once it's gone, or loaded
