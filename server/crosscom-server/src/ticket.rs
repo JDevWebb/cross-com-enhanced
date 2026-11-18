@@ -161,7 +161,9 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
         // The DLC packs Cross-Com's client says the game has (see `packs`).
         let packs = crate::packs::from_online_key(&login.online_key);
         self.packs.signed_in(pid, packs);
-        info!(logger, "{:?} signed in from {} (PID {pid:#x}, DLC packs {packs:#x?})", login.user_name, ci.address());
+        // On one line: `{:#x?}` would pretty-print the Option over three.
+        let packs_said = packs.map_or_else(|| "not reported (an older client)".to_owned(), |p| format!("{p:#x}"));
+        info!(logger, "{:?} signed in from {} (PID {pid:#x}, DLC packs {packs_said})", login.user_name, ci.address());
         ci.user_id = Some(pid);
         Ok(LoginExResponse {
             return_value: QResult::Ok,

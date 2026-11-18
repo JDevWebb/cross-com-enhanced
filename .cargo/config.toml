@@ -1,4 +1,8 @@
-# The client DLLs load into a 2012 game: link the C runtime into them, so players don't need a
-# recent Visual C++ redistributable installed.
+# Link the C runtime into everything built for Windows, so players don't need a Visual C++
+# redistributable installed: the client DLLs load into a 2012 game, and the launcher has to start
+# on a fresh Windows (a clean Windows 11 has no vcruntime140.dll).
 [target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

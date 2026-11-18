@@ -508,7 +508,12 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
                 if after.game_dir().is_some_and(|dir| crosscom_launcher::logs::wait_for_game(&dir)) {
                     exit = None;
                 }
-                let _ = weak.upgrade_in_event_loop(move |w| send_logs(&w, &after, exit));
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    // "The game is starting." no longer holds once it has ended.
+                    w.set_play_said(s(""));
+                    w.set_play_failed(false);
+                    send_logs(&w, &after, exit);
+                });
             });
             Ok::<_, String>(said)
         },
