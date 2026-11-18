@@ -6,8 +6,9 @@
 //! The answer is every world of those modes on the base maps and those packs.
 //!
 //! Two numberings meet here. A world's mode is the game's mode list: 1 Stockade, 2 Conflict,
-//! 3 Decoy, 4 Saboteur, 5 Siege, 6 Takeover, 7 Team Deathmatch. The category uses the menu's
-//! numbering (the session's property 116), `1 << (n + 2)`: 2 Conflict, 3 Decoy, 4 Saboteur,
+//! 3 Decoy, 4 Saboteur, 5 Siege, 6 Takeover, 7 Team Deathmatch; a session's property 116 uses
+//! this one too (seen 2026-11-18: Stockade lobbies 1, Takeover 6). The category uses the menu's
+//! numbering, `1 << (n + 2)`: 2 Conflict, 3 Decoy, 4 Saboteur,
 //! 5 Siege, 6 Stockade, 7 Takeover, 8 Guerrilla. Seen from the game (2026-11-13): Conflict 0x10,
 //! Decoy 0x20, Stockade 0x100, Takeover 0x200.
 //!

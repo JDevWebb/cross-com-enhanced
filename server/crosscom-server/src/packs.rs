@@ -20,10 +20,12 @@ pub const ARCTIC: u32 = 0x8000;
 pub const KHYBER: u32 = 0x1_0000;
 const PACK_BITS: u32 = ARCTIC | KHYBER;
 
-/// Session property 116: the mode, in the menu's numbering (see `maps`).
+/// Session property 116: the mode, in the game's own numbering, as its worlds record it (see
+/// `maps::mode`): seen in game (2026-11-18), Stockade lobbies are 1 and Takeover lobbies 6, the
+/// map list asking for their categories (0x100, 0x200) at the same time.
 pub const MODE: u32 = 116;
-const STOCKADE: u32 = 6;
-const TAKEOVER: u32 = 7;
+const STOCKADE: u32 = crate::maps::mode::STOCKADE;
+const TAKEOVER: u32 = crate::maps::mode::TAKEOVER;
 
 /// How many players and lobbies are remembered: more than a server has at once (each player has
 /// one entry, replaced at each sign-in).
@@ -130,6 +132,15 @@ impl Packs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_as_the_game_sends_them() {
+        // Property 116 as seen from the game (2026-11-18): a Takeover lobby is 6, a Stockade one 1.
+        assert_eq!(needed(None, Some(6)), KHYBER, "Takeover needs Khyber Strike");
+        assert_eq!(needed(None, Some(1)), ARCTIC, "Stockade needs Arctic Strike");
+        assert_eq!(needed(None, Some(2)), 0, "Conflict needs nothing");
+        assert_eq!(needed(None, Some(5)), 0, "Siege needs nothing");
+    }
 
     #[test]
     fn reads_the_packs_the_client_adds_to_the_cd_key() {

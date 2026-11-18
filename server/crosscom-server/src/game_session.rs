@@ -42,6 +42,17 @@ fn gone(pid: u32) -> bool {
     quazal::last_heard(pid).is_none_or(|t| t.elapsed() > GONE_AFTER)
 }
 
+/// How long a host's game may have been silent and its lobby still be offered. Longer than
+/// [`GONE_AFTER`]: a search mustn't miss a live host between two pings. A host whose game has gone
+/// (it crashed, or its PC lost the connection) keeps its listing for host migration, but nobody
+/// new is sent to it.
+const OFFERED_WHILE_HEARD: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether `pid`'s game was heard from lately enough for its lobby to be offered.
+fn heard_lately(pid: u32) -> bool {
+    quazal::last_heard(pid).is_some_and(|t| t.elapsed() < OFFERED_WHILE_HEARD)
+}
+
 /// Results a search returns at most, and players one invitation may go to.
 const MAX_RESULTS: usize = 100;
 const MAX_RECIPIENTS: usize = 16;
@@ -226,7 +237,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let pid = player(ci)?;
         let query = &request.game_session_query;
         // Only lobbies the player's game can load: their packs and their mode's (see `packs`).
-        let playable = |s: &crate::sessions::Session| s.host != pid && self.packs.offer(pid, s.host, s.attribute(crate::packs::MODE));
+        let playable = |s: &crate::sessions::Session| s.host != pid && heard_lately(s.host) && self.packs.offer(pid, s.host, s.attribute(crate::packs::MODE));
         let found = self.sessions.find_where(query.type_id, &properties(&query.parameters), MAX_RESULTS, playable);
         // The game joins a session it found by reaching its host (a NAT probe), who then adds
         // it. Being offered a session gives nothing yet; reaching for its host is the choice

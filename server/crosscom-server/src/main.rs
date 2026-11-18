@@ -253,20 +253,22 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     // The DLC packs players say they have (at sign-in, on the auth server) and their lobbies use
     // (on the secure server): searches go by them.
     let packs = Arc::new(packs::Packs::default());
+    // The game sessions (secure server); the auth server takes out a restarted host's lobbies.
+    let sessions = Arc::new(sessions::Sessions::default());
 
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
         spawn("auth", logger.clone(), {
             let accounts = Arc::clone(&accounts);
             let packs = Arc::clone(&packs);
+            let sessions = Arc::clone(&sessions);
             move |logger| {
                 run_server(&logger, &auth, None, |handler| {
-                    handler.register_protocol(ticket::new_protocol(accounts, failed_sign_ins, packs));
+                    handler.register_protocol(ticket::new_protocol(accounts, failed_sign_ins, packs, sessions));
                 })
             }
         }),
         spawn("secure", logger.clone(), move |logger| {
-            let sessions = Arc::new(sessions::Sessions::default());
             run_server(&logger, &secure, Some(online), |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
                 handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
