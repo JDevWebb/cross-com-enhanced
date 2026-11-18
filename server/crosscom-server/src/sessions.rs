@@ -79,6 +79,10 @@ pub const PRIVATE_TAKEN: u32 = 6;
 /// own. A search may be offered a lobby whose packs it has: not only one with the same packs, or
 /// players with different packs would never meet.
 pub const PACKS: u32 = 115;
+/// A Quick Match's size, as the game made it (12, or 8 in the smaller size), and as a search asks
+/// for it. A host may make its lobbies smaller (the overlay's most players): such a lobby is offered
+/// to searches for its mode's size too.
+pub const SIZE: u32 = 114;
 
 impl Session {
     pub fn attribute(&self, id: u32) -> Option<u32> {
@@ -99,6 +103,7 @@ impl Session {
         parameters.iter().all(|&(id, value)| match id {
             PUBLIC_SLOTS => free >= value.max(1),
             PACKS => self.attribute(id).is_some_and(|lobby| lobby & !value == 0),
+            SIZE => self.attribute(id).is_some_and(|lobby| lobby <= value),
             _ => self.attribute(id) == Some(value),
         })
     }
@@ -662,6 +667,18 @@ mod tests {
         sessions.remove(key, &[13]).unwrap();
         let props = sessions.get(key).unwrap().properties();
         assert_eq!(&props[2..], &[(5, 2), (6, 1)]);
+    }
+
+    #[test]
+    fn a_smaller_lobby_is_offered_to_searches_for_its_size() {
+        let sessions = Sessions::default();
+        let small = sessions.create(10, 1, &[(7, 0), (3, 4), (4, 0), (116, 2), (114, 4)]).unwrap();
+        let search = [(3, 1), (116, 2), (114, 12)];
+        assert!(sessions.get(small).unwrap().matches(&search));
+        // Not a bigger one to a smaller search, and not once its own slots are taken.
+        assert!(!sessions.get(small).unwrap().matches(&[(3, 1), (116, 2), (114, 2)]));
+        sessions.add(small, &[11, 12, 13], &[]).unwrap();
+        assert!(!sessions.get(small).unwrap().matches(&search));
     }
 
     #[test]

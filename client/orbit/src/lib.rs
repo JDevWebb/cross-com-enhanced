@@ -124,6 +124,7 @@ fn start() {
     net::install();
     #[cfg(target_arch = "x86")]
     late_signin::install();
+    lobby::keep_sizes();
     if CONFIG.get().is_some_and(|c| c.skip_intro_videos) {
         video::install();
     }

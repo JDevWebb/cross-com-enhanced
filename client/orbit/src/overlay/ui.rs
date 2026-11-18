@@ -369,10 +369,15 @@ impl Overlay {
         }
     }
 
-    /// The lobby this game is in: its host sets how many players a Quick Match or squad room needs
-    /// before its countdown starts.
+    /// The lobby this game is in, and the lobbies it makes: how many players a Quick Match or
+    /// squad room it hosts needs before its countdown starts, and the most players its lobbies
+    /// take.
     fn lobby_page(&self, ui: &Ui) {
         use crate::lobby::Kind;
+        self.most_players(ui);
+        ui.spacing();
+        ui.separator();
+        ui.spacing();
         let Some(lobby) = crate::lobby::current() else {
             ui.text_wrapped("Host a Quick Match or a squad room to set how many players it needs before its countdown starts. Change it before the match starts.");
             return;
@@ -383,6 +388,7 @@ impl Overlay {
             Kind::SquadRoom => "Squad room",
         };
         self.row(ui, "Lobby", kind, FG);
+        self.row(ui, "Its most players", &lobby.max.to_string(), FG);
         if !lobby.kind.starts_at_minimum() {
             self.row(ui, "Players to start", "When the host launches it", FG);
         } else if lobby.host {
@@ -399,7 +405,28 @@ impl Overlay {
             (true, false) => "Only the lobby's host can change how many players it needs.",
             (false, _) => "A custom match, Guerrilla or co-op starts when its host launches it.",
         };
-        ui.text_colored(MUTED, note);
+        self.note(ui, note);
+    }
+
+    /// Muted text, wrapped to the page.
+    fn note(&self, ui: &Ui, text: &str) {
+        let _t = ui.push_style_color(StyleColor::Text, MUTED);
+        ui.text_wrapped(text);
+    }
+
+    /// The most players of the lobbies this game makes from now on.
+    fn most_players(&self, ui: &Ui) {
+        use crosscom_client_common::lobby_size::MOST;
+        let most = crate::lobby::most().unwrap_or(MOST);
+        if let Some(chosen) = self.stepper(ui, "most", "Most players", most, 1, MOST) {
+            crate::lobby::choose_most((chosen < MOST).then_some(chosen));
+        }
+        let note = if most < MOST {
+            format!("Lobbies you make from now on take at most {most} players (Guerrilla and co-op take 4 at most). A lobby's size is fixed when it's made: leave and make it again to change it.")
+        } else {
+            "Lobbies you make take as many players as the game's own sizes: 12 in a Quick Match, 4 in Guerrilla and co-op. A lobby's size is fixed when it's made.".to_owned()
+        };
+        self.note(ui, &note);
     }
 
     /// A label and a number with - and + beside it; the new number when one was pressed.

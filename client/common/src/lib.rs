@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod dlc;
+pub mod lobby_size;
 pub mod logging;
 pub mod quick_match;
 pub mod runs;

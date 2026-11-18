@@ -12,10 +12,14 @@
 //! lobby waits, and forgotten when its match starts or this game stops hosting it. Everything is
 //! read and written through `ReadProcessMemory`/`WriteProcessMemory`, which fail rather than fault.
 //!
-//! The record's "most players" isn't what limits a lobby (an invitation still joined one set to
-//! 1); it's only read, as the minimum's ceiling.
+//! The most players a lobby takes is chosen by the game as the lobby is made, and can't be
+//! changed after (the record's "most players" limits nothing: an invitation still joined one set
+//! to 1). So the host's choice of most players is the size of the lobbies it makes next
+//! (`crosscom_client_common::lobby_size`), kept in the game's data by a thread of its own.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 /// The network mode's object (the online mode's while in a lobby).
@@ -83,6 +87,43 @@ struct Chosen {
 }
 
 static CHOSEN: Mutex<Option<Chosen>> = Mutex::new(None);
+
+/// The most players of the lobbies this game makes, as its host chose (0: the game's own sizes).
+static MOST: AtomicU8 = AtomicU8::new(0);
+
+/// The most players chosen for the lobbies this game makes (`None`: the game's own).
+pub(crate) fn most() -> Option<u8> {
+    Some(MOST.load(Ordering::Relaxed)).filter(|&m| m != 0)
+}
+
+/// Chooses the most players of the lobbies this game makes from now on (`None`: the game's own).
+pub(crate) fn choose_most(most: Option<u8>) {
+    MOST.store(most.unwrap_or(0), Ordering::Relaxed);
+}
+
+/// One of the sizes the game makes lobbies with: its own value, and what was last written there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Size {
+    game: u8,
+    written: Option<u8>,
+}
+
+impl Size {
+    /// What to write, given the value there now and the choice; `self` is kept up to date. A
+    /// value not written here is the game's (it writes its data as the library loads).
+    fn next(&mut self, now: u8, most: Option<u8>) -> Option<u8> {
+        if self.written != Some(now) {
+            self.game = now;
+            self.written = None;
+        }
+        let wanted = crosscom_client_common::lobby_size::chosen(self.game, most);
+        if wanted == now {
+            return None;
+        }
+        self.written = (wanted != self.game).then_some(wanted);
+        Some(wanted)
+    }
+}
 
 /// The range the minimum may be set in: from 1 up to the most players.
 pub(crate) fn min_range(max: u8) -> (u8, u8) {
@@ -163,6 +204,57 @@ mod game {
 #[cfg(windows)]
 pub(crate) use game::*;
 
+/// Keeps the sizes the game makes lobbies with at the host's choice, in each load of the AI
+/// library, on a thread of its own.
+#[cfg(windows)]
+pub(crate) fn keep_sizes() {
+    use crosscom_client_common::lobby_size;
+    use log::info;
+    use log::warn;
+
+    std::thread::spawn(|| {
+        // The library's base, the sizes' addresses in it, and what each holds.
+        let mut load: Option<(usize, Vec<(usize, Size)>)> = None;
+        let mut said = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let Some(base) = crate::memory::module(crosscom_client_common::quick_match::MODULE) else {
+                load = None;
+                continue;
+            };
+            if load.as_ref().is_none_or(|(b, _)| *b != base) {
+                let found = crate::memory::code_sections(base).and_then(|sections| {
+                    sections
+                        .into_iter()
+                        .find_map(|(start, size)| lobby_size::sizes(&crate::memory::read(base + start, size)?).ok())
+                });
+                let Some(addresses) = found else {
+                    if crate::memory::module(crosscom_client_common::quick_match::MODULE) == Some(base) {
+                        warn!("The most players of hosted lobbies can't be set: a game build not known");
+                        return;
+                    }
+                    continue;
+                };
+                let sizes = addresses.iter().map(|&a| (a as usize, Size { game: 0, written: None })).collect();
+                load = Some((base, sizes));
+            }
+            let most = most();
+            if let Some((_, sizes)) = load.as_mut() {
+                for (at, size) in sizes.iter_mut() {
+                    let Some(now) = crate::memory::read(*at, 1).map(|b| b[0]) else { continue };
+                    if let Some(value) = size.next(now, most) {
+                        crate::memory::write(*at, &[value]);
+                    }
+                }
+            }
+            if most.is_some() && !said {
+                info!("Lobbies this game makes take at most {} players", most.unwrap_or_default());
+            }
+            said = most.is_some();
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +270,24 @@ mod tests {
         assert!(Kind::QuickMatch.starts_at_minimum());
         assert!(Kind::SquadRoom.starts_at_minimum());
         assert!(!Kind::Custom.starts_at_minimum());
+    }
+
+    #[test]
+    fn a_size_follows_the_choice_and_comes_back() {
+        let mut size = Size { game: 0, written: None };
+        // The game's 12, with no choice: left alone.
+        assert_eq!(size.next(12, None), None);
+        assert_eq!(size.next(12, Some(6)), Some(6));
+        // Ours, kept.
+        assert_eq!(size.next(6, Some(6)), None);
+        // The game wrote its data again (the library loaded again): set again.
+        assert_eq!(size.next(12, Some(6)), Some(6));
+        // The choice taken back: the game's own.
+        assert_eq!(size.next(6, None), Some(12));
+        assert_eq!(size.next(12, None), None);
+        // Never bigger than the game's.
+        let mut guerrilla = Size { game: 0, written: None };
+        assert_eq!(guerrilla.next(4, Some(6)), None);
     }
 
     #[test]
