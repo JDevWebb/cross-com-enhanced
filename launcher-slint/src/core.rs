@@ -309,6 +309,8 @@ impl Launcher {
         let (checked, sent) = account(&host, &config.username, &config.password, setup.new_account, &setup.code)?;
         game::install(&dir, &files)?;
         settings::save_client(&dir, &config, &overlay)?;
+        // Before the game first hosts: Windows' own prompt takes the focus from the fullscreen game.
+        let wall = firewall_note(crosscom_launcher::firewall::ensure(&dir));
         let mut prefs = self.prefs();
         prefs.game_dir = Some(dir);
         prefs.dx9 = setup.dx9;
@@ -318,7 +320,7 @@ impl Launcher {
             (false, true) => format!("Signed in as {name}, and the game is set up."),
             (false, false) => "The game is set up. This server can't check passwords here; the game will.".into(),
         };
-        Ok(said + unencrypted_note(sent))
+        Ok(said + unencrypted_note(sent) + &wall)
     }
 
     /// Another account on the server set up: signs in to it (or makes it), then the game uses it.
@@ -454,6 +456,16 @@ fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Res
 }
 
 /// Said after an account's done, when its password went unencrypted.
+/// What to add to setup's message about the firewall rules.
+fn firewall_note(outcome: crosscom_launcher::firewall::Outcome) -> String {
+    use crosscom_launcher::firewall::Outcome;
+    match outcome {
+        Outcome::Present | Outcome::Added => String::new(),
+        Outcome::Declined => " The game wasn't let through Windows Firewall: when Windows asks, the first time you play online, allow it.".into(),
+        Outcome::Failed(why) => format!(" The game couldn't be let through Windows Firewall ({why}): when Windows asks, the first time you play online, allow it."),
+    }
+}
+
 fn unencrypted_note(sent: server::Sent) -> &'static str {
     match sent {
         server::Sent::Encrypted => "",

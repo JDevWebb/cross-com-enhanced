@@ -4,6 +4,7 @@
 
 pub mod client;
 pub mod dlc;
+pub mod firewall;
 pub mod game;
 pub mod logs;
 pub mod server;
