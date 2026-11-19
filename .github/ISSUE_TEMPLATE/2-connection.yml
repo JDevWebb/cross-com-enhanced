@@ -1,0 +1,97 @@
+name: Can't join, host or stay connected
+description: Joins that fail or never finish, invites that never arrive, being dropped from a match, or matchmaking that finds nobody.
+labels: ["bug", "connection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are found by matching what your game saw with what the server saw at that moment, so **the time and the server matter most.**
+        The fastest way to get it looked at: right after it happens, send your logs from the launcher (**Settings › Logs › Send logs now**), and ask the others involved to do the same.
+  - type: input
+    id: when
+    attributes:
+      label: When it happened
+      description: Date and time, with your time zone (or in UTC).
+      placeholder: "19 Nov, about 22:25 NZDT"
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options:
+        - The community test network (grfs-test.jdevwebb.net)
+        - Someone else's server
+        - My own server
+        - On a LAN or a VPN
+    validations:
+      required: true
+  - type: input
+    id: names
+    attributes:
+      label: Your account name, and the others involved
+      description: So the server's host can find your session. Leave out anyone who'd rather not be named.
+      placeholder: "Me: Kozak · host: SomeFriend"
+    validations:
+      required: true
+  - type: dropdown
+    id: what
+    attributes:
+      label: What went wrong
+      multiple: true
+      options:
+        - Couldn't join someone's match or lobby ("Joining Session" never ended, or an error)
+        - Nobody could join me
+        - An invite never arrived
+        - Dropped out of a match ("Connection to server lost", or another message)
+        - Quick Match never found anyone
+        - Lag, or players out of sync
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game mode
+      options:
+        - Conflict
+        - Decoy
+        - Saboteur
+        - Siege
+        - Stockade (Arctic Strike)
+        - Takeover (Khyber Strike)
+        - Guerrilla
+        - Campaign co-op
+        - Not in a match yet (party or lobby)
+  - type: dropdown
+    id: how
+    attributes:
+      label: How you got there
+      options:
+        - Quick Match
+        - An invitation, or joining a friend
+        - A party following its host
+        - Not sure
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: Who hosted, who tried to join, the exact message the game showed, and whether it worked before or after (a restart of the game, say).
+    validations:
+      required: true
+  - type: textarea
+    id: network
+    attributes:
+      label: Your connection
+      description: |
+        Anything unusual helps: a VPN, a mobile or satellite connection, two players behind the same router, a router without UPnP, or a firewall other than Windows'.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I looked for an existing issue about this.
+          required: true
+        - label: I sent my logs from the launcher right after it happened.
+        - label: Everyone involved was on the same launcher version (its About page).
+        - label: Everyone involved had the DLC packs the match used (the launcher's Play screen says which are missing).

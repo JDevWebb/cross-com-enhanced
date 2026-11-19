@@ -169,7 +169,7 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 
 ## Reporting a problem
 
-[Open an issue](https://github.com/JDevWebb/cross-com-enhanced/issues/new) and say:
+[Open an issue](https://github.com/JDevWebb/cross-com-enhanced/issues/new/choose) (its forms ask for what each kind of problem needs) and say:
 
 1. **What you did and what happened,** and roughly when (with your time zone).
 2. **The server** you played on, and your account name.
@@ -219,7 +219,7 @@ Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono
 
 Testing reports are the most useful thing right now: play with friends and [report what breaks](#reporting-a-problem). Research, documentation and code are welcome too:
 
-- **Pull requests:** keep them focused, and say how you tested. Run `scripts/check.sh` first. Changes that affect the game should say whether they were tried in the game itself.
+- **Pull requests:** keep them focused, and say how you tested (the pull request's checklist asks). Run `scripts/check.sh` first, and `scripts/bots.sh` for server changes. Changes that affect the game should say whether they were tried in the game itself.
 - **Research:** write what you worked out in your own words. Game files, extracted game data and disassembly can't go in this repository.
 - **Servers:** running one for your group is one of the best ways to help.
 
