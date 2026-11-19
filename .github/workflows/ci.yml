@@ -1,0 +1,95 @@
+# Tests and builds every push to main and every pull request, as scripts/check.sh does locally,
+# plus the test players and the Windows builds. A push that only changes release.toml
+# (scripts/release.sh's "Release vX" and "Version X-dev" commits, after CI has passed on what they
+# version: the release workflow builds the tag itself) or release notes doesn't run it again.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - release.toml
+      - docs/releases/**
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Tests, test players and the Linux builds
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustup component add clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The launcher (launcher-slint) is a workspace of its own.
+          workspaces: |
+            . -> target
+            launcher-slint -> target
+      # The crates that build on Linux, as scripts/check.sh has them (the client DLLs are
+      # Windows-only: the Windows job has them).
+      - name: Formatting
+        run: |
+          cargo fmt --check -p quazal -p crosscom-server -p crosscom-testbot -p crosscom-launcher -p crosscom-client-common
+          cargo fmt --manifest-path launcher-slint/Cargo.toml --check
+      - name: Lints
+        run: |
+          cargo clippy --locked -p quazal -p crosscom-server -p crosscom-testbot -p crosscom-launcher -p crosscom-client-common --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path launcher-slint/Cargo.toml --all-targets -- -D warnings
+      - name: Tests
+        run: |
+          cargo test --locked -p quazal -p crosscom-server -p crosscom-testbot -p crosscom-launcher -p crosscom-client-common
+          cargo test --locked --manifest-path launcher-slint/Cargo.toml
+      - name: Test players against a fresh server
+        run: |
+          cargo build --locked -p crosscom-server -p crosscom-testbot
+          scripts/bots.sh target/debug
+      - name: Shell scripts (ShellCheck comes with the runner)
+        run: shellcheck -S warning scripts/*.sh
+      - name: The server image builds
+        run: docker build -q -f docker/Dockerfile -t crosscom-server:ci .
+
+  windows:
+    name: Windows builds
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The launcher (launcher-slint) is a workspace of its own.
+          workspaces: |
+            . -> target
+            launcher-slint -> target
+      - name: Client DLLs (32-bit, as the game)
+        run: cargo build --locked -p crosscom-orbit -p crosscom-uplay --target i686-pc-windows-msvc
+      - name: Client tests
+        run: cargo test --locked -p crosscom-orbit -p crosscom-client-common --target i686-pc-windows-msvc
+      - name: Launcher tests, with the Windows parts (firewall rules, the game's folder)
+        run: cargo test --locked -p crosscom-launcher
+      - name: Launcher with the client inside
+        shell: bash
+        run: |
+          mkdir -p client-dlls
+          cp target/i686-pc-windows-msvc/debug/ubiorbitapi_r2_loader.dll target/i686-pc-windows-msvc/debug/uplay_r1_loader.dll client-dlls/
+          CROSSCOM_CLIENT_DIR="$PWD/client-dlls" cargo build --locked --manifest-path launcher-slint/Cargo.toml --features embed-dlls
