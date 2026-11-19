@@ -39,8 +39,12 @@ const EXPORTS: &[(&str, &str)] = &[
 /// Loaded on first use (`/DELAYLOAD`); `src/overlay` loads them itself first.
 const DELAY_LOADED: &[&str] = &["d3d9.dll", "d3d11.dll", "d3dcompiler_47.dll", "dinput8.dll"];
 
+include!("../../build/release.rs");
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // The release number the client logs and sends with its logs (CROSSCOM_RELEASE).
+    release();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if os == "windows" && arch == "x86" {

@@ -101,7 +101,7 @@ fn start() {
         .ok()
         .and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    log::info!("Cross-Com {} loaded in {exe} from {}", env!("CARGO_PKG_VERSION"), dir.display());
+    log::info!("Cross-Com {} loaded in {exe} from {}", env!("CROSSCOM_RELEASE"), dir.display());
     if let Some(os) = crosscom_client_common::system::os_version() {
         log::info!("{os}");
     }
