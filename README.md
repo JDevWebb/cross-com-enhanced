@@ -117,7 +117,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 
 ### Antivirus warnings
 
-Some antivirus programs, Microsoft Defender included, may flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases). If it was quarantined, restore it and exclude its folder and the game's folder.
+Some antivirus programs, Microsoft Defender included, may flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases), where each file's VirusTotal results are listed, and check it's the file the release workflow built: its hash, the release key's signature and its build provenance ([Checking a download](docs/releasing.md#checking-a-download)). If it was quarantined, restore it and exclude its folder and the game's folder.
 
 ### What's sent, and when
 
@@ -201,6 +201,7 @@ Matches themselves are still hosted by the players, as they always were.
 | **Hosting a server** | [docs/hosting.md](docs/hosting.md): Docker or not, settings, accounts, news, HTTPS with Caddy, sharing a machine, the API, players' logs |
 | **The client** | [client/README.md](client/README.md): what the DLLs do, the overlay, `crosscom.toml` |
 | **The protocols** | [docs/protocol.md](docs/protocol.md): what the server answers, worked out from the game |
+| **Releases** | [docs/releasing.md](docs/releasing.md): checking a download (checksums, the release key's signature, build provenance, VirusTotal), how releases are built, signed and published, and CI |
 | **Building** | `scripts/build-launcher.sh` builds the client DLLs and the launcher (`launcher-slint/`, with the DLLs built in) into `dist/crosscom-launcher.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests; `scripts/launcher-shots.sh` redraws the launcher screenshots |
 
 ## Standing on the shoulders of
