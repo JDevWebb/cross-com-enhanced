@@ -416,9 +416,10 @@ impl Overlay {
 
     /// The most players of the lobbies this game makes from now on.
     fn most_players(&self, ui: &Ui) {
+        use crosscom_client_common::lobby_size::FEWEST;
         use crosscom_client_common::lobby_size::MOST;
         let most = crate::lobby::most().unwrap_or(MOST);
-        if let Some(chosen) = self.stepper(ui, "most", "Most players", most, 1, MOST) {
+        if let Some(chosen) = self.stepper(ui, "most", "Most players", most, FEWEST, MOST) {
             crate::lobby::choose_most((chosen < MOST).then_some(chosen));
         }
         let note = if most < MOST {

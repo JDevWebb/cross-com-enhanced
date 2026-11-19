@@ -23,6 +23,9 @@ const READS: [usize; 5] = [0x20, 0x34, 0x48, 0x6a, 0x72];
 
 /// The most players any lobby may be set to: the game's biggest.
 pub const MOST: u8 = 12;
+/// The fewest: a match needs two. (A Quick Match made for 1 was given 12 invite-only slots by
+/// the game, its minimum being above it, and took a second player all the same.)
+pub const FEWEST: u8 = 2;
 
 /// Where the game keeps the five sizes it makes lobbies with, as the code addresses them:
 /// absolute addresses, already relocated.
@@ -37,7 +40,7 @@ pub fn sizes(image: &[u8]) -> Result<[u32; 5], String> {
 /// What a size the game made a lobby with becomes, given the host's choice (`None`: the game's).
 #[must_use]
 pub fn chosen(game: u8, most: Option<u8>) -> u8 {
-    most.map_or(game, |most| game.min(most.clamp(1, MOST)))
+    most.map_or(game, |most| game.min(most.clamp(FEWEST, MOST)))
 }
 
 #[cfg(test)]
@@ -71,7 +74,8 @@ mod tests {
         assert_eq!(chosen(12, None), 12);
         assert_eq!(chosen(12, Some(6)), 6);
         assert_eq!(chosen(4, Some(6)), 4, "Guerrilla stays 4");
-        assert_eq!(chosen(12, Some(0)), 1);
+        assert_eq!(chosen(12, Some(0)), 2);
+        assert_eq!(chosen(12, Some(1)), 2, "a match needs two");
         assert_eq!(chosen(12, Some(40)), 12);
     }
 }
