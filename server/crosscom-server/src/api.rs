@@ -109,7 +109,7 @@ impl Api {
         let info = Info {
             name: NAME,
             game: GAME,
-            version: env!("CARGO_PKG_VERSION"),
+            version: env!("CROSSCOM_RELEASE"),
             players_online: self.online.count(),
             news: news::shown(&news::load(&self.news, logger), now),
         };
@@ -165,7 +165,7 @@ pub(crate) mod tests {
         online.signed_in(0x10_0000, "192.0.2.1".parse().unwrap());
         let logger = Logger::root(slog::Discard, slog::o!());
         let json: serde_json::Value = serde_json::from_str(&api.info(&logger)).unwrap();
-        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["version"], env!("CROSSCOM_RELEASE"));
         assert_eq!(json["game"], "ghost-recon-future-soldier");
         assert_eq!(json["name"], "Cross-Com Enhanced");
         assert_eq!(json["players_online"], 1);

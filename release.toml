@@ -1,0 +1,10 @@
+# The release name and number, in one place. Every shipped program reads it when it's built
+# (build/release.rs): the server reports it in /api/info and its log, the client in its log and
+# the logs it sends, and the launcher on its About page and in its Windows version details.
+#
+# major.minor.patch, moved on per release, not per change: between releases it names the next
+# one, with a -dev suffix (0.1.0-dev until 0.1.0 is out). The suffix marks builds that aren't a
+# signed release, and comes off when one is made (scripts/release.sh, which then moves on to the
+# next patch). docs/releasing.md has the whole process.
+name = "Cross-Com Enhanced"
+version = "0.1.0-dev"

@@ -49,7 +49,7 @@ pub(crate) fn start(dir: PathBuf, config: &Config) {
     let private = runs::Private::of_this_pc(&config.username, &config.password);
     let meta = runs::Meta {
         account: config.username.clone(),
-        client: env!("CARGO_PKG_VERSION").into(),
+        client: env!("CROSSCOM_RELEASE").into(),
         launcher: None,
         os: system::os_version(),
         exit: None,

@@ -94,7 +94,7 @@ fn welcome() -> Item {
         body: format!(
             "You're playing on a Cross-Com Enhanced server ({}). Ranked and player matches, co-op, \
              Guerrilla, squads and challenges are all online again.",
-            env!("CARGO_PKG_VERSION")
+            env!("CROSSCOM_RELEASE")
         ),
         date: None,
         shows: None,

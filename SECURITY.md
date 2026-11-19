@@ -27,6 +27,7 @@ Cross-Com Enhanced is a free project run by one person, with no bug bounty. What
 
 - **This repository's code:** the launcher (`crosscom-launcher.exe`, including the Windows Firewall rules it adds), the client DLLs (`uplay_r1_loader.dll` and `ubiorbitapi_r2_loader.dll`) and their in-game overlay, and the server (`crosscom-server`: the game's online services, and its HTTP API for accounts, sign-up, news, leaderboards and log uploads), with its Docker and Caddy setup.
 - **The community test network:** `grfs-test.jdevwebb.net`.
+- **The release process:** the release workflow, `scripts/release.sh`, `sign-release.sh` and `verify-release.sh`, and anything that would let a release or the server's image be published or pass the checks without the release key.
 - **Especially interesting:** anything that lets someone take over another player's account or identity, run code on a player's PC or a server, read or change another player's data (friends, squads, invitations, challenges, statistics, uploaded logs), use the server to make players' games send traffic to other hosts (the NAT probes), or get a player's password or address when it shouldn't be shared.
 
 ## Out of scope
@@ -51,4 +52,4 @@ If you're unsure whether something is OK, ask in your private report first.
 
 ## Supported versions
 
-Security fixes go into the latest release only; older versions aren't patched separately. The community test network runs the latest server. Releases are published only on this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases) page, and the files aren't code-signed yet, so get them only from there. If you run your own server, keep it updated.
+Security fixes go into the latest release only; older versions aren't patched separately. The community test network runs the latest server. Releases are published only on this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases) page: each is built by its release workflow, with build provenance, and signed with a release key that never meets the build ([Releases](docs/releasing.md)). The files aren't code-signed for Windows yet, so get them only from there, and check them. If you run your own server, keep it updated.

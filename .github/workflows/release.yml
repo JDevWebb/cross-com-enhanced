@@ -1,0 +1,291 @@
+# Builds a release when a version tag is pushed (scripts/release.sh does all of this; by hand):
+#
+#   1. set `version` in release.toml (e.g. "0.1.0") and commit;
+#   2. git tag v0.1.0 && git push origin main v0.1.0
+#   3. scripts/sign-release.sh v0.1.0 (signs with the offline release key, publishes the draft,
+#      then gives the server's image its real tags).
+#
+# Builds every download and THIRD-PARTY-NOTICES.txt, writes SHA256SUMS, attests each file's build
+# provenance, scans them with VirusTotal, makes a draft GitHub release with the notes, and pushes
+# the server's Docker image to ghcr.io as :<version>-unsigned only: nothing a tag push alone makes
+# is published as a release, or as the image people pull (:<version>, :latest), until
+# sign-release.sh has signed it. A tag with a suffix (v0.2.0-rc.1) makes a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Tag matches release.toml
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          file=$(sed -n 's/^version = "\(.*\)"$/\1/p' release.toml)
+          if [ "$tag" != "$file" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match release.toml version $file"
+            exit 1
+          fi
+          # Only plain version numbers go any further (into file names, image tags and commands).
+          if ! printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::$tag isn't a version like 0.1.0 or 0.2.0-rc.1"
+            exit 1
+          fi
+          case "$tag" in *-dev*) echo "::error::a -dev version isn't a release"; exit 1 ;; esac
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows builds
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build
+        shell: bash
+        run: |
+          # The client DLLs (32-bit, as the game), then the launcher with them built in: the one
+          # file players need.
+          cargo build --locked --release -p crosscom-orbit -p crosscom-uplay --target i686-pc-windows-msvc
+          mkdir -p client-dlls dist
+          cp target/i686-pc-windows-msvc/release/ubiorbitapi_r2_loader.dll target/i686-pc-windows-msvc/release/uplay_r1_loader.dll client-dlls/
+          CROSSCOM_CLIENT_DIR="$PWD/client-dlls" cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dlls
+          cp launcher-slint/target/release/crosscom-launcher.exe client-dlls/*.dll dist/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: dist/
+
+  linux:
+    name: Linux builds
+    needs: version
+    # An older glibc, so the server runs on Debian 12 and newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build
+        run: |
+          cargo build --locked --release -p crosscom-server
+          mkdir dist
+          cp target/release/crosscom-server dist/crosscom-server-linux-x86_64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: dist/
+
+  notices:
+    name: Third-party notices
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      # Pinned, as scripts/notices.sh says.
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+      # THIRD-PARTY-NOTICES.txt: every library the release files carry and its licence (about.toml).
+      - name: Write the notices
+        run: |
+          mkdir dist
+          scripts/notices.sh dist/THIRD-PARTY-NOTICES.txt "$RUNNER_TEMP/notices"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notices
+          path: dist/
+
+  publish:
+    name: Publish the release
+    needs: [version, windows, linux, notices]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      # By name: the server image's job leaves a Docker build record among the artifacts too,
+      # which isn't a download and can't be fetched like one.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows
+          path: artifacts/windows
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: artifacts/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notices
+          path: artifacts/notices
+      - name: Collect and checksum
+        run: |
+          mkdir dist
+          # THIRD-PARTY-NOTICES.txt with the programs, in SHA256SUMS, so it's signed with them.
+          cp artifacts/windows/* artifacts/linux/* artifacts/notices/* dist/
+          chmod +x dist/*-linux-x86_64
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+      # Build provenance for every download: `gh attestation verify <file>
+      # --repo JDevWebb/cross-com-enhanced` shows it came from this workflow.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*"
+      # Each file's VirusTotal results, for the notes. The scan needs the VT_API_KEY secret (a free
+      # VirusTotal account's key); without it, the notes link each file's report by its hash.
+      - name: Scan with VirusTotal
+        id: vt
+        continue-on-error: true
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          if [ -z "$VT_API_KEY" ]; then echo "No VT_API_KEY secret; skipping the scan"; exit 1; fi
+          # Into vt.md only when it finished: a half table would replace the plain links.
+          scripts/virustotal.sh dist/crosscom-launcher.exe dist/uplay_r1_loader.dll dist/ubiorbitapi_r2_loader.dll \
+            dist/crosscom-server-linux-x86_64 > vt.tmp
+          mv vt.tmp vt.md
+          cat vt.md
+      - name: Write the release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          own="docs/releases/v$VERSION.md"
+          # A release's name, from its notes' first line: `# 0.1.0 "First Contact"`. It goes in
+          # the title, so that line is left out of the body.
+          name=""
+          if [ -f "$own" ]; then
+            name="$(head -n 1 "$own" | sed -n 's/^# [^"]*"\([^"]\{1,60\}\)"[[:space:]]*$/\1/p')"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            # This release's own notes first, when docs/releases has them.
+            if [ -f "$own" ]; then
+              if [ -n "$name" ]; then tail -n +2 "$own" | sed '1{/^[[:space:]]*$/d;}'; else cat "$own"; fi
+              echo
+            fi
+            echo "## Verify your download"
+            echo
+            echo "Each release is built here, by this repository's release workflow, and signed by hand with a release key that never meets the build. To check a file:"
+            echo
+            echo "- **Checksum:** compare it with \`SHA256SUMS\` (\`Get-FileHash crosscom-launcher.exe\` in PowerShell, \`sha256sum\` on Linux)."
+            echo "- **Signature:** \`SHA256SUMS.sig\` is the release key's signature of this version (\`$VERSION\`) and \`SHA256SUMS\`. \`scripts/verify-release.sh $VERSION\` in a folder with the downloads checks it, and every file against it (OpenSSL 3). The key and its fingerprint are in [Releasing](https://github.com/$REPO/blob/main/docs/releasing.md#the-release-key)."
+            echo "- **Build provenance:** \`gh attestation verify <file> --repo $REPO\` shows it was built by this repository's release workflow, from tag \`v$VERSION\`."
+            echo "- **Server image:** \`IMAGE\` names the server's Docker image by digest, and \`IMAGE.sig\` is the release key's signature of it; \`verify-release.sh\` checks both."
+            echo
+            echo "### VirusTotal"
+            echo
+            if [ -s vt.md ]; then
+              cat vt.md
+              echo
+              echo "Scanned when this release was built; the links show the current results."
+            else
+              echo "| File | Report |"
+              echo "|---|---|"
+              for f in crosscom-launcher.exe uplay_r1_loader.dll ubiorbitapi_r2_loader.dll crosscom-server-linux-x86_64; do
+                sha="$(sha256sum "dist/$f" | cut -d' ' -f1)"
+                echo "| \`$f\` | [VirusTotal](https://www.virustotal.com/gui/file/$sha) |"
+              done
+            fi
+            echo
+            echo "Some antivirus programs flag new, unsigned game tools by their behaviour (a launcher that installs DLLs into a game). If yours does, see [Antivirus warnings](https://github.com/$REPO#antivirus-warnings)."
+          } > notes.md
+          cat notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          NAME: ${{ steps.notes.outputs.name }}
+        run: |
+          # A draft: scripts/sign-release.sh signs SHA256SUMS with the offline release key and
+          # publishes it. The generated changelog follows the verification notes. The title is
+          # the version, and the release's name when its notes give one.
+          title="v$VERSION"
+          if [ -n "$NAME" ]; then title="v$VERSION · $NAME"; fi
+          flags=(--draft --generate-notes --notes-file notes.md --title "$title")
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "v$VERSION" "${flags[@]}" dist/*
+
+  docker:
+    name: Server image
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "image=ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/crosscom-server" >> "$GITHUB_OUTPUT"
+      # Only :<version>-unsigned: scripts/sign-release.sh signs its digest with the release, after
+      # checking it was built here from the tag (its provenance, below), and tags that digest
+      # :<version> (and :latest).
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: push
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ needs.version.outputs.version }}-unsigned
+      # Build provenance for the image, by its digest: scripts/sign-release.sh checks it
+      # (gh attestation verify oci://<image>@<digest>) before signing that digest with the release.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.name.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

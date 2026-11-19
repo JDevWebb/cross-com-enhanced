@@ -23,7 +23,7 @@ use crosscom_launcher::settings::Launcher as Prefs;
 /// What the game is given as its CD key when none was set: the server doesn't check it.
 const NO_CD_KEY: &str = "CROSSCOM";
 /// The launcher's release.
-pub const RELEASE: &str = env!("CARGO_PKG_VERSION");
+pub const RELEASE: &str = env!("CROSSCOM_RELEASE");
 
 /// Where About's links go, by their button's id; `None` for an id About doesn't have.
 #[must_use]

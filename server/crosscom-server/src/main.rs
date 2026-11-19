@@ -187,7 +187,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    info!(logger, "Cross-Com server {}; players connect to {public_ip}", env!("CARGO_PKG_VERSION"));
+    info!(logger, "Cross-Com server {}; players connect to {public_ip}", env!("CROSSCOM_RELEASE"));
 
     // Both servers share the key that seals tickets: the auth server issues them, the secure
     // server opens them.
