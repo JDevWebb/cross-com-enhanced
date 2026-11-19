@@ -204,6 +204,11 @@ pub fn protocols<CI: 'static>() -> Vec<Box<dyn Protocol<CI>>> {
                     name: "UplayWelcome",
                     answer: |_| EMPTY_LIST.to_vec(),
                 },
+                // 8, SetActionCompleted, is left unanswered on purpose: the game reports one
+                // action it earned after a match (its code, "3", then "en-US" and "PC") and is
+                // answered with that action's details, but there are none here. Refused, the game
+                // carries on (seen after every match of a two-day internet pass).
+                //
                 // The game reports Uplay actions it has earned (after a level-up or a challenge,
                 // say); there are no Uplay actions here, so none unlock: an empty list.
                 Method {
