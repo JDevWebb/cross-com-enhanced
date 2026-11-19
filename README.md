@@ -25,7 +25,7 @@
 ## First test build
 
 > [!IMPORTANT]
-> **This is the first test build (0.1.0), released for public testing.** Every mode has been played end to end on real copies of the game, under Wine on Linux; the Windows testing starts with this build. Expect rough edges: things may break, and servers may be reset between builds. **Your reports are what this build is for**: see [Reporting a problem](#reporting-a-problem).
+> **This is the first test build (0.1.0), released for public testing.** Every mode has been played end to end on real copies of the game, on Windows 11 and under Wine on Linux, between home networks over the internet. Expect rough edges: things may break, and servers may be reset between builds. **Your reports are what this build is for**: see [Reporting a problem](#reporting-a-problem).
 
 What that means for you:
 
@@ -102,7 +102,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 
 ### The in-game overlay
 
-<kbd>F5</kbd> opens a panel over the game: the server's status and how many players are online, its news, and **leaderboards for every player on the server**, by mode. While it's open the game gets no mouse or keyboard; <kbd>F5</kbd> or <kbd>Esc</kbd> closes it.
+<kbd>F5</kbd> opens a panel over the game: the server's status and how many players are online, its news, **leaderboards for every player on the server**, by mode, and the **Lobby** tab: how many players the Quick Match or squad room you host needs before its countdown starts, and the most players the lobbies you make take (2 to 12). While it's open the game gets no mouse or keyboard; <kbd>F5</kbd> or <kbd>Esc</kbd> closes it.
 
 <table>
 <tr>
@@ -127,7 +127,7 @@ After each game you play online, the game's log from that run (`crosscom.log`, n
 
 ## What works
 
-Tested end to end on real copies of the game under Wine, with up to four players; the Windows tests start with this build.
+Tested end to end on real copies of the game, on Windows 11 and under Wine on Linux, with up to four players, on one network and between home networks over the internet.
 
 <table>
 <tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Quick Match starts with two players, and every map is offered.</td></tr>
@@ -160,7 +160,12 @@ Tested end to end on real copies of the game under Wine, with up to four players
 </tr>
 </table>
 
-**Not tested yet:** voice chat (it needs real microphones), and matches between players on different home networks over the internet. Both are on this build's test list.
+**Not tested yet:** voice chat (it needs real microphones). It's on this build's test list.
+
+**Known limitations:**
+
+- **The game runs fullscreen only.** It has no windowed setting, and writes `Fullscreen True` back to its settings each time it starts.
+- **A lobby's size is fixed when it's made.** The overlay's *Most players* applies to the lobbies you make next, so leave and make the lobby again to change it.
 
 ## Reporting a problem
 
