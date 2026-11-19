@@ -8,6 +8,8 @@ dist/
 .DS_Store
 
 # Local data and settings
+.idea/
+.vscode/
 *.db
 *.sqlite
 service*.toml

@@ -171,7 +171,7 @@ Tested end to end on real copies of the game under Wine, with up to four players
 3. **Your setup:** Windows version, Ubisoft Connect or Steam, DirectX 11 or 9.
 4. **The log,** if it's not already on the server: `crosscom.log` and the `logs` folder, next to the game's exe.
 
-Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab.
+Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab. [SECURITY.md](SECURITY.md) says how, and what's in scope.
 
 ## Run your own server
 
