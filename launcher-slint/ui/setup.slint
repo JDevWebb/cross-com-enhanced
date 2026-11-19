@@ -6,6 +6,8 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
 import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Check, Tabs, Option, Spinner } from "widgets.slint";
+import { DlcList, DlcNotice } from "dlc.slint";
+import { DlcRow } from "types.slint";
 
 // The account's fields and notes, as Setup and Settings both have them.
 export component AccountForm inherits VerticalLayout {
@@ -87,6 +89,9 @@ export component SetupScreen inherits Rectangle {
     in property <string> game-dir;
     in property <bool> game-finding;
     in property <string> game-error;
+    // The DLC packs in the folder chosen, and the warning about them ("" when all are there).
+    in property <[DlcRow]> dlc;
+    in property <string> dlc-note;
     // The server: the community test network, or the one typed.
     in property <string> community-host;
     in property <string> community-name;
@@ -176,6 +181,8 @@ export component SetupScreen inherits Rectangle {
                                 text: "Not found where Ubisoft Connect or Steam install it. Choose the folder that holds \"Future Soldier DX11.exe\".";
                             }
                             if root.game-error != "": Para { text: root.game-error; color: Theme.bad; }
+                            if !root.game-finding && root.game-dir != "": DlcList { packs: root.dlc; }
+                            if !root.game-finding && root.game-dir != "" && root.dlc-note != "": DlcNotice { text: root.dlc-note; }
                             HorizontalLayout {
                                 alignment: start;
                                 Btn {

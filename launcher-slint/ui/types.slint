@@ -1,5 +1,14 @@
 // What the launcher hands the screens (ui.rs fills them in).
 
+// One DLC pack in the game's folder.
+export struct DlcRow {
+    name: string,
+    // "yes", "no" or "incomplete".
+    state: string,
+    // What it adds.
+    adds: string,
+}
+
 // How things stand.
 export struct InfoView {
     // The game's folder, or "".
@@ -18,6 +27,9 @@ export struct InfoView {
     // F1 to F12, as 0 to 11.
     overlay-key: int,
     send-logs: bool,
+    // The DLC packs (empty with no game), and what to warn about them ("" when all are there).
+    dlc: [DlcRow],
+    dlc-note: string,
     // Everything's set: Play can go.
     ready: bool,
 }

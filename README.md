@@ -61,18 +61,24 @@ The launcher installs Cross-Com's client into the game and keeps the game's own 
 
 ### The DLC packs
 
-The base game is enough to play online. The three DLC packs add maps and two modes, and **a match that uses a pack needs every player in it to have that pack installed**:
+The base game is enough to play online, including the two night maps (Market and Harbor at night). The three DLC packs add maps, two modes and co-op content, and **a match that uses a pack needs every player in it to have that pack installed**:
 
 <table>
-<tr><th>Pack</th><th>Folder in the game</th><th>Needed for</th></tr>
-<tr><td><b>Arctic Strike</b></td><td><code>DLC\dlc1</code></td><td>its maps and the <b>Stockade</b> mode (on every map)</td></tr>
-<tr><td><b>Raven Strike</b></td><td><code>DLC\dlc2</code></td><td>its maps (Guerrilla included) and the <b>Takeover</b> mode (on every map)</td></tr>
-<tr><td><b>Khyber Strike</b></td><td><code>DLC\dlc3</code></td><td>its maps</td></tr>
+<tr><th>Pack</th><th>Folder in the game</th><th>Adds</th></tr>
+<tr><td><b>Arctic Strike</b></td><td><code>DLC\dlc1</code></td><td>the <b>Stockade</b> mode (on every map), the Riot, Skyline and Evicted maps, and the Arctic Base Guerrilla map</td></tr>
+<tr><td><b>Raven Strike</b></td><td><code>DLC\dlc2</code></td><td>co-op only: its campaign missions and the Sawmill Guerrilla map</td></tr>
+<tr><td><b>Khyber Strike</b></td><td><code>DLC\dlc3</code></td><td>the <b>Takeover</b> mode (on every map), the Switchback, Palace and Transit maps, and the Village Guerrilla map</td></tr>
 </table>
 
-To check, look in the game's `DLC` folder: each pack you have is a `dlc1`, `dlc2` or `dlc3` folder with a `.big` file inside. (`DLC\dlc` is the game's own update, not a pack.) Cross-Com's servers turn on every pack you have installed, so there's nothing else to do: no Uplay or Ubisoft Connect sign-in.
+A map from one pack in the other pack's mode (Takeover on Riot, say) needs both.
 
-Without a pack, you can still play every base-game map and mode, but a lobby on that pack's maps or modes removes you with *"The host is using content that you have not yet downloaded"*.
+**The launcher checks for you.** Its setup lists the packs it finds in the game's folder, and the Play screen checks again each time you press Play. If a pack is missing, or its files look incomplete, you'll see a warning saying what you can't play without it. It's only a warning: the game still starts. (By hand: each pack you have is a `dlc1`, `dlc2` or `dlc3` folder in the game's `DLC` folder, with a `.big` file inside; `DLC\dlc` is the game's own update, not a pack.) Cross-Com's servers turn on every pack you have installed, so there's nothing else to do: no Uplay or Ubisoft Connect sign-in.
+
+<p align="center">
+  <img src="./docs/screenshots/launcher-play-missing-dlc.png" width="640" alt="The launcher's Play screen warning that Khyber Strike isn't installed: Takeover and the Switchback, Palace and Transit maps can't be played without it">
+</p>
+
+Without a pack, you can still play every base-game map and mode. **Quick Match only finds you lobbies your game can load**: Cross-Com's client tells the server which packs you have when you sign in, and the server leaves out lobbies that use a pack you're missing. (If a friend invites you into one anyway, the game itself refuses it with *"The host is using content that you have not yet downloaded"*.)
 
 > [!NOTE]
 > **We don't provide the game or its DLC, and can't help you get them.** Cross-Com only brings back the online services: you need your own copy of the game, and of any pack you want to play. Please don't ask for game files in issues or discussions.
@@ -124,7 +130,7 @@ After each game you play online, the game's log from that run (`crosscom.log`, n
 Tested end to end on real copies of the game under Wine, with up to four players; the Windows tests start with this build.
 
 <table>
-<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the Arctic Strike and Raven Strike modes Stockade and Takeover. Quick Match starts with two players, and every map is offered.</td></tr>
+<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Quick Match starts with two players, and every map is offered.</td></tr>
 <tr><td><b>Co-op</b></td><td>The campaign and Guerrilla with friends, invited from the lobby.</td></tr>
 <tr><td><b>Friends and parties</b></td><td>Friends lists, requests, invites into a lobby, the party following its host, and lobby chat.</td></tr>
 <tr><td><b>Progression</b></td><td>XP, levels, unlocks, Gunsmith loadouts and stats, kept on the server; a friend's stats from View Player Stats.</td></tr>
@@ -165,7 +171,7 @@ Tested end to end on real copies of the game under Wine, with up to four players
 3. **Your setup:** Windows version, Ubisoft Connect or Steam, DirectX 11 or 9.
 4. **The log,** if it's not already on the server: `crosscom.log` and the `logs` folder, next to the game's exe.
 
-Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab.
+Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab. [SECURITY.md](SECURITY.md) says how, and what's in scope.
 
 ## Run your own server
 

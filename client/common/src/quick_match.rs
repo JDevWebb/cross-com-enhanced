@@ -11,9 +11,9 @@
 //! Tested in game: a 2-player Quick Match lobby starts.
 
 /// A pattern: hex bytes, `??` for any byte (an address the loader may have moved).
-type Pattern = &'static str;
+pub(crate) type Pattern = &'static str;
 
-fn bytes(pattern: Pattern) -> Vec<Option<u8>> {
+pub(crate) fn bytes(pattern: Pattern) -> Vec<Option<u8>> {
     pattern.split_whitespace().map(|b| u8::from_str_radix(b, 16).ok()).collect()
 }
 
@@ -40,7 +40,7 @@ pub struct Patch {
     pub bytes: Vec<u8>,
 }
 
-fn find_once(image: &[u8], pattern: Pattern) -> Result<usize, String> {
+pub(crate) fn find_once(image: &[u8], pattern: Pattern) -> Result<usize, String> {
     let pattern = bytes(pattern);
     let mut found = image
         .windows(pattern.len())
@@ -54,7 +54,7 @@ fn find_once(image: &[u8], pattern: Pattern) -> Result<usize, String> {
     }
 }
 
-fn address_at(image: &[u8], at: usize) -> u32 {
+pub(crate) fn address_at(image: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]])
 }
 

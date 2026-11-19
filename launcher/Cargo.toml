@@ -22,6 +22,8 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# Asking Windows' permission to add the game's firewall rules (`firewall`).
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 tempfile = "3"

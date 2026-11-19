@@ -74,6 +74,15 @@ const INVITED_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60)
 const MAX_OFFERED: usize = 64;
 pub const PUBLIC_TAKEN: u32 = 5;
 pub const PRIVATE_TAKEN: u32 = 6;
+/// The DLC packs a Quick Match uses, as the game sets it from the packs it has (bit 0 Arctic
+/// Strike, bit 1 Khyber Strike; Raven Strike has no adversarial content), and searches with its
+/// own. A search may be offered a lobby whose packs it has: not only one with the same packs, or
+/// players with different packs would never meet.
+pub const PACKS: u32 = 115;
+/// A Quick Match's size, as the game made it (12, or 8 in the smaller size), and as a search asks
+/// for it. A host may make its lobbies smaller (the overlay's most players): such a lobby is offered
+/// to searches for its mode's size too.
+pub const SIZE: u32 = 114;
 
 impl Session {
     pub fn attribute(&self, id: u32) -> Option<u32> {
@@ -91,8 +100,18 @@ impl Session {
         }
         let taken = self.participants.iter().filter(|p| !self.private.contains(p)).count();
         let free = public.saturating_sub(u32::try_from(taken).unwrap_or(u32::MAX));
+        // Its size as the game made it: a squad member's lobby also has invite-only slots, which
+        // its host and squadmates take, so free public slots alone could take it past its size.
+        let full = self
+            .attribute(SIZE)
+            .is_some_and(|size| self.participants.len() >= usize::try_from(size).unwrap_or(usize::MAX));
+        if full {
+            return false;
+        }
         parameters.iter().all(|&(id, value)| match id {
             PUBLIC_SLOTS => free >= value.max(1),
+            PACKS => self.attribute(id).is_some_and(|lobby| lobby & !value == 0),
+            SIZE => self.attribute(id).is_some_and(|lobby| lobby <= value),
             _ => self.attribute(id) == Some(value),
         })
     }
@@ -195,6 +214,24 @@ impl Sessions {
             Some((observed, _)) => vec![observed.clone()],
             None => Vec::new(),
         }
+    }
+
+    /// The URLs `pid` is given to a player the server sees at `viewer`: as [`Self::urls`], with
+    /// its private addresses first when the two are behind one public address (players at one
+    /// house), so their games reach each other across their network rather than through their
+    /// router's public address, which many routers don't loop back inside.
+    pub fn urls_seen_from(&self, pid: u32, viewer: IpAddr) -> Vec<StationURL> {
+        let mut urls = self.urls(pid);
+        let same_network = self
+            .lock()
+            .urls
+            .get(&pid)
+            .is_some_and(|(observed, _)| observed.address.parse::<IpAddr>().ok() == Some(viewer));
+        if same_network {
+            let private = |u: &StationURL| u.address.parse::<IpAddr>().is_ok_and(|ip| ip != viewer && claimable(u, ip));
+            urls.sort_by_key(|u| !private(u));
+        }
+        urls
     }
 
     /// The URLs `pid` registered that may be passed on, without the server's view.
@@ -376,6 +413,18 @@ impl Sessions {
         Ok(())
     }
 
+    /// `pid` signed in again: its game started afresh, so it's in none of the sessions its last
+    /// game was in. It's taken out of each (as if it had left: the next player hosts, and a
+    /// session ends with its last player), so a search never offers a lobby whose players have
+    /// all gone, nor sends anyone to a host that isn't there. How many sessions it was in.
+    pub fn signed_in_afresh(&self, pid: u32) -> usize {
+        let keys: Vec<Key> = self.lock().sessions.iter().filter(|(_, s)| s.has(pid)).map(|(k, _)| *k).collect();
+        for key in &keys {
+            let _ = self.remove(*key, &[pid]);
+        }
+        keys.len()
+    }
+
     /// Takes players out; the next one hosts if the host left, and the session ends when the
     /// last one leaves.
     pub fn remove(&self, key: Key, pids: &[u32]) -> Result<(), Error> {
@@ -455,12 +504,19 @@ impl Sessions {
 
     /// Sessions of a type a search may offer: matchmade, with public slots, and matching the
     /// search's parameters (see [`Session::matches`]), up to `limit`, fullest first.
+    #[cfg(test)]
     pub fn find(&self, type_id: u32, parameters: &[(u32, u32)], limit: usize) -> Vec<(Key, Session)> {
+        self.find_where(type_id, parameters, limit, |_| true)
+    }
+
+    /// As [`Sessions::find`], of the sessions `keep` takes (before the limit, so sessions it
+    /// leaves out don't take others' places).
+    pub fn find_where(&self, type_id: u32, parameters: &[(u32, u32)], limit: usize, keep: impl Fn(&Session) -> bool) -> Vec<(Key, Session)> {
         let mut found: Vec<(Key, Session)> = self
             .lock()
             .sessions
             .iter()
-            .filter(|(k, s)| k.0 == type_id && s.matches(parameters))
+            .filter(|(k, s)| k.0 == type_id && s.matches(parameters) && keep(s))
             .map(|(k, s)| (*k, s.clone()))
             .collect();
         found.sort_by_key(|(_, s)| (std::cmp::Reverse(s.participants.len()), s.created));
@@ -520,6 +576,41 @@ mod tests {
         assert_eq!(sessions.get(key).unwrap().host, 11, "the next player hosts");
         sessions.remove(key, &[11]).unwrap();
         assert!(sessions.get(key).is_none(), "the last one out ends it");
+    }
+
+    #[test]
+    fn a_search_is_offered_lobbies_whose_packs_it_has() {
+        let sessions = Sessions::default();
+        let lobby = |packs| {
+            let key = sessions.create(10 + packs, 1, &[(3, 12), (7, 0), (116, 2), (PACKS, packs)]).unwrap();
+            sessions.get(key).unwrap()
+        };
+        let (none, arctic, khyber, both) = (lobby(0), lobby(1), lobby(2), lobby(3));
+        let search = |packs| [(3, 1), (116, 2), (PACKS, packs)];
+        assert!(none.matches(&search(0)) && none.matches(&search(3)), "a base-game lobby is for everyone");
+        assert!(arctic.matches(&search(1)) && arctic.matches(&search(3)));
+        assert!(!arctic.matches(&search(0)) && !arctic.matches(&search(2)), "not without Arctic Strike");
+        assert!(khyber.matches(&search(2)) && !khyber.matches(&search(1)));
+        assert!(both.matches(&search(3)) && !both.matches(&search(1)) && !both.matches(&search(0)));
+        assert!(!none.matches(&[(3, 1), (116, 3), (PACKS, 0)]), "the other properties still match exactly");
+    }
+
+    #[test]
+    fn a_game_signing_in_again_is_in_none_of_its_old_sessions() {
+        let sessions = Sessions::default();
+        let lobby = sessions.create(10, 1, &[(3, 12), (7, 0)]).unwrap();
+        let party = sessions.create(10, 1, &[(3, 0), (4, 4), (7, 1)]).unwrap();
+        let shared = sessions.create(10, 1, &[(3, 12), (7, 0)]).unwrap();
+        sessions.join(11, shared).unwrap();
+        let other = sessions.create(12, 1, &[(3, 12), (7, 0)]).unwrap();
+        sessions.join(10, other).unwrap();
+        assert_eq!(sessions.signed_in_afresh(10), 4);
+        assert!(sessions.get(lobby).is_none() && sessions.get(party).is_none(), "its own end");
+        assert_eq!(sessions.get(shared).unwrap().host, 11, "a lobby with others in it goes to the next");
+        assert!(!sessions.get(other).unwrap().has(10), "and it's out of others'");
+        // Both players of a lobby restart, the joiner signing in first: the lobby ends all the same.
+        assert_eq!(sessions.signed_in_afresh(11), 1);
+        assert!(sessions.get(shared).is_none(), "nobody left in it");
     }
 
     #[test]
@@ -591,6 +682,17 @@ mod tests {
     }
 
     #[test]
+    fn players_at_one_house_are_given_each_others_private_addresses_first() {
+        let sessions = Sessions::default();
+        let url = |a: &str| format!("udp:/address={a};port=2346;PID=1;RVCID=2").parse::<StationURL>().unwrap();
+        let observed: StationURL = "prudp:/address=198.51.100.7;port=2347".parse().unwrap();
+        sessions.set_urls(1, observed, vec![url("198.51.100.7"), url("192.168.1.20")]);
+        let addresses = |v: &str| sessions.urls_seen_from(1, v.parse().unwrap()).iter().map(|u| u.address.clone()).collect::<Vec<_>>();
+        assert_eq!(addresses("198.51.100.7"), ["192.168.1.20", "198.51.100.7"], "same house");
+        assert_eq!(addresses("203.0.113.9"), ["198.51.100.7", "192.168.1.20"], "elsewhere: as registered");
+    }
+
+    #[test]
     fn taken_slots_are_counted_by_kind() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[(3, 12), (4, 0), (5, 99)]).unwrap();
@@ -602,6 +704,30 @@ mod tests {
         sessions.remove(key, &[13]).unwrap();
         let props = sessions.get(key).unwrap().properties();
         assert_eq!(&props[2..], &[(5, 2), (6, 1)]);
+    }
+
+    #[test]
+    fn a_lobby_at_its_size_is_not_offered_though_public_slots_are_free() {
+        let sessions = Sessions::default();
+        // A squad member's lobby for 2: 2 public slots and 12 invite-only, the host in one of those.
+        let key = sessions.create(10, 1, &[(7, 0), (3, 2), (4, 12), (116, 2), (114, 2)]).unwrap();
+        sessions.add(key, &[], &[10]).unwrap();
+        let search = [(3, 1), (116, 2), (114, 12)];
+        assert!(sessions.get(key).unwrap().matches(&search));
+        sessions.add(key, &[11], &[]).unwrap();
+        assert!(!sessions.get(key).unwrap().matches(&search), "2 in a lobby for 2");
+    }
+
+    #[test]
+    fn a_smaller_lobby_is_offered_to_searches_for_its_size() {
+        let sessions = Sessions::default();
+        let small = sessions.create(10, 1, &[(7, 0), (3, 4), (4, 0), (116, 2), (114, 4)]).unwrap();
+        let search = [(3, 1), (116, 2), (114, 12)];
+        assert!(sessions.get(small).unwrap().matches(&search));
+        // Not a bigger one to a smaller search, and not once its own slots are taken.
+        assert!(!sessions.get(small).unwrap().matches(&[(3, 1), (116, 2), (114, 2)]));
+        sessions.add(small, &[11, 12, 13], &[]).unwrap();
+        assert!(!sessions.get(small).unwrap().matches(&search));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::sync::MutexGuard;
 
 use crosscom_client_common::config::Config;
 use crosscom_launcher::client;
+use crosscom_launcher::dlc;
 use crosscom_launcher::game;
 use crosscom_launcher::game::Installed;
 use crosscom_launcher::logs;
@@ -96,6 +97,8 @@ pub struct Info {
     pub overlay_key: String,
     /// Send the game's logs to the server after each game.
     pub send_logs: bool,
+    /// The DLC packs, and how each stands in the game's folder (empty with no game).
+    pub dlc: Vec<(dlc::Pack, dlc::State)>,
 }
 
 impl Info {
@@ -216,6 +219,7 @@ impl Launcher {
         let dir = prefs.game_dir.filter(|d| game::is_game_dir(d));
         let config = dir.as_deref().map(settings::client).unwrap_or_default();
         let overlay = dir.as_deref().map(settings::overlay).unwrap_or_default();
+        let dlc = dir.as_deref().map(dlc::scan).unwrap_or_default();
         Info {
             client: client_state(dir.as_deref()),
             game_dir: dir,
@@ -227,6 +231,7 @@ impl Launcher {
             overlay: overlay.on,
             overlay_key: overlay.key,
             send_logs: config.send_logs,
+            dlc,
         }
     }
 
@@ -304,6 +309,8 @@ impl Launcher {
         let (checked, sent) = account(&host, &config.username, &config.password, setup.new_account, &setup.code)?;
         game::install(&dir, &files)?;
         settings::save_client(&dir, &config, &overlay)?;
+        // Before the game first hosts: Windows' own prompt takes the focus from the fullscreen game.
+        let wall = firewall_note(crosscom_launcher::firewall::ensure(&dir));
         let mut prefs = self.prefs();
         prefs.game_dir = Some(dir);
         prefs.dx9 = setup.dx9;
@@ -313,7 +320,7 @@ impl Launcher {
             (false, true) => format!("Signed in as {name}, and the game is set up."),
             (false, false) => "The game is set up. This server can't check passwords here; the game will.".into(),
         };
-        Ok(said + unencrypted_note(sent))
+        Ok(said + unencrypted_note(sent) + &wall)
     }
 
     /// Another account on the server set up: signs in to it (or makes it), then the game uses it.
@@ -449,6 +456,16 @@ fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Res
 }
 
 /// Said after an account's done, when its password went unencrypted.
+/// What to add to setup's message about the firewall rules.
+fn firewall_note(outcome: crosscom_launcher::firewall::Outcome) -> String {
+    use crosscom_launcher::firewall::Outcome;
+    match outcome {
+        Outcome::Present | Outcome::Added => String::new(),
+        Outcome::Declined => " The game wasn't let through Windows Firewall: when Windows asks, the first time you play online, allow it.".into(),
+        Outcome::Failed(why) => format!(" The game couldn't be let through Windows Firewall ({why}): when Windows asks, the first time you play online, allow it."),
+    }
+}
+
 fn unencrypted_note(sent: server::Sent) -> &'static str {
     match sent {
         server::Sent::Encrypted => "",
@@ -504,6 +521,7 @@ mod tests {
             overlay: true,
             overlay_key: "F5".into(),
             send_logs: true,
+            dlc: Vec::new(),
         };
         assert!(info.ready());
         assert!(
@@ -519,6 +537,8 @@ mod tests {
             ..info.clone()
         }
         .ready());
-        assert!(!Info { account: None, ..info }.ready());
+        assert!(!Info { account: None, ..info.clone() }.ready());
+        let no_packs = dlc::PACKS.iter().map(|&p| (p, dlc::State::Missing)).collect();
+        assert!(Info { dlc: no_packs, ..info }.ready(), "missing packs only warn: Play still goes");
     }
 }

@@ -1,0 +1,74 @@
+// The game's DLC packs: a list of which are installed, and the warning when one is missing. The
+// launcher only says what's missing; it never offers the packs or says where to get them.
+
+import { Theme, Type } from "theme.slint";
+import { Caps, Para } from "widgets.slint";
+import { DlcRow } from "types.slint";
+
+// One pack: a mark, its name, its state, and what it adds.
+component PackLine inherits HorizontalLayout {
+    in property <DlcRow> pack;
+    spacing: 10px;
+    VerticalLayout {
+        alignment: start;
+        padding-top: 5px;
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: pack.state == "yes" ? Theme.good : Theme.warn;
+        }
+    }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: pack.name; color: Theme.fg; font-weight: 600; }
+            Text {
+                text: pack.state == "yes" ? "installed" : pack.state == "incomplete" ? "incomplete" : "not installed";
+                color: pack.state == "yes" ? Theme.muted : Theme.warn;
+                font-size: Type.small;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text { text: pack.adds; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+    }
+    accessible-role: AccessibleRole.text;
+    accessible-label: pack.name + ": " + (pack.state == "yes" ? "installed" : pack.state == "incomplete" ? "incomplete" : "not installed");
+}
+
+// The packs, one per line.
+export component DlcList inherits VerticalLayout {
+    in property <[DlcRow]> packs;
+    spacing: 8px;
+    Caps { text: "DLC PACKS"; }
+    for p in packs: PackLine { pack: p; }
+}
+
+// The warning about missing or incomplete packs, in a box with the warning's edge.
+export component DlcNotice inherits Rectangle {
+    in property <string> text;
+    min-height: lay.preferred-height;
+    border-radius: 6px;
+    background: Theme.warn.with-alpha(0.08);
+    border-width: 1px;
+    border-color: Theme.warn.with-alpha(0.35);
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: Theme.warn;
+        border-top-left-radius: 6px;
+        border-bottom-left-radius: 6px;
+    }
+    lay := VerticalLayout {
+        padding: 12px;
+        padding-left: 16px;
+        spacing: 4px;
+        Caps { text: "DLC"; color: Theme.warn; }
+        Para { text: root.text; }
+    }
+}

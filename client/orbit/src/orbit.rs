@@ -41,7 +41,15 @@ static EMPTY_WIDE: [u16; 1] = [0];
 
 fn login() -> &'static Login {
     static LOGIN: OnceLock<Login> = OnceLock::new();
-    LOGIN.get_or_init(|| Login::new(crate::config()))
+    LOGIN.get_or_init(|| {
+        // The DLC packs in the game's folder, for the server's searches.
+        let packs = crosscom_client_common::game_dir().map(|dir| crosscom_client_common::dlc::installed_numbers(&dir));
+        info!(
+            "DLC packs installed: {}",
+            packs.as_deref().map_or("unknown".into(), |p| if p.is_empty() { "none".into() } else { p.to_owned() })
+        );
+        Login::new(crate::config(), packs.as_deref())
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crosscom_launcher::dlc;
 use crosscom_launcher::server;
 use slint::platform::software_renderer::MinimalSoftwareWindow;
 use slint::platform::software_renderer::RepaintBufferType;
@@ -63,7 +64,16 @@ fn ready() -> core::Info {
         overlay: true,
         overlay_key: "F5".into(),
         send_logs: true,
+        dlc: packs(&[]),
     }
+}
+
+/// Every pack, installed except the ones `missing` names (by folder).
+fn packs(missing: &[&str]) -> Vec<(dlc::Pack, dlc::State)> {
+    dlc::PACKS
+        .iter()
+        .map(|&p| (p, if missing.contains(&p.folder) { dlc::State::Missing } else { dlc::State::Installed }))
+        .collect()
 }
 
 fn news(title: &str, body: &str, date: &str, shows: Option<&str>) -> server::News {
@@ -76,7 +86,16 @@ fn news(title: &str, body: &str, date: &str, shows: Option<&str>) -> server::New
 }
 
 fn play(w: &AppWindow) {
-    w.set_info(ui::info_view(&ready()));
+    play_with(w, ready());
+}
+
+/// The Play screen of a game without Khyber Strike: the DLC warning under Play.
+fn play_missing_dlc(w: &AppWindow) {
+    play_with(w, core::Info { dlc: packs(&["dlc3"]), ..ready() });
+}
+
+fn play_with(w: &AppWindow, info: core::Info) {
+    w.set_info(ui::info_view(&info));
     w.set_screen(s("play"));
     let info = server::Info {
         version: "0.1.0".into(),
@@ -116,6 +135,8 @@ fn setup(w: &AppWindow) {
     w.set_setup_skip_intro(true);
     w.set_setup_account_done(true);
     w.set_setup_missing(s(""));
+    w.set_setup_dlc(ui::dlc_rows(&packs(&[])));
+    w.set_setup_dlc_note(s(""));
 }
 
 fn settings(w: &AppWindow) {
@@ -155,8 +176,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     w.show().map_err(|e| e.to_string())?;
 
-    let shots: [Shot; 4] = [
+    let shots: [Shot; 5] = [
         ("launcher-play", play, HEIGHT),
+        ("launcher-play-missing-dlc", play_missing_dlc, HEIGHT),
         ("launcher-setup", setup, HEIGHT),
         ("launcher-settings", settings, TALL),
         ("launcher-about", about, ABOUT_HEIGHT),

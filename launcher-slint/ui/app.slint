@@ -14,9 +14,9 @@ import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
 import { AboutScreen } from "about.slint";
-import { InfoView, NewsRow } from "types.slint";
+import { InfoView, NewsRow, DlcRow } from "types.slint";
 
-export { Theme, InfoView, NewsRow }
+export { Theme, InfoView, NewsRow, DlcRow }
 
 export component AppWindow inherits Window {
     title: "Cross-Com Enhanced";
@@ -57,6 +57,9 @@ export component AppWindow inherits Window {
     in-out property <string> setup-game-dir;
     in property <bool> setup-game-finding;
     in property <string> setup-game-error;
+    // The DLC packs in the folder chosen, and the warning about them ("" when all are there).
+    in property <[DlcRow]> setup-dlc;
+    in property <string> setup-dlc-note;
     in-out property <bool> setup-community: true;
     in-out property <string> setup-server-typed;
     in property <string> setup-server-ok;
@@ -161,6 +164,8 @@ export component AppWindow inherits Window {
                     game-dir: root.setup-game-dir;
                     game-finding: root.setup-game-finding;
                     game-error: root.setup-game-error;
+                    dlc: root.setup-dlc;
+                    dlc-note: root.setup-dlc-note;
                     community <=> root.setup-community;
                     server-typed <=> root.setup-server-typed;
                     server-ok: root.setup-server-ok;

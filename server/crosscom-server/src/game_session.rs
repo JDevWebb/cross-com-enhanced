@@ -1,6 +1,7 @@
 //! Game sessions (`GameSessionProtocol`): what the game makes when a player opens Multiplayer,
 //! and finds, joins and leaves. The sessions themselves are in `sessions`.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use grfs_protocols::game_session_service::game_session_protocol::*;
@@ -25,6 +26,7 @@ use crate::accounts::Accounts;
 use crate::friends::Friends;
 use crate::invitations::Invitations;
 use crate::notify;
+use crate::packs::Packs;
 use crate::sessions;
 use crate::sessions::Sessions;
 use crate::ticket::player;
@@ -41,6 +43,17 @@ fn gone(pid: u32) -> bool {
     quazal::last_heard(pid).is_none_or(|t| t.elapsed() > GONE_AFTER)
 }
 
+/// How long a host's game may have been silent and its lobby still be offered. Longer than
+/// [`GONE_AFTER`]: a search mustn't miss a live host between two pings. A host whose game has gone
+/// (it crashed, or its PC lost the connection) keeps its listing for host migration, but nobody
+/// new is sent to it.
+const OFFERED_WHILE_HEARD: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether `pid`'s game was heard from lately enough for its lobby to be offered.
+fn heard_lately(pid: u32) -> bool {
+    quazal::last_heard(pid).is_some_and(|t| t.elapsed() < OFFERED_WHILE_HEARD)
+}
+
 /// Results a search returns at most, and players one invitation may go to.
 const MAX_RESULTS: usize = 100;
 const MAX_RECIPIENTS: usize = 16;
@@ -49,6 +62,7 @@ struct GameSessions {
     sessions: Arc<Sessions>,
     accounts: Arc<Accounts>,
     friends: Arc<Friends>,
+    packs: Arc<Packs>,
     invitations: Invitations,
 }
 
@@ -69,18 +83,19 @@ fn error(e: sessions::Error) -> Error {
 }
 
 impl GameSessions {
-    fn result(&self, (k, session): (sessions::Key, sessions::Session)) -> GameSessionSearchResult {
+    /// A session as `viewer` (the address the server sees the asking player at) is given it.
+    fn result(&self, viewer: IpAddr, (k, session): (sessions::Key, sessions::Session)) -> GameSessionSearchResult {
         GameSessionSearchResult {
             session_key: GameSessionKey { type_id: k.0, session_id: k.1 },
             host_pid: session.host,
-            host_urls: QList(self.sessions.urls(session.host)),
+            host_urls: QList(self.sessions.urls_seen_from(session.host, viewer)),
             attributes: QList(session.properties().into_iter().map(|(id, value)| Property { id, value }).collect()),
         }
     }
 
     /// A participant as other members see them: name and addresses only for those who joined
     /// themselves.
-    fn participant(&self, session: &sessions::Session, pid: u32) -> GameSessionParticipant {
+    fn participant(&self, viewer: IpAddr, session: &sessions::Session, pid: u32) -> GameSessionParticipant {
         let joined = session.joined(pid);
         GameSessionParticipant {
             pid,
@@ -89,7 +104,7 @@ impl GameSessions {
             } else {
                 String::new()
             },
-            station_urls: QList(if joined { self.sessions.urls(pid) } else { vec![] }),
+            station_urls: QList(if joined { self.sessions.urls_seen_from(pid, viewer) } else { vec![] }),
         }
     }
 
@@ -208,7 +223,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let k = key(&request.game_session_key);
         let session = self.sessions.get(k).ok_or(Error::AccessDenied)?;
         Ok(GetSessionResponse {
-            search_result: self.result((k, session)),
+            search_result: self.result(ci.address().ip(), (k, session)),
         })
     }
 
@@ -223,13 +238,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
     ) -> Result<SearchSessionsResponse, Error> {
         let pid = player(ci)?;
         let query = &request.game_session_query;
-        let found: Vec<_> = self
-            .sessions
-            .find(query.type_id, &properties(&query.parameters), MAX_RESULTS + 1)
-            .into_iter()
-            .filter(|(_, s)| s.host != pid)
-            .take(MAX_RESULTS)
-            .collect();
+        // Only lobbies the player's game can load: their packs and their mode's (see `packs`).
+        let playable = |s: &crate::sessions::Session| s.host != pid && heard_lately(s.host) && self.packs.offer(pid, s.host, s.attribute(crate::packs::MODE));
+        let found = self.sessions.find_where(query.type_id, &properties(&query.parameters), MAX_RESULTS, playable);
         // The game joins a session it found by reaching its host (a NAT probe), who then adds
         // it. Being offered a session gives nothing yet; reaching for its host is the choice
         // (see `Sessions::choose`).
@@ -237,7 +248,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             self.sessions.offer(*k, pid);
         }
         Ok(SearchSessionsResponse {
-            search_results: QList(found.into_iter().map(|r| self.result(r)).collect()),
+            search_results: QList(found.into_iter().map(|r| self.result(ci.address().ip(), r)).collect()),
         })
     }
 
@@ -506,7 +517,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .skip(range.offset as usize)
             .take(range.size as usize)
-            .map(|&p| self.participant(&session, p))
+            .map(|&p| self.participant(ci.address().ip(), &session, p))
             .collect();
         Ok(GetParticipantsResponse {
             participants: QList(participants),
@@ -586,7 +597,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
                     .take(MAX_RESULTS)
                     .map(|(k, s)| GameSessionSearchWithParticipantsResult {
                         participant_ids: QList(s.participants.clone()),
-                        game_session_search_result: self.result((k, s)),
+                        game_session_search_result: self.result(ci.address().ip(), (k, s)),
                     })
                     .collect(),
             ),
@@ -608,7 +619,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .0
             .iter()
             .take(MAX_RESULTS)
-            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result((key(k), s))))
+            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result(ci.address().ip(), (key(k), s))))
             .collect();
         Ok(GetSessionsResponse { search_results: QList(found) })
     }
@@ -630,7 +641,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .filter(|p| session.participants.contains(p))
             .take(MAX_RESULTS)
-            .map(|&p| self.participant(&session, p))
+            .map(|&p| self.participant(ci.address().ip(), &session, p))
             .collect();
         Ok(GetParticipantsUrLsResponse {
             participants: QList(participants),
@@ -699,12 +710,13 @@ impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
     }
 }
 
-pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>, friends: Arc<Friends>) -> Box<dyn Protocol<CI>> {
+pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts>, friends: Arc<Friends>, packs: Arc<Packs>) -> Box<dyn Protocol<CI>> {
     Box::new(GameSessionProtocol {
         generated: Box::new(GameSessionProtocolServer::new(GameSessions {
             sessions: Arc::clone(&sessions),
             accounts,
             friends,
+            packs,
             invitations: Invitations::default(),
         })),
         sessions,
