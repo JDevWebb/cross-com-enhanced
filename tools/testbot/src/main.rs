@@ -76,7 +76,8 @@ async fn online_config(server: IpAddr, port: u16) -> Result<String> {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
     let mut stream = tokio::net::TcpStream::connect((server, port)).await?;
-    let request = "GET /OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=23ad683803a0457cabce83f905811dbc HTTP/1.1\r\nHost: onlineconfigservice.ubi.com\r\n\r\n";
+    let request =
+        "GET /OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=23ad683803a0457cabce83f905811dbc HTTP/1.1\r\nHost: onlineconfigservice.ubi.com\r\nConnection: close\r\n\r\n";
     stream.write_all(request.as_bytes()).await?;
     let mut response = String::new();
     stream.read_to_string(&mut response).await?;
@@ -96,7 +97,7 @@ async fn sign_up(server: IpAddr, port: u16, name: &str, password: &str, code: Op
     let body = serde_json::json!({ "name": name, "password": password, "code": code }).to_string();
     let mut stream = tokio::net::TcpStream::connect((server, port)).await?;
     let request = format!(
-        "POST /accounts HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST /accounts HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await?;
@@ -279,8 +280,10 @@ enum Mode {
     Answer(u64),
 }
 
-/// What the game's quick match searches with, and the match it makes when it finds none.
-const QUICK_MATCH_SEARCH: [(u32, u32); 8] = [(3, 1), (100, 1), (101, 2), (116, 2), (105, 16), (103, 0), (115, 0), (114, 12)];
+/// What the game's quick match searches with, and the match it makes when it finds none: a Conflict
+/// match by a game with every DLC pack (115 = 3, Arctic and Khyber Strike), as a player's game
+/// with them searches, so the bot finds their lobbies and they find its.
+const QUICK_MATCH_SEARCH: [(u32, u32); 8] = [(3, 1), (100, 1), (101, 2), (116, 2), (105, 16), (103, 0), (115, 3), (114, 12)];
 const QUICK_MATCH: [(u32, u32); 14] = [
     (7, 0),
     (3, 12),
@@ -289,7 +292,7 @@ const QUICK_MATCH: [(u32, u32); 14] = [
     (101, 2),
     (116, 2),
     (105, 16),
-    (115, 0),
+    (115, 3),
     (103, 0),
     (113, 10),
     (114, 12),
