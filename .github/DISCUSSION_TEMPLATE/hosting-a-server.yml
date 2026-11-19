@@ -1,0 +1,28 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Running your own server. The guide: [hosting](https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md); checking a release you download: [releasing](https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/releasing.md#checking-a-download).
+        **Never paste a sign-up code, passwords or keys** here.
+  - type: dropdown
+    id: how
+    attributes:
+      label: How it's installed
+      options:
+        - Docker, from this repository (docker/compose.yaml)
+        - Docker, the released image (ghcr.io)
+        - From source
+        - The released Linux binary
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: "The server's /api/info, or the release you installed."
+      placeholder: "0.1.0"
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you're setting up, what you tried and what happened. Paste the relevant log lines (`docker compose -f docker/compose.yaml logs server`), with addresses and secrets removed.
+    validations:
+      required: true

@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/JDevWebb/cross-com-enhanced/discussions/categories/help
+    about: Setting up, signing in, the launcher or the overlay. Answers are kept for the next person.
+  - name: Questions about running a server
+    url: https://github.com/JDevWebb/cross-com-enhanced/discussions/categories/hosting-a-server
+    about: Docker, Caddy and HTTPS, accounts and players' logs.
+  - name: Report a security problem
+    url: https://github.com/JDevWebb/cross-com-enhanced/security/advisories/new
+    about: Privately, not in a public issue. See SECURITY.md for what to include and what happens next.
+  - name: Hosting a server
+    url: https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md
+    about: How to run a Cross-Com server for your group.

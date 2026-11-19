@@ -1,0 +1,74 @@
+name: Running your own server
+description: Docker, Caddy and HTTPS, accounts, news or players' logs, on a server you run.
+labels: ["server"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a server you run. The guide is [docs/hosting.md](https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md).
+        **Never paste a sign-up code, passwords or keys** here.
+  - type: dropdown
+    id: how
+    attributes:
+      label: How it's installed
+      options:
+        - Docker, from this repository (docker/compose.yaml)
+        - Docker, the released image (ghcr.io)
+        - From source
+        - The released Linux binary
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: What's affected
+      multiple: true
+      options:
+        - Installing or updating
+        - Players can't connect or sign in
+        - Making accounts (sign-up)
+        - Matches between players (ports, routers)
+        - HTTPS with Caddy, or another reverse proxy
+        - News, leaderboards or the API
+        - Players' logs
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: "`/api/info` on your server, or the release you installed."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Host
+      description: The distribution and version, and where it runs (a VPS, at home, behind which router).
+      placeholder: "Debian 12 on a 1 vCPU VPS"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        `docker compose -f docker/compose.yaml logs --since 1h server` (and `caddy` if it's involved), or the server's output.
+        They contain players' names and addresses: cut what isn't needed, and hide addresses that aren't yours.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I read docs/hosting.md.
+          required: true
+        - label: I removed sign-up codes, passwords, keys and players' addresses from what I pasted.
+          required: true
