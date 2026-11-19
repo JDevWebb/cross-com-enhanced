@@ -100,6 +100,14 @@ impl Session {
         }
         let taken = self.participants.iter().filter(|p| !self.private.contains(p)).count();
         let free = public.saturating_sub(u32::try_from(taken).unwrap_or(u32::MAX));
+        // Its size as the game made it: a squad member's lobby also has invite-only slots, which
+        // its host and squadmates take, so free public slots alone could take it past its size.
+        let full = self
+            .attribute(SIZE)
+            .is_some_and(|size| self.participants.len() >= usize::try_from(size).unwrap_or(usize::MAX));
+        if full {
+            return false;
+        }
         parameters.iter().all(|&(id, value)| match id {
             PUBLIC_SLOTS => free >= value.max(1),
             PACKS => self.attribute(id).is_some_and(|lobby| lobby & !value == 0),
@@ -206,6 +214,24 @@ impl Sessions {
             Some((observed, _)) => vec![observed.clone()],
             None => Vec::new(),
         }
+    }
+
+    /// The URLs `pid` is given to a player the server sees at `viewer`: as [`Self::urls`], with
+    /// its private addresses first when the two are behind one public address (players at one
+    /// house), so their games reach each other across their network rather than through their
+    /// router's public address, which many routers don't loop back inside.
+    pub fn urls_seen_from(&self, pid: u32, viewer: IpAddr) -> Vec<StationURL> {
+        let mut urls = self.urls(pid);
+        let same_network = self
+            .lock()
+            .urls
+            .get(&pid)
+            .is_some_and(|(observed, _)| observed.address.parse::<IpAddr>().ok() == Some(viewer));
+        if same_network {
+            let private = |u: &StationURL| u.address.parse::<IpAddr>().is_ok_and(|ip| ip != viewer && claimable(u, ip));
+            urls.sort_by_key(|u| !private(u));
+        }
+        urls
     }
 
     /// The URLs `pid` registered that may be passed on, without the server's view.
@@ -656,6 +682,17 @@ mod tests {
     }
 
     #[test]
+    fn players_at_one_house_are_given_each_others_private_addresses_first() {
+        let sessions = Sessions::default();
+        let url = |a: &str| format!("udp:/address={a};port=2346;PID=1;RVCID=2").parse::<StationURL>().unwrap();
+        let observed: StationURL = "prudp:/address=198.51.100.7;port=2347".parse().unwrap();
+        sessions.set_urls(1, observed, vec![url("198.51.100.7"), url("192.168.1.20")]);
+        let addresses = |v: &str| sessions.urls_seen_from(1, v.parse().unwrap()).iter().map(|u| u.address.clone()).collect::<Vec<_>>();
+        assert_eq!(addresses("198.51.100.7"), ["192.168.1.20", "198.51.100.7"], "same house");
+        assert_eq!(addresses("203.0.113.9"), ["198.51.100.7", "192.168.1.20"], "elsewhere: as registered");
+    }
+
+    #[test]
     fn taken_slots_are_counted_by_kind() {
         let sessions = Sessions::default();
         let key = sessions.create(10, 1, &[(3, 12), (4, 0), (5, 99)]).unwrap();
@@ -667,6 +704,18 @@ mod tests {
         sessions.remove(key, &[13]).unwrap();
         let props = sessions.get(key).unwrap().properties();
         assert_eq!(&props[2..], &[(5, 2), (6, 1)]);
+    }
+
+    #[test]
+    fn a_lobby_at_its_size_is_not_offered_though_public_slots_are_free() {
+        let sessions = Sessions::default();
+        // A squad member's lobby for 2: 2 public slots and 12 invite-only, the host in one of those.
+        let key = sessions.create(10, 1, &[(7, 0), (3, 2), (4, 12), (116, 2), (114, 2)]).unwrap();
+        sessions.add(key, &[], &[10]).unwrap();
+        let search = [(3, 1), (116, 2), (114, 12)];
+        assert!(sessions.get(key).unwrap().matches(&search));
+        sessions.add(key, &[11], &[]).unwrap();
+        assert!(!sessions.get(key).unwrap().matches(&search), "2 in a lobby for 2");
     }
 
     #[test]

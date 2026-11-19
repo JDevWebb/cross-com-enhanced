@@ -1,6 +1,7 @@
 //! Game sessions (`GameSessionProtocol`): what the game makes when a player opens Multiplayer,
 //! and finds, joins and leaves. The sessions themselves are in `sessions`.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use grfs_protocols::game_session_service::game_session_protocol::*;
@@ -82,18 +83,19 @@ fn error(e: sessions::Error) -> Error {
 }
 
 impl GameSessions {
-    fn result(&self, (k, session): (sessions::Key, sessions::Session)) -> GameSessionSearchResult {
+    /// A session as `viewer` (the address the server sees the asking player at) is given it.
+    fn result(&self, viewer: IpAddr, (k, session): (sessions::Key, sessions::Session)) -> GameSessionSearchResult {
         GameSessionSearchResult {
             session_key: GameSessionKey { type_id: k.0, session_id: k.1 },
             host_pid: session.host,
-            host_urls: QList(self.sessions.urls(session.host)),
+            host_urls: QList(self.sessions.urls_seen_from(session.host, viewer)),
             attributes: QList(session.properties().into_iter().map(|(id, value)| Property { id, value }).collect()),
         }
     }
 
     /// A participant as other members see them: name and addresses only for those who joined
     /// themselves.
-    fn participant(&self, session: &sessions::Session, pid: u32) -> GameSessionParticipant {
+    fn participant(&self, viewer: IpAddr, session: &sessions::Session, pid: u32) -> GameSessionParticipant {
         let joined = session.joined(pid);
         GameSessionParticipant {
             pid,
@@ -102,7 +104,7 @@ impl GameSessions {
             } else {
                 String::new()
             },
-            station_urls: QList(if joined { self.sessions.urls(pid) } else { vec![] }),
+            station_urls: QList(if joined { self.sessions.urls_seen_from(pid, viewer) } else { vec![] }),
         }
     }
 
@@ -221,7 +223,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let k = key(&request.game_session_key);
         let session = self.sessions.get(k).ok_or(Error::AccessDenied)?;
         Ok(GetSessionResponse {
-            search_result: self.result((k, session)),
+            search_result: self.result(ci.address().ip(), (k, session)),
         })
     }
 
@@ -246,7 +248,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             self.sessions.offer(*k, pid);
         }
         Ok(SearchSessionsResponse {
-            search_results: QList(found.into_iter().map(|r| self.result(r)).collect()),
+            search_results: QList(found.into_iter().map(|r| self.result(ci.address().ip(), r)).collect()),
         })
     }
 
@@ -515,7 +517,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .skip(range.offset as usize)
             .take(range.size as usize)
-            .map(|&p| self.participant(&session, p))
+            .map(|&p| self.participant(ci.address().ip(), &session, p))
             .collect();
         Ok(GetParticipantsResponse {
             participants: QList(participants),
@@ -595,7 +597,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
                     .take(MAX_RESULTS)
                     .map(|(k, s)| GameSessionSearchWithParticipantsResult {
                         participant_ids: QList(s.participants.clone()),
-                        game_session_search_result: self.result((k, s)),
+                        game_session_search_result: self.result(ci.address().ip(), (k, s)),
                     })
                     .collect(),
             ),
@@ -617,7 +619,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .0
             .iter()
             .take(MAX_RESULTS)
-            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result((key(k), s))))
+            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result(ci.address().ip(), (key(k), s))))
             .collect();
         Ok(GetSessionsResponse { search_results: QList(found) })
     }
@@ -639,7 +641,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .filter(|p| session.participants.contains(p))
             .take(MAX_RESULTS)
-            .map(|&p| self.participant(&session, p))
+            .map(|&p| self.participant(ci.address().ip(), &session, p))
             .collect();
         Ok(GetParticipantsUrLsResponse {
             participants: QList(participants),
