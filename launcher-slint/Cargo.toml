@@ -21,6 +21,8 @@ path = "src/main.rs"
 slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "unstable-winit-030"] }
 crosscom-launcher = { path = "../launcher" }
 crosscom-client-common = { path = "../client/common" }
+# The connection test in Settings.
+crosscom-client-net = { path = "../client/net" }
 # The README's screenshots (--shots) as PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
 

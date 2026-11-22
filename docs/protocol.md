@@ -86,6 +86,10 @@ Parties and matches are **GameSession** sessions (42), not Gatherings. The match
 
 A game that wants to reach other players calls `RequestProbeInitiation` (3.1, with their station URLs) or `RequestProbeInitiationExt` (3.3, with the station to probe too). The server calls `InitiateProbe` (3.2) on each of those players' games, so their packets open the way through both routers. A call the server makes to a game must be numbered and signed as the server's own packets are; one made like a client's request is dropped.
 
+The game's peer-to-peer socket is UDP 2346; its station URLs don't say whether the router forwards it (no UPnP or NAT fields). Cross-Com's client asks the router itself and reports the forward over HTTP (`POST /api/forward`, see [hosting.md](hosting.md#connection-records)); the server then gives other players that player's public URL at the forwarded port first, with the game's own parameters (`PID`, `RVCID`), which the game reaches as it reaches any other of the player's URLs.
+
+The address echo (PRUDP user packets, virtual port 1 to 1, on either sign-in port) answers anyone: its payload, then `udp:/address=IP;port=PORT` and a NUL. Asked from one socket at both ports, it shows whether a router keeps one public port per socket or gives each destination its own (a symmetric NAT), which Cross-Com's connection test does.
+
 ## 8. Friends, events and invitations (*not yet seen in a game*)
 
 - **Relationships**, as the game's friend list reads them: 1 a friend, 2 a friend request, 3 blocked; a status of 1 is online. The list is built from `Friends.GetRelationships`, then `UbiFriends.GetRelationshipsList`, then the blocked players (`Friends.GetDetailedList(3)`).

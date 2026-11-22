@@ -1,6 +1,7 @@
 // The game options (with the in-game overlay and its key), sending the game's logs, the server
 // (changing it, or going back to the community test network), signing in to another account or
-// making one on the same server, and taking Cross-Com out of the game.
+// making one on the same server, the connection test and port forwarding, and taking Cross-Com
+// out of the game.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
@@ -19,6 +20,7 @@ export component SettingsScreen inherits Rectangle {
     in-out property <bool> overlay;
     in-out property <int> overlay-key;
     in-out property <bool> send-logs;
+    in-out property <bool> port-forwarding;
     in property <string> options-said;
     in property <bool> options-failed;
     // The account form.
@@ -35,6 +37,12 @@ export component SettingsScreen inherits Rectangle {
     in property <string> logs-last;
     in property <string> logs-said;
     in property <bool> logs-sending;
+    // The connection test: running, its verdict, the verdict's tone ("good", "warn", "bad") and
+    // what it found.
+    in property <bool> connection-testing;
+    in property <string> connection-summary;
+    in property <string> connection-tone;
+    in property <[string]> connection-details;
     // Taking Cross-Com out of the game.
     in-out property <bool> confirming;
     in property <string> restore-said;
@@ -47,6 +55,7 @@ export component SettingsScreen inherits Rectangle {
     callback send-logs-now();
     callback open-logs();
     callback restore();
+    callback test-connection();
 
     ScrollView {
         VerticalLayout {
@@ -236,6 +245,42 @@ export component SettingsScreen inherits Rectangle {
                                 color: root.account-failed ? Theme.bad : Theme.good;
                                 font-size: Type.small;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Card {
+                        min-height: cl.preferred-height;
+                        cl := VerticalLayout {
+                            padding: 18px;
+                            padding-left: 20px;
+                            spacing: 10px;
+                            CardHead { title: "Connection"; }
+                            Para { text: "How well other players can reach your game, from the server you've set up. It takes a few seconds."; }
+                            HorizontalLayout {
+                                alignment: start;
+                                Btn {
+                                    text: "Test my connection";
+                                    busy: root.connection-testing;
+                                    enabled: root.info.server != "" && root.info.game-dir != "" && !root.connection-testing;
+                                    clicked => { root.test-connection(); }
+                                }
+                            }
+                            if root.connection-summary != "": Text {
+                                text: root.connection-summary;
+                                color: root.connection-tone == "good" ? Theme.good : root.connection-tone == "bad" ? Theme.bad : Theme.warn;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                            for line in root.connection-details: Text {
+                                text: line;
+                                color: Theme.soft;
+                                font-size: Type.small;
+                                wrap: word-wrap;
+                            }
+                            Check {
+                                text: "Ask my router to forward the game's port while it runs (UPnP, PCP or NAT-PMP), so other players reach me directly";
+                                checked <=> root.port-forwarding;
+                                toggled => { root.options-changed(); }
                             }
                         }
                     }

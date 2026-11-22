@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::net::SocketAddrV4;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 
 use quazal::rmc::types::StationURL;
 use rand::Rng;
@@ -16,6 +19,10 @@ const MAX_PER_HOST: usize = 4;
 const MAX_PARTICIPANTS: usize = 64;
 const MAX_PROPERTIES: usize = 64;
 const MAX_URLS: usize = 8;
+
+/// How long a player's report of its router (`/api/forward`) holds: the client renews it every
+/// 10 minutes while the game runs.
+const REACHABILITY_HOLDS: Duration = Duration::from_secs(35 * 60);
 
 /// How long a player refused hosting a session waits before it may ask again.
 const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
@@ -158,6 +165,19 @@ pub enum Error {
     Full,
 }
 
+/// What a player's client said about its router (`/api/forward`, see `reach`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reachability {
+    /// The public port its router forwards to the game's peer-to-peer socket, and how it was
+    /// asked (`UPnP`, `PCP`, `NAT-PMP`).
+    pub forward: Option<(u16, String)>,
+    /// How its router maps ports: `consistent`, `symmetric` or `unknown`.
+    pub nat: String,
+    /// The address the report came from: a forward holds only there.
+    pub seen: IpAddr,
+    pub at: Instant,
+}
+
 #[derive(Default)]
 pub struct Sessions {
     inner: Mutex<Inner>,
@@ -169,6 +189,8 @@ struct Inner {
     sessions: BTreeMap<Key, Session>,
     /// Per player: where the server sees it, and the URLs it registered that may be passed on.
     urls: HashMap<u32, (StationURL, Vec<StationURL>)>,
+    /// Per player: its client's last report of its router.
+    reachability: HashMap<u32, Reachability>,
 }
 
 fn set_attributes(into: &mut Vec<(u32, u32)>, from: &[(u32, u32)]) {
@@ -220,18 +242,65 @@ impl Sessions {
     /// its private addresses first when the two are behind one public address (players at one
     /// house), so their games reach each other across their network rather than through their
     /// router's public address, which many routers don't loop back inside.
+    ///
+    /// Elsewhere, when its router forwards a port to its game (see [`Self::forward_of`]) other
+    /// than the one its public URL names, that URL at the forwarded port comes first: it reaches
+    /// the game whatever the viewer's router does.
     pub fn urls_seen_from(&self, pid: u32, viewer: IpAddr) -> Vec<StationURL> {
         let mut urls = self.urls(pid);
-        let same_network = self
-            .lock()
-            .urls
-            .get(&pid)
-            .is_some_and(|(observed, _)| observed.address.parse::<IpAddr>().ok() == Some(viewer));
-        if same_network {
+        let seen = self.lock().urls.get(&pid).and_then(|(observed, _)| observed.address.parse::<IpAddr>().ok());
+        if seen == Some(viewer) {
             let private = |u: &StationURL| u.address.parse::<IpAddr>().is_ok_and(|ip| ip != viewer && claimable(u, ip));
             urls.sort_by_key(|u| !private(u));
+        } else if let (Some(seen), Some(port)) = (seen, self.forward_of(pid)) {
+            let address = seen.to_string();
+            let public = urls.iter().find(|u| u.address == address).or(urls.first()).cloned();
+            if let Some(mut forwarded) = public.filter(|u| u.port != port) {
+                forwarded.address = address;
+                forwarded.port = port;
+                urls.insert(0, forwarded);
+                urls.truncate(MAX_URLS);
+            }
         }
         urls
+    }
+
+    /// The player seen at `seen` whose game registered `local`, its peer-to-peer socket on its
+    /// own network, and the public port of that socket if it registered that too.
+    pub fn peer_at(&self, seen: IpAddr, local: SocketAddrV4) -> Option<(u32, Option<u16>)> {
+        let inner = self.lock();
+        let seen_text = seen.to_string();
+        let (local_ip, local_port) = (local.ip().to_string(), local.port());
+        inner.urls.iter().find_map(|(pid, (observed, kept))| {
+            if observed.address != seen_text || !kept.iter().any(|u| u.address == local_ip && u.port == local_port) {
+                return None;
+            }
+            let public = kept.iter().find(|u| u.address == seen_text).map(|u| u.port);
+            Some((*pid, public))
+        })
+    }
+
+    /// The address the server sees `pid`'s game at, once it registered its URLs.
+    pub fn seen(&self, pid: u32) -> Option<IpAddr> {
+        self.lock().urls.get(&pid)?.0.address.parse().ok()
+    }
+
+    /// Notes what `pid`'s client said about its router.
+    pub fn set_reachability(&self, pid: u32, reachability: Reachability) {
+        self.lock().reachability.insert(pid, reachability);
+    }
+
+    /// What `pid`'s client last said about its router, while it holds.
+    pub fn reachability(&self, pid: u32) -> Option<Reachability> {
+        self.lock().reachability.get(&pid).filter(|r| r.at.elapsed() < REACHABILITY_HOLDS).cloned()
+    }
+
+    /// The public port `pid`'s router forwards to its game, while its report holds and it's
+    /// still seen where it made it.
+    pub fn forward_of(&self, pid: u32) -> Option<u16> {
+        let reachability = self.reachability(pid)?;
+        let seen: IpAddr = self.lock().urls.get(&pid)?.0.address.parse().ok()?;
+        (reachability.seen == seen).then_some(reachability.forward?.0)
     }
 
     /// The URLs `pid` registered that may be passed on, without the server's view.
@@ -690,6 +759,43 @@ mod tests {
         let addresses = |v: &str| sessions.urls_seen_from(1, v.parse().unwrap()).iter().map(|u| u.address.clone()).collect::<Vec<_>>();
         assert_eq!(addresses("198.51.100.7"), ["192.168.1.20", "198.51.100.7"], "same house");
         assert_eq!(addresses("203.0.113.9"), ["198.51.100.7", "192.168.1.20"], "elsewhere: as registered");
+    }
+
+    #[test]
+    fn a_forwarded_port_comes_first_for_players_elsewhere() {
+        let sessions = Sessions::default();
+        let url = |a: &str, port: u16| format!("udp:/address={a};port={port};PID=1;RVCID=2").parse::<StationURL>().unwrap();
+        let observed: StationURL = "prudp:/address=198.51.100.7;port=2347".parse().unwrap();
+        sessions.set_urls(1, observed, vec![url("198.51.100.7", 56877), url("192.168.1.20", 2346)]);
+        let local: SocketAddrV4 = "192.168.1.20:2346".parse().unwrap();
+        assert_eq!(sessions.peer_at("198.51.100.7".parse().unwrap(), local), Some((1, Some(56877))));
+        assert_eq!(sessions.peer_at("203.0.113.9".parse().unwrap(), local), None, "seen elsewhere");
+        assert_eq!(sessions.peer_at("198.51.100.7".parse().unwrap(), "192.168.1.21:2346".parse().unwrap()), None);
+        let shown = |v: &str| {
+            sessions
+                .urls_seen_from(1, v.parse().unwrap())
+                .iter()
+                .map(|u| format!("{}:{}", u.address, u.port))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown("203.0.113.9"), ["198.51.100.7:56877", "192.168.1.20:2346"], "no forward yet");
+        let report = |forward: Option<u16>, seen: &str| Reachability {
+            forward: forward.map(|p| (p, "UPnP".to_owned())),
+            nat: "consistent".into(),
+            seen: seen.parse().unwrap(),
+            at: Instant::now(),
+        };
+        sessions.set_reachability(1, report(Some(40000), "198.51.100.7"));
+        assert_eq!(shown("203.0.113.9"), ["198.51.100.7:40000", "198.51.100.7:56877", "192.168.1.20:2346"]);
+        let first = &sessions.urls_seen_from(1, "203.0.113.9".parse().unwrap())[0];
+        assert_eq!(first.params.get("RVCID").map(String::as_str), Some("2"), "the game's parameters kept");
+        assert_eq!(shown("198.51.100.7"), ["192.168.1.20:2346", "198.51.100.7:56877"], "same house: private first, no forward");
+        sessions.set_reachability(1, report(Some(56877), "198.51.100.7"));
+        assert_eq!(shown("203.0.113.9"), ["198.51.100.7:56877", "192.168.1.20:2346"], "the port it already had");
+        sessions.set_reachability(1, report(Some(40000), "203.0.113.50"));
+        assert_eq!(shown("203.0.113.9"), ["198.51.100.7:56877", "192.168.1.20:2346"], "made on another network");
+        sessions.set_reachability(1, report(None, "198.51.100.7"));
+        assert_eq!(sessions.forward_of(1), None);
     }
 
     #[test]

@@ -11,7 +11,8 @@ PC at home with the ports forwarded, a cheap VPS, or a machine on the LAN or VPN
 | 21031 | UDP | Everything else: profiles, matchmaking, friends |
 
 Matches themselves are hosted by a player's game, peer to peer; the server only introduces the
-players. The hosting player's router has to let the others in, as it did with Ubisoft's servers.
+players, and has their games punch through their routers. The client asks each player's router
+to forward the game's port too, when it can (see [Connection records](#connection-records)).
 
 Players must reach the server at its own address, not through a NAT that changes where their
 packets seem to come from: the server tells players each other's addresses as it sees them.
@@ -236,13 +237,14 @@ without one):
 ```json
 {"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier", "version": "0.1.0", "players_online": 3, "news": [
   {"title": "Double XP weekend", "body": "All weekend, every ranked match.", "date": "2026-11-20", "shows": "multiplayer"}
-]}
+], "udp_ports": [21030, 21031]}
 ```
 
 `game` says which game the server is for: the launcher and the overlay check it, and say so
 when an address reaches another game's server (on a machine that hosts both, see above).
 `shows` is `null`, `"multiplayer"`, `"campaign"` or `"guerrilla"`. A player counts from their
-sign-in until their game disconnects, or a minute after it stops answering.
+sign-in until their game disconnects, or a minute after it stops answering. `udp_ports` are the
+sign-in ports, which clients' connection tests ask (see [Connection records](#connection-records)).
 
 `POST /api/login` with `{"name": "Kozak", "password": "their-password"}` checks an account:
 `200 {"pid": ...}` when it matches, `401 {"error": "wrong name or password"}` when it doesn't.
@@ -319,6 +321,81 @@ account name, your Windows version and your IP address; your Windows user name a
 are taken out first. Logs are kept for 30 days and only the server's hosts read them. Turn it off
 in the launcher's Settings."
 
+## Connection records
+
+Players' games connect to each other, and the game doesn't tell the server when they can't: a
+player who can't reach a match's host leaves the session after half a minute or so, and their
+game says "Connection to server lost". So the server records how each join went, to show how
+often that happens and with which routers.
+
+**What's recorded.** A join is noted when a player joins a session (or its host adds them), with
+the NAT probes they ask for meanwhile, and recorded when it ends: how long they stayed, and how it
+ended (they left, the host took them out, their game lost the server, or the host had gone
+first). A join that ends within 90 seconds is counted as ending early: likely a failed
+connection, though a player backing out of a lobby looks the same. Each record also has what both
+players' clients said about their routers: whether they forward the game's port, and how they map
+ports (consistent, or symmetric: a port per destination, which other players mostly can't punch
+through). Records name players by account, with no addresses, and are kept in the database for
+90 days. A join that ends early is also logged (`... ended after 33 s: left`).
+
+**Reading them:**
+
+```sh
+docker compose -f docker/compose.yaml exec server /app/crosscom-server \
+  --config /srv/crosscom/crosscom-server.toml connections 30     # the last 30 days
+```
+
+```text
+Joins in the last 30 days: 120
+  ended within 90 s: 9 (8%)
+    the player left: 6
+    the host took them out: 1
+    their game lost the server: 2
+  (and 4 ended because the host had gone, not counted)
+
+By the joining player's router                  joins  ended early
+  port forwarded                                    51      1 (  2%)
+  no forward, consistent NAT                        58      4 (  7%)
+  no forward, symmetric NAT                         11      4 ( 36%)
+
+By both players' routers                        joins  ended early
+  either forwarded                                  70      2 (  3%)
+  ...
+
+Players whose joins ended early most often:
+  Kozak                    3 of 5
+```
+
+A player near the top of that last list, with a symmetric NAT and no forward, is one to ask to
+turn on UPnP, or to run the launcher's connection test (Settings › Connection).
+
+**Where the router details come from.** While the game runs, the client reports the game's
+peer-to-peer socket on the player's network to `POST /api/forward`, with the port the router
+forwards to it, if any:
+
+```json
+{"local": "192.168.1.20:2346", "forward": {"port": 40000, "how": "UPnP"}, "nat": "consistent"}
+```
+
+The server matches it to the player seen at that address whose game registered that socket
+(`200 {"address": ..., "port": ...}`: where it sees the caller, and the socket's public port once
+the game has registered it). A forward is then given to the other players in that player's matches
+first, on the address the server sees the player at, for 35 minutes from each report (the client
+renews it every 10). It isn't given to players on the same network: they get each other's
+private addresses first.
+
+`POST /api/reach` with `{"port": 40001, "nonce": "0123abcd..."}` sends `crosscom-reach ` and the
+nonce, once, to that port at the caller's own address, which is how the client checks a forward
+works. It only sends to the caller, to port 1024 or above, smaller than the request, and 4 a
+minute from an address; reports are 12 a minute. Both take no password and go over plain HTTP,
+as the client DLL makes them (docker/Caddyfile passes them on port 80).
+
+**Tell your players**, with the logs note: "While you play online, your client also tells this
+server about your router (your PC's address on your network, the port it forwards to the game,
+how it handles ports), and the server records how each join into a match went, by account and
+without addresses, for 90 days. Turning off port forwarding in the launcher's Settings stops the
+router report."
+
 ## Checking it works
 
 `crosscom-testbot` signs in the way the game does and checks each step:
@@ -329,7 +406,9 @@ cargo run -p crosscom-testbot -- SERVER_ADDRESS NEWNAME PASSWORD --signup CODE  
 ```
 
 Two bots, or a bot and the game, test matchmaking: one runs with `--host 60`, the other with
-`--join`.
+`--join`. `--reach` checks what the client does about players' routers: the address echo on both
+UDP ports, the router report and the reach packet (run it on the server's own machine, at
+`127.0.0.1`: its reach packet goes to a socket it opens there).
 
 ## Upgrading
 

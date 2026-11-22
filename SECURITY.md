@@ -25,7 +25,7 @@ Cross-Com Enhanced is a free project run by one person, with no bug bounty. What
 
 ## What's in scope
 
-- **This repository's code:** the launcher (`crosscom-launcher.exe`, including the Windows Firewall rules it adds), the client DLLs (`uplay_r1_loader.dll` and `ubiorbitapi_r2_loader.dll`) and their in-game overlay, and the server (`crosscom-server`: the game's online services, and its HTTP API for accounts, sign-up, news, leaderboards and log uploads), with its Docker and Caddy setup.
+- **This repository's code:** the launcher (`crosscom-launcher.exe`, including the Windows Firewall rules it adds and its connection test), the client DLLs (`uplay_r1_loader.dll` and `ubiorbitapi_r2_loader.dll`) with their in-game overlay and the router port forwards they ask for, and the server (`crosscom-server`: the game's online services, and its HTTP API for accounts, sign-up, news, leaderboards, log uploads and router reports), with its Docker and Caddy setup.
 - **The community test network:** `grfs-test.jdevwebb.net`.
 - **The release process:** the release workflow, `scripts/release.sh`, `sign-release.sh` and `verify-release.sh`, and anything that would let a release or the server's image be published or pass the checks without the release key.
 - **Especially interesting:** anything that lets someone take over another player's account or identity, run code on a player's PC or a server, read or change another player's data (friends, squads, invitations, challenges, statistics, uploaded logs), use the server to make players' games send traffic to other hosts (the NAT probes), or get a player's password or address when it shouldn't be shared.

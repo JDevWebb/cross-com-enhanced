@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 crosscom-client-common = { path = "../common" }
+crosscom-client-net = { path = "../net" }
 log = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

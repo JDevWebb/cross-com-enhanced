@@ -3,7 +3,7 @@
 //! ticket, RegisterEx, and the privileges list. A wrong password must be refused.
 //!
 //! ```text
-//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]
+//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]
 //! ```
 //!
 //! With `--signup`, it first makes the account over HTTP, as the launcher does (with the server's
@@ -18,6 +18,10 @@
 //! With `--friend NAME SECONDS` it asks NAME to be friends, waits for the answer, then invites
 //! NAME into a party; with `--answer SECONDS` it waits for a friend request, accepts it, waits
 //! for the invitation and joins the party.
+//!
+//! With `--reach` it registers its station, then does what the client does about its router:
+//! the address echo on both of the server's UDP ports, the router report (`/api/forward`),
+//! matched to its station, and the reach packet (`/api/reach`) to a socket of its own.
 
 // Shared with other tests; not every helper is used here.
 #[allow(dead_code)]
@@ -175,7 +179,7 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [server, name, password, rest @ ..] = args.as_slice() else {
-        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]");
+        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]");
     };
     let server: IpAddr = server.parse()?;
     let mut rest = rest.iter().map(String::as_str).peekable();
@@ -197,7 +201,8 @@ async fn main() -> Result<()> {
         (Some("--join"), None) => Mode::Join,
         (Some("--friend"), Some(other)) => Mode::Friend(other.to_owned(), rest.next().unwrap_or("30").parse()?),
         (Some("--answer"), Some(secs)) => Mode::Answer(secs.parse()?),
-        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS]"),
+        (Some("--reach"), None) => Mode::Reach,
+        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]"),
     };
 
     let config = online_config(server, http_port).await?;
@@ -265,6 +270,7 @@ async fn main() -> Result<()> {
         Mode::Join => join(&mut conn, pid).await?,
         Mode::Friend(other, secs) => befriend(&mut conn, &other, secs).await?,
         Mode::Answer(secs) => answer(&mut conn, secs).await?,
+        Mode::Reach => reach(&mut conn, pid, &registered, &format!("{server}:{http_port}")).await?,
     }
 
     conn.disconnect().await?;
@@ -278,6 +284,7 @@ enum Mode {
     Join,
     Friend(String, u64),
     Answer(u64),
+    Reach,
 }
 
 /// What the game's quick match searches with, and the match it makes when it finds none: a Conflict
@@ -324,6 +331,53 @@ async fn register_urls(conn: &mut Conn, pid: u32, registered: &secure::RegisterE
     )
     .await?;
     println!("ok   registered {url}");
+    Ok(())
+}
+
+/// The client's side of reaching players, against the server at `http` (`host:port`).
+async fn reach(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, http: &str) -> Result<()> {
+    use crosscom_client_net::api;
+    use crosscom_client_net::check;
+    register_urls(conn, pid, registered).await?;
+    // The station as registered: the game's socket at the address its network gives it.
+    let local: std::net::SocketAddrV4 = format!("{}:{}", registered.url_public.address, conn.local_addr()?.port()).parse()?;
+    let http = http.to_owned();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let ports = check::server_udp(&http).map_err(|e| eyre!(e))?;
+        let (seen, nat) = check::mapping(&ports);
+        let Some(seen) = seen else {
+            bail!("no answer to the address echo on {ports:?}");
+        };
+        if nat != check::Nat::Consistent {
+            bail!("the address echo saw this socket at two ports ({nat:?})");
+        }
+        println!("ok   the address echo sees this PC at {seen}, the same on both ports");
+        let report = |forward: Option<api::Forward>| api::ForwardReport {
+            local: local.to_string(),
+            forward,
+            nat: nat.as_str().into(),
+        };
+        let answer = api::forward(&http, &report(None)).map_err(|e| eyre!(e))?;
+        if answer.port != Some(local.port()) {
+            bail!("the router report wasn't matched to this bot's station: {answer:?}");
+        }
+        println!("ok   the router report is matched to this bot's station ({:?})", answer.port);
+        let forward = api::Forward { port: 40000, how: "UPnP".into() };
+        api::forward(&http, &report(Some(forward))).map_err(|e| eyre!(e))?;
+        println!("ok   a forward reported");
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+        let nonce = "0123456789abcdef";
+        api::reach(&http, socket.local_addr()?.port(), nonce).map_err(|e| eyre!(e))?;
+        let mut buf = [0u8; 64];
+        let n = socket.recv(&mut buf).map_err(|e| eyre!("no reach packet: {e}"))?;
+        if !api::is_reach(&buf[..n], nonce) {
+            bail!("not the reach packet: {:?}", String::from_utf8_lossy(&buf[..n]));
+        }
+        println!("ok   the server's reach packet came in");
+        Ok(())
+    })
+    .await??;
     Ok(())
 }
 

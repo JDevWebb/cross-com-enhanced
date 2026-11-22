@@ -10,12 +10,14 @@
 //! crosscom-server [--config crosscom-server.toml]
 //! crosscom-server [--config crosscom-server.toml] add-account NAME PASSWORD
 //! crosscom-server [--config crosscom-server.toml] logs [list | show REPORT]
+//! crosscom-server [--config crosscom-server.toml] connections [DAYS]
 //! ```
 
 mod accounts;
 mod api;
 mod clans;
 mod config;
+mod connections;
 mod dares;
 mod fixed;
 mod friends;
@@ -34,6 +36,7 @@ mod packs;
 mod privileges;
 mod proxy;
 mod rate_limit;
+mod reach;
 mod secure;
 mod sessions;
 mod signup;
@@ -75,6 +78,8 @@ enum Command {
     ListLogs,
     /// One report's log.
     ShowLog(String),
+    /// The connection records of the last so many days, summed up (`connections`).
+    Connections(u64),
 }
 
 fn parse_args() -> Result<(PathBuf, Command), String> {
@@ -97,7 +102,9 @@ fn parse_args() -> Result<(PathBuf, Command), String> {
         [cmd] if cmd == "logs" => Command::ListLogs,
         [cmd, sub] if cmd == "logs" && sub == "list" => Command::ListLogs,
         [cmd, sub, id] if cmd == "logs" && sub == "show" => Command::ShowLog(id.clone()),
-        _ => return Err("usage: crosscom-server [--config FILE] [add-account NAME PASSWORD | logs [list | show REPORT]]".into()),
+        [cmd] if cmd == "connections" => Command::Connections(30),
+        [cmd, days] if cmd == "connections" => Command::Connections(days.parse().map_err(|_| format!("{days} isn't a number of days"))?),
+        _ => return Err("usage: crosscom-server [--config FILE] [add-account NAME PASSWORD | logs [list | show REPORT] | connections [DAYS]]".into()),
     };
     Ok((config, command))
 }
@@ -148,7 +155,7 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Command::Serve | Command::AddAccount { .. } => {}
+        Command::Serve | Command::AddAccount { .. } | Command::Connections(_) => {}
     }
     let accounts = match Accounts::open(&config.database) {
         Ok(accounts) => Arc::new(accounts),
@@ -170,6 +177,23 @@ fn main() -> ExitCode {
             }
         },
         Command::Serve => serve(&config, accounts),
+        Command::Connections(days) => {
+            let records = connections::Connections::open(&config.database).and_then(|c| {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                c.since(now.saturating_sub(days * 24 * 3600))
+            });
+            match records {
+                Ok(records) => {
+                    let name = |pid: u32| accounts.name(pid).ok().flatten().unwrap_or_else(|| format!("{pid:#x}"));
+                    print!("{}", connections::summary(&records, days, name));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("couldn't read the connection records in {}: {e}", config.database.display());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::ListLogs | Command::ShowLog(_) => ExitCode::SUCCESS,
     }
 }
@@ -211,10 +235,19 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The game sessions (secure server); the auth server takes out a restarted host's lobbies.
+    let sessions = Arc::new(sessions::Sessions::default());
+    match connections::Connections::open(&config.database) {
+        Ok(records) => connections::start(records, Arc::clone(&sessions)),
+        Err(e) => error!(logger, "couldn't open the connection records in {}: {e}; joins aren't recorded", config.database.display()),
+    }
     let http = online_config::Http {
         content: online_config::content(public_ip, config.auth_port),
+        reach: reach::Reach::new(Arc::clone(&sessions)),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
-        api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online)).with_stats(Arc::clone(&stats)),
+        api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online))
+            .with_stats(Arc::clone(&stats))
+            .with_udp_ports(vec![config.auth_port, config.secure_port]),
         // Checked as the settings were read.
         proxies: config.trusted_proxies().unwrap_or_default(),
         logs: logs::Logs::new(config.logs(), Arc::clone(&accounts), Arc::clone(&online)),
@@ -253,8 +286,6 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     // The DLC packs players say they have (at sign-in, on the auth server) and their lobbies use
     // (on the secure server): searches go by them.
     let packs = Arc::new(packs::Packs::default());
-    // The game sessions (secure server); the auth server takes out a restarted host's lobbies.
-    let sessions = Arc::new(sessions::Sessions::default());
 
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
@@ -328,11 +359,14 @@ fn run_server(logger: &Logger, ctx: &Context, online: Option<Arc<online::Online>
     );
     // A player's last connection closing (or timing out) signs them out. When they sign in
     // from a new address, their old connections close first and the new sign-in counts after.
+    // On the secure server, where the sessions are, its joins end too (`connections`).
     let gone = {
         let online = online.clone();
+        let logger = logger.clone();
         move |ci: quazal::ClientInfo| {
             if let (Some(online), Some(pid)) = (&online, ci.user_id) {
                 online.gone(pid);
+                connections::gone(&logger, pid);
             }
         }
     };

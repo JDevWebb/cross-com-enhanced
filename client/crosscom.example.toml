@@ -26,3 +26,8 @@ overlay_key = "F5"
 # Windows user name and password are taken out first. Each game's log is kept in the logs
 # folder next to this file either way.
 send_logs = true
+
+# Ask the router to forward the game's peer-to-peer port (UDP 2346) to this PC while the game
+# runs (UPnP, PCP or NAT-PMP), so other players reach it directly, and tell the server about it
+# (true or false).
+port_forwarding = true

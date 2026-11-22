@@ -12,7 +12,8 @@
 # is passed on as it comes; its server decides what it takes over plain HTTP.
 #
 # Players' logs (POST /api/logs) come over plain HTTP from the client DLL, by whatever address the
-# player set up; they say whose they are in their X-Crosscom-Client header.
+# player set up, and so do its and the launcher's router reports and tests (POST /api/forward and
+# /api/reach); they say whose they are in their X-Crosscom-Client header.
 {
 	auto_https disable_redirects
 }
@@ -44,6 +45,19 @@
 	handle @future_soldier_logs {
 		request_body {
 			max_size 5MB
+		}
+		reverse_proxy server:80
+	}
+
+	# Future Soldier's router reports and connection tests, whatever address they were sent to.
+	@future_soldier_reach {
+		method POST
+		path /api/forward /api/reach
+		header X-Crosscom-Client *
+	}
+	handle @future_soldier_reach {
+		request_body {
+			max_size 1KB
 		}
 		reverse_proxy server:80
 	}

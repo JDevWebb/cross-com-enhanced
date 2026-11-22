@@ -32,6 +32,8 @@ pub struct ServerInfo {
     pub game: Option<String>,
     pub version: Option<String>,
     pub players_online: Option<u32>,
+    /// The UDP ports the game signs in on (auth, then secure), which answer the address echo.
+    pub udp_ports: Vec<u16>,
     pub news: Vec<NewsItem>,
 }
 

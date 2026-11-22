@@ -85,6 +85,13 @@ export component AppWindow inherits Window {
     in-out property <bool> opt-overlay;
     in-out property <int> opt-overlay-key;
     in-out property <bool> opt-send-logs;
+    in-out property <bool> opt-port-forwarding;
+    // The connection test: running, its verdict ("good", "warn" or "bad" for its colour) and
+    // what it found.
+    in property <bool> conn-testing;
+    in property <string> conn-summary;
+    in property <string> conn-tone;
+    in property <[string]> conn-details;
     in property <string> options-said;
     in property <bool> options-failed;
     in-out property <bool> acc-new;
@@ -125,6 +132,7 @@ export component AppWindow inherits Window {
     callback send-logs-now();
     callback open-logs();
     callback restore();
+    callback test-connection();
     // About: one of its links, by id.
     callback open-link(string);
 
@@ -202,6 +210,11 @@ export component AppWindow inherits Window {
                     overlay <=> root.opt-overlay;
                     overlay-key <=> root.opt-overlay-key;
                     send-logs <=> root.opt-send-logs;
+                    port-forwarding <=> root.opt-port-forwarding;
+                    connection-testing: root.conn-testing;
+                    connection-summary: root.conn-summary;
+                    connection-tone: root.conn-tone;
+                    connection-details: root.conn-details;
                     options-said: root.options-said;
                     options-failed: root.options-failed;
                     new-account <=> root.acc-new;
@@ -226,6 +239,7 @@ export component AppWindow inherits Window {
                     send-logs-now => { root.send-logs-now(); }
                     open-logs => { root.open-logs(); }
                     restore => { root.restore(); }
+                    test-connection => { root.test-connection(); }
                 }
                 if root.loaded && root.shown == "about": AboutScreen {
                     release: root.release;

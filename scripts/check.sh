@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 image=${IMAGE:-fes-build:local}
 target=${TARGET:-/target}
-crates=(-p quazal -p crosscom-server -p crosscom-testbot -p crosscom-launcher -p crosscom-client-common)
+crates=(-p quazal -p crosscom-server -p crosscom-testbot -p crosscom-launcher -p crosscom-client-common -p crosscom-client-net)
 docker run --rm -v "$PWD":/src -w /src -v fe-cargo-registry:/usr/local/cargo/registry -v ccb-target:/target \
   -e CARGO_TARGET_DIR="$target" "$image" sh -euc "
     rustup component add clippy rustfmt >/dev/null 2>&1

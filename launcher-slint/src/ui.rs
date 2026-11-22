@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crosscom_client_net::check;
 use crosscom_launcher::dlc;
 use crosscom_launcher::server;
 use crosscom_launcher::settings::OVERLAY_KEYS;
@@ -63,6 +64,7 @@ pub fn info_view(info: &core::Info) -> InfoView {
         overlay: info.overlay,
         overlay_key: key_index(&info.overlay_key),
         send_logs: info.send_logs,
+        port_forwarding: info.port_forwarding,
         dlc: dlc_rows(&info.dlc),
         dlc_note: s(dlc::warning(&info.dlc).unwrap_or_default()),
         ready: info.ready(),
@@ -383,6 +385,7 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_opt_overlay(view.overlay);
     w.set_opt_overlay_key(view.overlay_key);
     w.set_opt_send_logs(view.send_logs);
+    w.set_opt_port_forwarding(view.port_forwarding);
     w.set_options_said(s(""));
     w.set_acc_new(false);
     w.set_acc_name(s(""));
@@ -404,6 +407,42 @@ fn show_logs(w: &AppWindow, l: &Launcher) {
         w.set_logs_said(s(said));
     }
     w.set_logs_sending(status.sending);
+}
+
+/// The connection test's result, in Settings.
+pub fn show_connection(w: &AppWindow, result: &Result<check::Report, String>) {
+    let (summary, tone, details) = match result {
+        Ok(report) => (
+            report.summary(),
+            match report.verdict() {
+                check::Verdict::Open => "good",
+                check::Verdict::Moderate => "warn",
+                check::Verdict::Strict | check::Verdict::Blocked => "bad",
+            },
+            report.details(),
+        ),
+        Err(e) => (e.clone(), "bad", Vec::new()),
+    };
+    w.set_conn_summary(s(summary));
+    w.set_conn_tone(s(tone));
+    w.set_conn_details(ModelRc::new(VecModel::from(details.into_iter().map(s).collect::<Vec<_>>())));
+}
+
+/// Runs the connection test, off the window's thread.
+fn test_connection(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_conn_testing(true);
+    w.set_conn_summary(s("Testing…"));
+    w.set_conn_tone(s("warn"));
+    w.set_conn_details(ModelRc::default());
+    let worker = l.clone();
+    background(
+        w,
+        move || worker.test_connection(),
+        move |w, result| {
+            w.set_conn_testing(false);
+            show_connection(w, &result);
+        },
+    );
 }
 
 /// Sends the logs waiting to go (as the launcher starts, after a game, or when asked).
@@ -429,6 +468,7 @@ fn save_options(w: &AppWindow, l: &Arc<Launcher>) {
         overlay: w.get_opt_overlay(),
         overlay_key: key.into(),
         send_logs: w.get_opt_send_logs(),
+        port_forwarding: w.get_opt_port_forwarding(),
     };
     match l.set_options(options) {
         Ok(()) => {
@@ -596,6 +636,7 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         });
     }
     w.on_send_logs_now(on(|w, l| send_logs(w, l, None)));
+    w.on_test_connection(on(test_connection));
     w.on_open_logs(on(|w, l| {
         if let Err(e) = l.open_logs() {
             w.set_logs_said(s(e));

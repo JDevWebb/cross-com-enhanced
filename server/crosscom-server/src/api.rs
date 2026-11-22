@@ -1,7 +1,7 @@
 //! The launcher's API, over HTTP next to the online config. Always on.
 //!
 //! - `GET /api/info`: `{"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier",
-//!   "version": "0.1.0", "players_online": 3, "news": [...]}`, the news as
+//!   "version": "0.1.0", "players_online": 3, "news": [...], "udp_ports": [21030, 21031]}`, the news as
 //!   the game shows it (see `news.rs`), each `{"title", "body", "date": "YYYY-MM-DD", "shows"}`
 //!   with `shows` null or `"multiplayer"`, `"campaign"` or `"guerrilla"`.
 //! - `POST /api/login` with `{"name": ..., "password": ...}`: `200 {"pid": ...}` when they match
@@ -9,6 +9,8 @@
 //!   own sign-in (`rate_limit.rs`), so the two together give no more guesses than either:
 //!   `429` once over them.
 //! - `GET /api/leaderboard?mode=...`: every player ranked (see `leaderboard.rs`).
+//! - `POST /api/forward` and `POST /api/reach`: clients' reports of their routers, and their
+//!   connection tests (see `reach.rs`).
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -46,6 +48,7 @@ pub struct Api {
     online: Arc<Online>,
     stats: Option<Arc<crate::stats::Store>>,
     leaderboards: leaderboard::Cache,
+    udp_ports: Vec<u16>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +58,7 @@ struct Info {
     version: &'static str,
     players_online: usize,
     news: Vec<news::Shown>,
+    udp_ports: Vec<u16>,
 }
 
 #[derive(Deserialize)]
@@ -73,7 +77,16 @@ impl Api {
             online,
             stats: None,
             leaderboards: leaderboard::Cache::default(),
+            udp_ports: Vec::new(),
         }
+    }
+
+    /// The UDP ports the game signs in on, auth then secure: both answer the address echo,
+    /// which clients' connection tests ask (see `reach`).
+    #[must_use]
+    pub fn with_udp_ports(mut self, ports: Vec<u16>) -> Self {
+        self.udp_ports = ports;
+        self
     }
 
     /// The statistics the leaderboard is made from.
@@ -112,6 +125,7 @@ impl Api {
             version: env!("CROSSCOM_RELEASE"),
             players_online: self.online.count(),
             news: news::shown(&news::load(&self.news, logger), now),
+            udp_ports: self.udp_ports.clone(),
         };
         serde_json::to_string(&info).unwrap_or_default()
     }

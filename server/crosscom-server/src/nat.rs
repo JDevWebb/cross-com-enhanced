@@ -155,6 +155,7 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
         socket: &std::net::UdpSocket,
     ) -> Result<RequestProbeInitiationResponse, Error> {
         let pid = player(ci)?;
+        crate::connections::probed(pid);
         let observed: StationURL = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
             .parse()
             .map_err(|_| Error::InternalError)?;
@@ -173,6 +174,7 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
         socket: &std::net::UdpSocket,
     ) -> Result<RequestProbeInitiationExtResponse, Error> {
         let pid = player(ci)?;
+        crate::connections::probed(pid);
         let seen: IpAddr = ci.address().ip();
         let station = request.url_station_to_probe;
         if !may_probe(&station, seen, seen) {
