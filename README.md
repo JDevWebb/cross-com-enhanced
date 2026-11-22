@@ -208,6 +208,7 @@ Matches themselves are still hosted by the players, as they always were.
 
 Cross-Com Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), as a sister project to [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) for Splinter Cell: Blacklist.
 
+- **[5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced)**, this project's starting point: `quazal/` and `tools/quazal-tools/` came from it with its fixes and their history, and the release process (signed releases, build provenance and VirusTotal scans), the CI and the issue forms are adapted from its own.
 - **[unixoide](https://github.com/unixoide)** wrote [5th Echelon](https://github.com/unixoide/5th-echelon) and its Quazal implementation (PRUDP, RMC, Kerberos tickets), which `quazal/` is built on, with its history and authors kept. Also by its contributors Matthias Walther, koteykaby and Askorbinovaya Kislota.
 - **[Phoenix Network](https://github.com/Phoenix-Network-Ltd/Ghost-Recon-Future-Soldier-Research)** (Michał Kapała): the first Future Soldier backend research, which worked out much of the sign-in and recorded what the official servers answered, such as the players' privileges.
 - **[zeroKilo](https://github.com/zeroKilo)** and **[Michał Kapała](https://github.com/michal-kapala)**: [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), a Ghost Recon Online backend on the same online stack.
