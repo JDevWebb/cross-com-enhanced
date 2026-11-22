@@ -35,6 +35,7 @@ component StatusCard inherits Card {
 export component PlayScreen inherits Rectangle {
     in property <InfoView> info;
     in property <string> community-name;
+    in property <string> community-status;
     // The server: "asking", "up" or "down", and the line under it.
     in property <string> server-state;
     in property <string> server-detail;
@@ -99,7 +100,7 @@ export component PlayScreen inherits Rectangle {
                     width: (root.width - 108px) / 3;
                     value: root.info.server;
                     detail: root.server-detail;
-                    tag: root.info.community ? root.community-name : "";
+                    tag: !root.info.community ? "" : root.community-status != "" ? root.community-name + " · " + root.community-status : root.community-name;
                     HorizontalLayout {
                         spacing: 8px;
                         Caps { text: "SERVER"; horizontal-stretch: 1; }

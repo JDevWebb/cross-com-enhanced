@@ -23,6 +23,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 pub const COMMUNITY: &str = "grfs-test.jdevwebb.net";
 /// What the launcher calls it.
 pub const COMMUNITY_NAME: &str = "Community test network";
+/// A note shown beside its name while it isn't open yet; "" once it is.
+pub const COMMUNITY_STATUS: &str = "Launching soon";
 /// Where a server's host learns to set up HTTPS.
 pub const HTTPS_HELP: &str = "https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md#https-with-caddy";
 

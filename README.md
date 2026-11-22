@@ -35,9 +35,13 @@ What that means for you:
 
 ## The community test network
 
+> [!NOTE]
+> **Launching soon.** The community test network isn't open yet; until it is, play on [your own server](#run-your-own-server) or a friend's.
+
 **There is a community test network that anyone can play on, for free: `grfs-test.jdevwebb.net`.** It's the launcher's default, so there's nothing to type: everyone testing signs in to the same server, so every Quick Match search finds the other testers. It runs this test build, and it may be reset between builds.
 
 <table>
+<tr><td><b>Status</b></td><td>Launching soon</td></tr>
 <tr><td><b>Address</b></td><td><code>grfs-test.jdevwebb.net</code>: the launcher's default</td></tr>
 <tr><td><b>Modes</b></td><td>Every adversarial mode, ranked and player matches, the campaign and Guerrilla in co-op</td></tr>
 <tr><td><b>Your account</b></td><td>Made in the launcher, the first time you play; your password goes over HTTPS</td></tr>
