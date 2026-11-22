@@ -156,7 +156,13 @@ fn send(stream: &mut TcpStream, status: &str, body: &str) -> std::io::Result<()>
 fn answer_logs(logger: &Logger, mut stream: TcpStream, http: &Http, peer: IpAddr, head: &str, start: &[u8]) -> std::io::Result<()> {
     let deadline = Instant::now() + crate::logs::DEADLINE;
     stream.set_write_timeout(Some(crate::logs::DEADLINE))?;
-    let client = crate::proxy::client(peer, head, &http.proxies).address;
+    let client = crate::proxy::client(peer, head, &http.proxies);
+    if !client.may_send_passwords() {
+        warn!(logger, "{}: a log sent through the proxy without HTTPS, refused", client.address);
+        let (status, body) = crate::signup::error("403 Forbidden", "this server takes logs over HTTPS only");
+        return send(&mut stream, status, &body);
+    }
+    let client = client.address;
     let slot = match http.logs.check(client, head) {
         Ok(slot) => slot,
         Err((status, body)) => {
@@ -245,6 +251,12 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
     if matches!(route, Route::Login | Route::SignUp) && !client.may_send_passwords() {
         warn!(logger, "{peer}: password sent through the proxy without HTTPS, refused");
         return Some(crate::signup::error("403 Forbidden", "this server takes passwords over HTTPS only"));
+    }
+    // What players' clients send about them (logs, their routers) goes over HTTPS too, where the
+    // server has it: through the proxy, only over HTTPS.
+    if matches!(route, Route::Logs | Route::Forward | Route::Reach) && !client.may_send_passwords() {
+        warn!(logger, "{peer}: {line:?} through the proxy without HTTPS, refused");
+        return Some(crate::signup::error("403 Forbidden", "this server takes this over HTTPS only"));
     }
     Some(match route {
         Route::Nothing => return None,
@@ -470,7 +482,11 @@ mod tests {
     }
 
     fn log_upload(account: &str, body: &str, forwarded_for: Option<&str>) -> String {
-        let forwarded = forwarded_for.map_or(String::new(), |f| format!("X-Forwarded-For: {f}\r\nX-Forwarded-Proto: http\r\n"));
+        log_upload_over(account, body, forwarded_for, "https")
+    }
+
+    fn log_upload_over(account: &str, body: &str, forwarded_for: Option<&str>, proto: &str) -> String {
+        let forwarded = forwarded_for.map_or(String::new(), |f| format!("X-Forwarded-For: {f}\r\nX-Forwarded-Proto: {proto}\r\n"));
         format!(
             "POST /api/logs HTTP/1.1\r\nHost: x\r\n{forwarded}Content-Type: text/plain; charset=utf-8\r\nX-Crosscom-Account: {account}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
@@ -489,6 +505,10 @@ mod tests {
         // Behind the trusted proxy, the client it names.
         assert_eq!(ask_from(&http, PROXY, &log_upload("Kozak", "a log\n", Some(PLAYER))).unwrap().0, "201 Created");
         assert_eq!(ask_from(&http, PROXY, &log_upload("Kozak", "a log\n", Some("203.0.113.9"))).unwrap().0, "403 Forbidden");
+        // Through the proxy over plain HTTP: refused, as a password would be.
+        let (status, json) = ask_from(&http, PROXY, &log_upload_over("Kozak", "a log\n", Some(PLAYER), "http")).unwrap();
+        assert_eq!(status, "403 Forbidden");
+        assert!(json.contains("HTTPS"), "{json}");
         // Not from the proxy, the header is ignored.
         assert_eq!(ask_from(&http, "203.0.113.9", &log_upload("Kozak", "a log\n", Some(PLAYER))).unwrap().0, "403 Forbidden");
         let cut_short = "POST /api/logs HTTP/1.1\r\nX-Crosscom-Account: Kozak\r\nContent-Length: 50\r\n\r\n{}";
@@ -542,6 +562,11 @@ mod tests {
         assert_eq!(via("/accounts", signup, "https").0, "201 Created");
         let no_proto = format!("POST /api/login HTTP/1.1\r\nContent-Length: {}\r\n\r\n{login}", login.len());
         assert_eq!(ask_from(&http, PROXY, &no_proto).unwrap().0, "403 Forbidden");
+        // Clients' router reports and connection tests too.
+        let report = r#"{"local":"192.168.1.20:2346","forward":null,"nat":"consistent"}"#;
+        assert_eq!(via("/api/forward", report, "http").0, "403 Forbidden");
+        assert_eq!(via("/api/forward", report, "https").0, "200 OK");
+        assert_eq!(via("/api/reach", r#"{"port":40000,"nonce":"0011aabb"}"#, "http").0, "403 Forbidden");
         // What needs no password still goes over plain HTTP: the game's online config, the info.
         let get = |path: &str| ask_from(&http, PROXY, &format!("GET {path} HTTP/1.1\r\nX-Forwarded-Proto: http\r\n\r\n")).unwrap().0;
         assert_eq!(get("/OnlineConfigService.svc/GetOnlineConfig"), "200 OK");

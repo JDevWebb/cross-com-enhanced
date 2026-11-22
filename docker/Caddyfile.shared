@@ -11,9 +11,8 @@
 # Passwords to this server go over HTTPS only, as in docker/Caddyfile. The other domain's traffic
 # is passed on as it comes; its server decides what it takes over plain HTTP.
 #
-# Players' logs (POST /api/logs) come over plain HTTP from the client DLL, by whatever address the
-# player set up, and so do its and the launcher's router reports and tests (POST /api/forward and
-# /api/reach); they say whose they are in their X-Crosscom-Client header.
+# The launcher and the client DLL use this server's API over HTTPS, at CROSSCOM_DOMAIN: players'
+# logs and router reports, like passwords, are taken over HTTPS only.
 {
 	auto_https disable_redirects
 }
@@ -33,32 +32,6 @@
 		query onlineConfigID=23ad683803a0457cabce83f905811dbc
 	}
 	handle @future_soldier {
-		reverse_proxy server:80
-	}
-
-	# Future Soldier's players' logs, whatever address they were sent to.
-	@future_soldier_logs {
-		method POST
-		path /api/logs
-		header X-Crosscom-Client *
-	}
-	handle @future_soldier_logs {
-		request_body {
-			max_size 5MB
-		}
-		reverse_proxy server:80
-	}
-
-	# Future Soldier's router reports and connection tests, whatever address they were sent to.
-	@future_soldier_reach {
-		method POST
-		path /api/forward /api/reach
-		header X-Crosscom-Client *
-	}
-	handle @future_soldier_reach {
-		request_body {
-			max_size 1KB
-		}
 		reverse_proxy server:80
 	}
 

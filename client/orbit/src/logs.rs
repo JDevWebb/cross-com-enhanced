@@ -3,7 +3,7 @@
 //!
 //! The server only takes logs from an address the account has played from lately, so they go
 //! once this game has signed in: a while after it asks for its sign-in details, on a thread of
-//! its own, over plain HTTP (this library has no TLS). Nothing waits on it. A run the server
+//! its own, over HTTPS (`crosscom_client_common::http`). Nothing waits on it. A run the server
 //! doesn't take stays pending for the next start; a refusal for not being signed in is quiet.
 
 use std::path::PathBuf;

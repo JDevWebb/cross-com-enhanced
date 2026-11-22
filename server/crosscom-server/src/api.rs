@@ -1,4 +1,5 @@
-//! The launcher's API, over HTTP next to the online config. Always on.
+//! The launcher's API, on the HTTP port next to the online config (behind Caddy, over HTTPS).
+//! Always on.
 //!
 //! - `GET /api/info`: `{"name": "Cross-Com Enhanced", "game": "ghost-recon-future-soldier",
 //!   "version": "0.1.0", "players_online": 3, "news": [...], "udp_ports": [21030, 21031]}`, the news as

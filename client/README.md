@@ -21,14 +21,14 @@ F5 (or `overlay_key`, F1 to F12) opens a panel over the game; it or Esc closes i
 
 Toasts in the top-right corner say when the game signs in ("Cross-Com: signed in as NAME"), when the server stops answering, and when there's news.
 
-The server's details come from `GET http://<server>/api/info` (its HTTP port, 80), asked every minute on a thread of its own. Drawing uses [hudhook](https://github.com/veeenu/hudhook) (patched, in `vendor/hudhook`) and Dear ImGui over the game's DirectX 11 or 9 frames, by the exe's name. It starts 10 s after the game does, as hooking earlier can stop a fullscreen game from starting. If it can't hook (no DirectX device it can use, a library missing) it says why in `crosscom.log` and the game runs without it. `overlay = false` turns it off: nothing is hooked and no requests are made.
+The server's details come from `GET https://<server>/api/info` (over HTTPS; plain HTTP only for a server set up by a private address without HTTPS, see `client/common/src/http.rs`), asked every minute on a thread of its own. Drawing uses [hudhook](https://github.com/veeenu/hudhook) (patched, in `vendor/hudhook`) and Dear ImGui over the game's DirectX 11 or 9 frames, by the exe's name. It starts 10 s after the game does, as hooking earlier can stop a fullscreen game from starting. If it can't hook (no DirectX device it can use, a library missing) it says why in `crosscom.log` and the game runs without it. `overlay = false` turns it off: nothing is hooked and no requests are made.
 
 ## Port forwarding
 
 Unless `port_forwarding = false`, or the server is on the player's own network or VPN, `ubiorbitapi_r2_loader.dll` keeps the game's peer-to-peer port (UDP 2346) forwarded on the router while the game runs, on a thread of its own (`client/net`, `keep.rs`):
 
 1. It asks the server's address echo, on both of its UDP sign-in ports, how the router maps ports (one public port per socket, or one per destination).
-2. It reports the game's socket on this network to the server (`POST http://<server>/api/forward`, see [docs/hosting.md](../docs/hosting.md#connection-records)), every 20 s until the game has registered it; the server then answers the socket's public port.
+2. It reports the game's socket on this network to the server (`POST https://<server>/api/forward`, see [docs/hosting.md](../docs/hosting.md#connection-records)), every 20 s until the game has registered it; the server then answers the socket's public port.
 3. It asks the router to forward that public port to the socket (UPnP, then PCP, then NAT-PMP), for 30 minutes at a time. The port the router already gives the socket is asked for, so a forward never takes another PC's.
 4. Once, it checks that a forward lets packets in: a fresh socket's port forwarded the same way, and the server asked to send to it (`POST /api/reach`). A router behind another one agrees to forwards that are no use.
 5. It reports the forward, which the server gives the players in the player's matches, and renews both every 10 minutes. The forward ends half an hour after the game closes.
@@ -39,7 +39,7 @@ Unless `port_forwarding = false`, or the server is on the player's own network o
 
 Only `ubiorbitapi_r2_loader.dll` writes `crosscom.log`. As the game starts, before the log opens, the last run's `crosscom.log` moves to `logs\crosscom-<yyyymmdd-hhmmss>.log` (the time, UTC, that run started) and a new one begins; the 20 newest runs are kept. The first lines say the client's version, the exe and the Windows version.
 
-Unless `send_logs = false`, finished runs go to the server (`POST http://<server>/api/logs`, see [docs/hosting.md](../docs/hosting.md#players-logs)), with the Windows user name (also in `C:\Users\<name>`) and the account's password replaced by `<user>` and `<password>`, and anything over 2 MiB cut to its start and end. The launcher sends a run as soon as the game it started exits. A game started without the launcher sends the earlier runs itself, on a thread of its own, 30 s after it asks for its sign-in details (the server only takes logs from an address the account has played from). A run the server took is renamed `*.sent.log`; one it didn't stays for next time, and `crosscom.log` says why ("Logs of the run of ... sent: report ...").
+Unless `send_logs = false`, finished runs go to the server (`POST https://<server>/api/logs`, see [docs/hosting.md](../docs/hosting.md#players-logs)), with the Windows user name (also in `C:\Users\<name>`) and the account's password replaced by `<user>` and `<password>`, and anything over 2 MiB cut to its start and end. The launcher sends a run as soon as the game it started exits. A game started without the launcher sends the earlier runs itself, on a thread of its own, 30 s after it asks for its sign-in details (the server only takes logs from an address the account has played from). A run the server took is renamed `*.sent.log`; one it didn't stays for next time, and `crosscom.log` says why ("Logs of the run of ... sent: report ...").
 
 ## Building
 

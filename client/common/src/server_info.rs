@@ -1,29 +1,24 @@
-//! What the server says about itself at `GET /api/info`, on its HTTP port (80), for the overlay:
-//! its version, how many players are online and its news; and its leaderboard
-//! (`GET /api/leaderboard?mode=...`). Also the post that sends the logs (`runs`).
+//! What the server says about itself at `GET /api/info`, for the overlay: its version, how many
+//! players are online and its news; and its leaderboard (`GET /api/leaderboard?mode=...`). Also
+//! the post that sends the logs (`runs`) and the client's router reports (`net`).
 //!
-//! A small HTTP/1.0 client over a plain `TcpStream`, as the server answers on plain HTTP and the
-//! client DLL shouldn't carry a TLS stack. Every field is optional; a server without the page
-//! (404) is still a server that answered.
+//! Over HTTPS (see `http`). Every field is optional; a server without the page (404) is still a
+//! server that answered.
 
 use std::collections::HashSet;
-use std::io::Read;
-use std::io::Write;
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+pub use crate::http::address;
+pub use crate::http::Unreachable;
+pub use crate::http::HTTP_PORT;
 
 /// The page.
 pub const PATH: &str = "/api/info";
 /// The game a Cross-Com server for Future Soldier says it's for. A machine may host another
 /// game's server behind the same Caddy, and an address alone reaches that one's page.
 pub const GAME: &str = "ghost-recon-future-soldier";
-/// The server's HTTP port, unless `server` names another (`host:port`).
-pub const HTTP_PORT: u16 = 80;
-/// The most of an answer that's read.
-const MAX_RESPONSE: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -58,35 +53,10 @@ pub enum Reply {
     OtherGame(String),
 }
 
-/// The server couldn't be asked: not found, not answering, or not speaking HTTP.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Unreachable(pub String);
-
-impl std::fmt::Display for Unreachable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// The host and port of `server` (`host`, `host:port`, `[v6]` or `[v6]:port`).
-#[must_use]
-pub fn address(server: &str) -> (String, u16) {
-    let server = server.trim();
-    if let Some(rest) = server.strip_prefix('[') {
-        if let Some((host, after)) = rest.split_once(']') {
-            let port = after.strip_prefix(':').and_then(|p| p.parse().ok()).unwrap_or(HTTP_PORT);
-            return (host.to_owned(), port);
-        }
-    }
-    match server.split_once(':') {
-        Some((host, port)) if !port.contains(':') => (host.to_owned(), port.parse().unwrap_or(HTTP_PORT)),
-        _ => (server.to_owned(), HTTP_PORT),
-    }
-}
-
 /// Asks `server` for its info, giving up after `timeout` at each step.
 pub fn fetch(server: &str, timeout: Duration) -> Result<Reply, Unreachable> {
-    reply(&get(server, PATH, timeout)?)
+    let (status, body) = get(server, PATH, timeout)?;
+    Ok(reply(status, &body))
 }
 
 /// The leaderboard's page.
@@ -127,126 +97,34 @@ pub struct Leaderboard {
 /// server answered without one (an older server).
 pub fn fetch_leaderboard(server: &str, mode: &str, timeout: Duration) -> Result<Option<Leaderboard>, Unreachable> {
     let mode: String = mode.chars().filter(char::is_ascii_alphanumeric).collect();
-    let response = get(server, &format!("{LEADERBOARD_PATH}?mode={mode}"), timeout)?;
-    Ok(body(&response)?.ok().and_then(|body| serde_json::from_slice(&body).ok()))
+    let (status, body) = get(server, &format!("{LEADERBOARD_PATH}?mode={mode}"), timeout)?;
+    Ok((status == 200).then(|| serde_json::from_slice(&body).ok()).flatten())
 }
 
-/// Asks `server` for `path` over plain HTTP/1.0, and reads the whole answer.
-fn get(server: &str, path: &str, timeout: Duration) -> Result<Vec<u8>, Unreachable> {
-    request(server, "GET", path, &[("Accept", "application/json".into())], &[], timeout)
+/// Asks `server` for `path`: the answer's status and body.
+fn get(server: &str, path: &str, timeout: Duration) -> Result<(u16, Vec<u8>), Unreachable> {
+    let response = crate::http::request(server, "GET", path, &[("Accept", "application/json".into())], &[], timeout)?;
+    Ok((response.status, response.body))
 }
 
-/// Posts `body` with `headers` to `path` on `server` over plain HTTP/1.0 (the logs, see `runs`):
-/// the answer's status and body. Header values must be on one line.
+/// Posts `body` with `headers` to `path` on `server` (the logs, see `runs`): the answer's status
+/// and body. Header values are put on one line.
 pub fn post(server: &str, path: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>), Unreachable> {
-    let response = request(server, "POST", path, headers, body, timeout)?;
-    status_and_body(&response)
+    let response = crate::http::request(server, "POST", path, headers, body, timeout)?;
+    Ok((response.status, response.body))
 }
 
-/// Sends one request and reads the whole answer. A server that answers before taking the whole
-/// body (one refusing it) may close on the rest: its answer is still read.
-fn request(server: &str, method: &str, path: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Vec<u8>, Unreachable> {
-    let (host, port) = address(server);
-    let addr = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| Unreachable(format!("couldn't look up {host}: {e}")))?
-        .next()
-        .ok_or_else(|| Unreachable(format!("{host} has no address")))?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| Unreachable(format!("couldn't connect to {addr}: {e}")))?;
-    let io = |e: std::io::Error| Unreachable(format!("{addr}: {e}"));
-    stream.set_read_timeout(Some(timeout)).map_err(io)?;
-    stream.set_write_timeout(Some(timeout)).map_err(io)?;
-    let host_header = if host.contains(':') { format!("[{host}]") } else { host.clone() };
-    let mut head = format!("{method} {path} HTTP/1.0\r\nHost: {host_header}\r\nConnection: close\r\nUser-Agent: Cross-Com\r\n");
-    for (name, value) in headers {
-        let value: String = value.chars().filter(|c| !c.is_control()).collect();
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    if method != "GET" {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).map_err(io)?;
-    let wrote = stream.write_all(body);
-    let mut response = Vec::new();
-    let read = stream.take(MAX_RESPONSE as u64).read_to_end(&mut response);
-    if response.is_empty() {
-        wrote.map_err(io)?;
-        read.map_err(io)?;
-    }
-    Ok(response)
-}
-
-/// An HTTP response's status and body.
-fn status_and_body(response: &[u8]) -> Result<(u16, Vec<u8>), Unreachable> {
-    match body(response)? {
-        Ok(body) => Ok((200, body)),
-        Err(status) => {
-            let start = response.windows(4).position(|w| w == b"\r\n\r\n").map_or(response.len(), |e| e + 4);
-            Ok((status, response[start..].to_vec()))
-        }
-    }
-}
-
-/// Reads an HTTP response as the info page.
-pub fn reply(response: &[u8]) -> Result<Reply, Unreachable> {
-    Ok(match body(response)? {
-        Ok(body) => match serde_json::from_slice::<ServerInfo>(&body) {
-            Ok(info) if info.game.as_deref() != Some(GAME) => Reply::OtherGame(info.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "another game's server".into())),
-            Ok(info) => Reply::Info(info),
-            Err(e) => Reply::NoInfo(format!("its info isn't as expected: {e}")),
-        },
-        Err(status) => Reply::NoInfo(format!("HTTP {status}")),
-    })
-}
-
-/// An HTTP response's body, or its status when that isn't 200.
-fn body(response: &[u8]) -> Result<Result<Vec<u8>, u16>, Unreachable> {
-    let Some(head_end) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return Err(Unreachable("the server's answer isn't HTTP".into()));
-    };
-    let head = String::from_utf8_lossy(&response[..head_end]);
-    let mut lines = head.lines();
-    let status: u16 = lines
-        .next()
-        .filter(|l| l.starts_with("HTTP/"))
-        .and_then(|l| l.split(' ').nth(1))
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| Unreachable("the server's answer isn't HTTP".into()))?;
+/// Reads the info page's answer.
+#[must_use]
+pub fn reply(status: u16, body: &[u8]) -> Reply {
     if status != 200 {
-        return Ok(Err(status));
+        return Reply::NoInfo(format!("HTTP {status}"));
     }
-    let header = |name: &str| {
-        head.lines()
-            .skip(1)
-            .find_map(|l| l.split_once(':').filter(|(n, _)| n.trim().eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned()))
-    };
-    let mut body = response[head_end + 4..].to_vec();
-    if header("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
-        body = unchunk(&body);
-    } else if let Some(len) = header("content-length").and_then(|v| v.parse::<usize>().ok()) {
-        body.truncate(len);
+    match serde_json::from_slice::<ServerInfo>(body) {
+        Ok(info) if info.game.as_deref() != Some(GAME) => Reply::OtherGame(info.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "another game's server".into())),
+        Ok(info) => Reply::Info(info),
+        Err(e) => Reply::NoInfo(format!("its info isn't as expected: {e}")),
     }
-    Ok(Ok(body))
-}
-
-/// A chunked body's data (as much as came).
-fn unchunk(mut body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    while let Some(line_end) = body.windows(2).position(|w| w == b"\r\n") {
-        let size = String::from_utf8_lossy(&body[..line_end]);
-        let Ok(size) = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16) else {
-            break;
-        };
-        body = &body[line_end + 2..];
-        if size == 0 {
-            break;
-        }
-        let take = size.min(body.len());
-        out.extend_from_slice(&body[..take]);
-        body = body.get(take + 2..).unwrap_or_default();
-    }
-    out
 }
 
 /// What the overlay tells the player about, from one check to the next.
@@ -294,29 +172,17 @@ impl Watch {
 mod tests {
     use super::*;
 
-    fn ok(body: &str) -> Vec<u8> {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .into_bytes()
-    }
-
-    #[test]
-    fn finds_the_port() {
-        assert_eq!(address("play.example.net"), ("play.example.net".into(), 80));
-        assert_eq!(address(" 10.0.0.5:8080 "), ("10.0.0.5".into(), 8080));
-        assert_eq!(address("[::1]:81"), ("::1".into(), 81));
-        assert_eq!(address("[::1]"), ("::1".into(), 80));
-        assert_eq!(address("::1"), ("::1".into(), 80));
+    fn ok(body: &str) -> Reply {
+        reply(200, body.as_bytes())
     }
 
     #[test]
     fn reads_the_info() {
-        let body = r#"{"game":"ghost-recon-future-soldier","version":"0.3.0","players_online":4,"news":[{"title":"Welcome","body":"Hi","date":"2026-11-15","shows":null},{"title":"Campaign","body":"Co-op","date":"2026-11-14","shows":"campaign"}],"later":1}"#;
-        let Ok(Reply::Info(info)) = reply(&ok(body)) else { panic!() };
+        let body = r#"{"game":"ghost-recon-future-soldier","version":"0.3.0","players_online":4,"udp_ports":[21030,21031],"news":[{"title":"Welcome","body":"Hi","date":"2026-11-15","shows":null},{"title":"Campaign","body":"Co-op","date":"2026-11-14","shows":"campaign"}],"later":1}"#;
+        let Reply::Info(info) = ok(body) else { panic!() };
         assert_eq!(info.version.as_deref(), Some("0.3.0"));
         assert_eq!(info.players_online, Some(4));
+        assert_eq!(info.udp_ports, [21030, 21031]);
         assert_eq!(info.news.len(), 2);
         assert_eq!(info.news[1].shows.as_deref(), Some("campaign"));
         assert_eq!(info.news[0].date.as_deref(), Some("2026-11-15"));
@@ -324,11 +190,9 @@ mod tests {
 
     #[test]
     fn every_field_but_the_game_is_optional() {
-        let Ok(Reply::Info(info)) = reply(&ok(r#"{"game":"ghost-recon-future-soldier"}"#)) else {
-            panic!()
-        };
+        let Reply::Info(info) = ok(r#"{"game":"ghost-recon-future-soldier"}"#) else { panic!() };
         assert_eq!(info.version, None);
-        let Ok(Reply::Info(info)) = reply(&ok(r#"{"game":"ghost-recon-future-soldier","news":[{"title":"Only a title"}]}"#)) else {
+        let Reply::Info(info) = ok(r#"{"game":"ghost-recon-future-soldier","news":[{"title":"Only a title"}]}"#) else {
             panic!()
         };
         assert_eq!(info.news[0].body, "");
@@ -336,70 +200,22 @@ mod tests {
 
     #[test]
     fn knows_another_games_server() {
-        assert_eq!(
-            reply(&ok(r#"{"name":"5th Echelon Enhanced","version":"0.5.0"}"#)),
-            Ok(Reply::OtherGame("5th Echelon Enhanced".into()))
-        );
-        assert_eq!(reply(&ok("{}")), Ok(Reply::OtherGame("another game's server".into())));
+        assert_eq!(ok(r#"{"name":"5th Echelon Enhanced","version":"0.5.0"}"#), Reply::OtherGame("5th Echelon Enhanced".into()));
+        assert_eq!(ok("{}"), Reply::OtherGame("another game's server".into()));
     }
 
     #[test]
     fn a_server_without_the_page_still_answered() {
-        assert_eq!(reply(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"), Ok(Reply::NoInfo("HTTP 404".into())));
-        assert!(matches!(reply(&ok("not json")), Ok(Reply::NoInfo(_))));
-        assert!(reply(b"SSH-2.0-OpenSSH\r\n").is_err());
-        assert!(reply(b"garbage\r\n\r\n").is_err());
+        assert_eq!(reply(404, b""), Reply::NoInfo("HTTP 404".into()));
+        assert!(matches!(ok("not json"), Reply::NoInfo(_)));
     }
 
     #[test]
     fn reads_the_leaderboard() {
         let body = r#"{"mode":"siege","modes":["all"],"rows":[{"rank":1,"name":"Kozak","wins":3,"losses":1,"kills":9,"deaths":2,"objectives":1,"seconds":1140}]}"#;
-        let board: Leaderboard = serde_json::from_slice(&body_of(&ok(body))).unwrap();
+        let board: Leaderboard = serde_json::from_str(body).unwrap();
         assert_eq!(board.mode, "siege");
         assert_eq!((board.rows[0].name.as_str(), board.rows[0].wins, board.rows[0].seconds), ("Kozak", 3, 1140));
-    }
-
-    fn body_of(response: &[u8]) -> Vec<u8> {
-        body(response).unwrap().unwrap()
-    }
-
-    #[test]
-    fn posts_a_body_with_its_headers() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0u8; 4096];
-            while !request.ends_with(b"the log\n") {
-                let n = stream.read(&mut buf).unwrap();
-                request.extend_from_slice(&buf[..n]);
-            }
-            stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 10\r\n\r\n{\"id\":\"x\"}").unwrap();
-            String::from_utf8(request).unwrap()
-        });
-        let headers = [("X-Crosscom-Run", "crosscom-1.log\r\nX-Evil: 1".to_owned())];
-        let answer = post(&format!("127.0.0.1:{port}"), "/api/logs", &headers, b"the log\n", Duration::from_secs(5)).unwrap();
-        assert_eq!(answer, (201, br#"{"id":"x"}"#.to_vec()));
-        let request = server.join().unwrap();
-        assert!(request.starts_with("POST /api/logs HTTP/1.0\r\n"), "{request}");
-        assert!(request.contains("\r\nContent-Length: 8\r\n"), "{request}");
-        assert!(request.contains("\r\nX-Crosscom-Run: crosscom-1.logX-Evil: 1\r\n"), "one line: {request}");
-    }
-
-    #[test]
-    fn reads_a_chunked_body() {
-        let json = br#"{"game":"ghost-recon-future-soldier","players_online":7}"#;
-        let (a, b) = json.split_at(20);
-        let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
-        for part in [a, b] {
-            response.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
-            response.extend_from_slice(part);
-            response.extend_from_slice(b"\r\n");
-        }
-        response.extend_from_slice(b"0\r\n\r\n");
-        let Ok(Reply::Info(info)) = reply(&response) else { panic!() };
-        assert_eq!(info.players_online, Some(7));
     }
 
     #[test]

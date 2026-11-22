@@ -8,9 +8,9 @@
 //! `-Os`, `-Run` (the run's file name) and `-Exit` (the game's exit code).
 //!
 //! A log is only taken from an address the account it names signed in to the game from in the
-//! last 24 hours (`Online::played_from`): the game's own requests go over plain HTTP and can't
-//! carry a password safely, so where the player plays from stands in for one. Then at most 20 an
-//! hour from an address, and 4 at once.
+//! last 24 hours (`Online::played_from`): the client DLL sends them and doesn't hold the player's
+//! password for it, so where the player plays from stands in for one. Through a proxy, only over
+//! HTTPS (`online_config`). Then at most 20 an hour from an address, and 4 at once.
 //!
 //! - `201 {"id": "20261115-123456-ab12cd"}`: kept, as that report;
 //! - `403`: logs turned off (`accept_logs = false`), or not signed in from this address lately;

@@ -12,6 +12,7 @@ use crosscom_client_common::logging;
 use crosscom_client_common::runs;
 use crosscom_client_common::runs::Refused;
 use crosscom_client_common::runs::Sent;
+use crosscom_client_common::server_info;
 use crosscom_client_common::system;
 
 use crate::server;
@@ -103,39 +104,10 @@ pub fn send(game_dir: &Path, launcher: &str, exit: Option<(String, i32)>) -> Out
     Outcome { sent, refused, off: false }
 }
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
-        .timeout_connect(Some(Duration::from_secs(4)))
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .build()
-        .into()
-}
-
-/// Posts a log to `host`: over HTTPS, or plain HTTP when HTTPS fails in any way (no HTTPS, a
-/// certificate for another name, a server set up by its address). A log carries no secret (the
-/// Windows user name and the password are taken out before it's sent), so unlike a password it
-/// may go unencrypted; the game's own DLL only sends it that way.
+/// Posts a log to `host`: over HTTPS, or plain HTTP to a server set up by a private address
+/// without HTTPS (`crosscom_client_common::http`).
 fn post(host: &str, headers: &[(&'static str, String)], body: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    // Plain HTTP only when nothing answered on HTTPS (a server without it): never after a
-    // certificate or handshake failure, which may be someone in the way.
-    match post_to(&format!("https://{host}{}", runs::PATH), headers, body) {
-        Ok(answer) => return Ok(answer),
-        Err(e) if !server::nothing_answered(&e) => return Err(format!("{host}'s HTTPS failed: {e}; the logs weren't sent")),
-        Err(_) => {}
-    }
-    post_to(&format!("http://{host}{}", runs::PATH), headers, body).map_err(|e| format!("couldn't reach {host}: {e}"))
-}
-
-fn post_to(url: &str, headers: &[(&'static str, String)], body: &[u8]) -> Result<(u16, Vec<u8>), ureq::Error> {
-    let mut request = agent().post(url);
-    for (name, value) in headers {
-        request = request.header(*name, value.as_str());
-    }
-    let mut response = request.send(body)?;
-    let status = response.status().as_u16();
-    Ok((status, response.body_mut().read_to_vec().unwrap_or_default()))
+    server_info::post(host, runs::PATH, headers, body, TIMEOUT).map_err(|e| e.0)
 }
 
 /// What the launcher says about an outcome.
