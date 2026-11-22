@@ -95,6 +95,7 @@ export component SetupScreen inherits Rectangle {
     // The server: the community test network, or the one typed.
     in property <string> community-host;
     in property <string> community-name;
+    in property <string> community-status;
     in-out property <bool> community: true;
     in-out property <string> server-typed;
     // Where the server says the game will sign in, once it answered; or why it didn't.
@@ -204,6 +205,7 @@ export component SetupScreen inherits Rectangle {
                             CardHead { number: "02"; title: "The server"; note: root.server-ok != "" ? "Answering" : ""; }
                             Option {
                                 title: root.community-name;
+                                tag: root.community-status;
                                 sub: root.community-host + " · open to everyone testing Cross-Com. Accounts and stats may be reset between test builds.";
                                 on: root.community;
                                 clicked => {

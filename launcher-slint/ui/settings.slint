@@ -12,6 +12,7 @@ export component SettingsScreen inherits Rectangle {
     in property <InfoView> info;
     in property <string> release;
     in property <string> community-name;
+    in property <string> community-status;
     // The options as shown; changed => saved at once.
     in-out property <bool> skip-intro;
     in-out property <bool> dx9;
@@ -196,6 +197,7 @@ export component SettingsScreen inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                                 if root.info.community: VerticalLayout { alignment: center; Tag { text: root.community-name; } }
+                                if root.info.community && root.community-status != "": VerticalLayout { alignment: center; Tag { text: root.community-status; tint: Theme.warn; } }
                             }
                             Text {
                                 text: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account.";

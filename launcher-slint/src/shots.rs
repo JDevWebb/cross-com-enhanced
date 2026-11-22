@@ -172,6 +172,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
     w.set_release(s(core::RELEASE));
     w.set_community_host(s(server::COMMUNITY));
     w.set_community_name(s(server::COMMUNITY_NAME));
+    w.set_community_status(s(server::COMMUNITY_STATUS));
     w.set_loaded(true);
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     w.show().map_err(|e| e.to_string())?;

@@ -621,6 +621,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     w.set_release(s(core::RELEASE));
     w.set_community_host(s(server::COMMUNITY));
     w.set_community_name(s(server::COMMUNITY_NAME));
+    w.set_community_status(s(server::COMMUNITY_STATUS));
     let l = Arc::new(Launcher::new(Launcher::default_prefs_path()));
     wire(&w, &l);
     open(&w, &l, "play");
