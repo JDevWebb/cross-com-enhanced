@@ -160,6 +160,7 @@ fn settings(w: &AppWindow) {
             public: "203.0.113.24:51023".parse().expect("an address"),
         }),
         forward_works: Some(true),
+        unchecked: None,
         problem: None,
     };
     ui::show_connection(w, &Ok(report));

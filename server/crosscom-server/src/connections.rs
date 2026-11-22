@@ -63,7 +63,14 @@ struct Open {
 pub struct Connections {
     db: Mutex<Connection>,
     open: Mutex<HashMap<(u32, Key), Open>>,
+    /// Each player's latest probe requests: a joiner asks to reach a match's host just before
+    /// the host adds it, so they count towards the join that follows.
+    probes: Mutex<HashMap<u32, Vec<Instant>>>,
 }
+
+/// How long before a join a probe request still counts towards it, and the most kept a player.
+const PROBES_BEFORE: Duration = Duration::from_secs(60);
+const MAX_PROBES_KEPT: usize = 16;
 
 /// One join as recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +120,7 @@ impl Connections {
         Ok(Self {
             db: Mutex::new(db),
             open: Mutex::default(),
+            probes: Mutex::default(),
         })
     }
 
@@ -137,15 +145,37 @@ impl Connections {
                 return;
             }
         }
+        let before = self.recent_probes(pid);
         open.entry((pid, key)).or_insert(Open {
             at: Instant::now(),
             host,
-            probes: 0,
+            probes: before,
         });
     }
 
-    /// `pid` asked for NAT probes: counted on its joins still within [`SHORT`].
+    /// How many probes `pid` asked for in the last [`PROBES_BEFORE`].
+    fn recent_probes(&self, pid: u32) -> u32 {
+        let probes = self.probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = probes.get(&pid).map_or(0, |p| p.iter().filter(|t| t.elapsed() < PROBES_BEFORE).count());
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// `pid` asked for NAT probes: counted on its joins still within [`SHORT`], and kept a while
+    /// for a join that follows.
     pub fn probed(&self, pid: u32) {
+        {
+            let mut probes = self.probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if probes.len() >= MAX_OPEN && !probes.contains_key(&pid) {
+                probes.retain(|_, p| p.iter().any(|t| t.elapsed() < PROBES_BEFORE));
+            }
+            if probes.len() < MAX_OPEN || probes.contains_key(&pid) {
+                let mine = probes.entry(pid).or_default();
+                mine.retain(|t| t.elapsed() < PROBES_BEFORE);
+                if mine.len() < MAX_PROBES_KEPT {
+                    mine.push(Instant::now());
+                }
+            }
+        }
         for ((player, _), o) in self.open_joins().iter_mut() {
             if *player == pid && o.at.elapsed() < SHORT {
                 o.probes = o.probes.saturating_add(1);
@@ -420,6 +450,17 @@ mod tests {
         assert!(r.early());
         c.ended(&logger(), &sessions, 2, key, End::Left);
         assert_eq!(c.since(0).unwrap().len(), 1, "once");
+    }
+
+    /// A joiner asks to reach the host just before the host adds it (as Quick Match does).
+    #[test]
+    fn probes_just_before_a_join_count_towards_it() {
+        let (_dir, c, sessions, key) = setup();
+        c.probed(2);
+        c.joined(&logger(), &sessions, 2, key, 1);
+        c.probed(2);
+        c.ended(&logger(), &sessions, 2, key, End::Left);
+        assert_eq!(c.since(0).unwrap()[0].probes, 2, "one just before the join, one while it was open");
     }
 
     #[test]

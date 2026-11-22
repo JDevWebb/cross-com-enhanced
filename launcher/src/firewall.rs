@@ -5,7 +5,12 @@
 //! again. So setup adds inbound rules allowing the game's two exes, asking Windows for permission
 //! (one UAC prompt) only when they aren't there yet. A player who once dismissed Windows' prompt
 //! got rules blocking the game, which win over any allowing; those, for exactly the game's exes,
-//! are taken out too. Nothing else is changed.
+//! are taken out too.
+//!
+//! The launcher gets a rule too, for UDP only: its connection test has the server send a packet
+//! to a port the router forwards, which Windows would otherwise drop before the launcher saw it.
+//! It's for the launcher where it is now, under one name, so a launcher that moved replaces it;
+//! the test asks for it again then (`ensure_launcher`). Nothing else is changed.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -15,6 +20,40 @@ use crate::game::EXE_DX9;
 
 /// The rules' name, one per exe: `<RULE> (<exe>)`.
 pub const RULE: &str = "Ghost Recon Future Soldier (Cross-Com)";
+/// The launcher's rule, wherever it is.
+pub const LAUNCHER_RULE: &str = "Cross-Com launcher (connection test)";
+
+/// A rule to add: its name, the program, and whether it's for UDP only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rule {
+    pub name: String,
+    pub program: PathBuf,
+    pub udp_only: bool,
+}
+
+/// The rules for the game's exes in `dir`.
+#[must_use]
+pub fn game_rules(dir: &Path) -> Vec<Rule> {
+    programs(dir)
+        .into_iter()
+        .map(|program| Rule {
+            name: rule_name(&program),
+            program,
+            udp_only: false,
+        })
+        .collect()
+}
+
+/// The launcher's rule, for the launcher where it is now.
+#[must_use]
+pub fn launcher_rule() -> Option<Rule> {
+    let program = std::env::current_exe().ok()?;
+    Some(Rule {
+        name: LAUNCHER_RULE.into(),
+        program,
+        udp_only: true,
+    })
+}
 
 /// The game's exes in `dir` that need a rule.
 #[must_use]
@@ -28,22 +67,23 @@ fn rule_name(program: &Path) -> String {
     format!("{RULE} ({exe})")
 }
 
-/// The PowerShell that adds the rules for `programs` (replacing ours, and Windows' blocking rules
+/// The PowerShell that adds `rules` (replacing ours by the same name, and Windows' blocking rules
 /// for exactly these programs).
 #[must_use]
-pub fn script(programs: &[PathBuf]) -> String {
+pub fn script(rules: &[Rule]) -> String {
     // Single-quoted PowerShell strings: only ' needs doubling (the game's folder has one).
     let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
     let mut lines = vec!["$ErrorActionPreference = 'Stop'".to_owned()];
-    for program in programs {
-        let path = quote(&program.to_string_lossy());
-        let name = quote(&rule_name(program));
+    for rule in rules {
+        let path = quote(&rule.program.to_string_lossy());
+        let name = quote(&rule.name);
+        let protocol = if rule.udp_only { " -Protocol UDP" } else { "" };
         lines.push(format!("Get-NetFirewallRule -DisplayName {name} -ErrorAction SilentlyContinue | Remove-NetFirewallRule"));
         lines.push(format!(
             "Get-NetFirewallApplicationFilter -Program {path} -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' }} | Remove-NetFirewallRule"
         ));
         lines.push(format!(
-            "New-NetFirewallRule -DisplayName {name} -Direction Inbound -Program {path} -Action Allow -Profile Any | Out-Null"
+            "New-NetFirewallRule -DisplayName {name} -Direction Inbound -Program {path}{protocol} -Action Allow -Profile Any | Out-Null"
         ));
     }
     lines.join("\n")
@@ -84,44 +124,69 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Whether each of `programs` has our rule, for that very program (`netsh` needs no permission).
+/// Whether each rule is there, for that very program (`netsh` needs no permission).
 #[cfg(windows)]
-fn present(programs: &[PathBuf]) -> bool {
+fn present(rules: &[Rule]) -> bool {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    programs.iter().all(|program| {
+    rules.iter().all(|rule| {
         let shown = std::process::Command::new("netsh")
             .args(["advfirewall", "firewall", "show", "rule"])
-            .arg(format!("name={}", rule_name(program)))
+            .arg(format!("name={}", rule.name))
             .arg("verbose")
             .creation_flags(CREATE_NO_WINDOW)
             .output();
         let Ok(shown) = shown else { return false };
         let text = String::from_utf8_lossy(&shown.stdout).to_lowercase();
-        shown.status.success() && text.contains(&program.to_string_lossy().to_lowercase())
+        shown.status.success() && text.contains(&rule.program.to_string_lossy().to_lowercase())
     })
 }
 
-/// Makes sure the game's exes in `dir` are allowed, asking Windows for permission if they aren't.
+/// Adds those of `rules` that aren't there, asking Windows for permission (one prompt) if any.
 #[cfg(windows)]
-#[must_use]
-pub fn ensure(dir: &Path) -> Outcome {
-    let programs = programs(dir);
-    if programs.is_empty() || present(&programs) {
+fn ensure_rules(rules: &[Rule]) -> Outcome {
+    let missing: Vec<Rule> = rules.iter().filter(|r| !present(std::slice::from_ref(r))).cloned().collect();
+    if missing.is_empty() {
         return Outcome::Present;
     }
-    let args = format!("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}", encoded(&script(&programs)));
+    let args = format!("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {}", encoded(&script(&missing)));
     match elevated("powershell.exe", &args) {
-        Ok(0) if present(&programs) => Outcome::Added,
+        Ok(0) if present(&missing) => Outcome::Added,
         Ok(code) => Outcome::Failed(format!("PowerShell ended with {code}")),
         Err(e) if e == "declined" => Outcome::Declined,
         Err(e) => Outcome::Failed(e),
     }
 }
 
+/// Makes sure the game's exes in `dir`, and this launcher, are allowed, asking Windows for
+/// permission if they aren't.
+#[cfg(windows)]
+#[must_use]
+pub fn ensure(dir: &Path) -> Outcome {
+    let mut rules = game_rules(dir);
+    if rules.is_empty() {
+        return Outcome::Present;
+    }
+    rules.extend(launcher_rule());
+    ensure_rules(&rules)
+}
+
+/// Makes sure this launcher is allowed (for the connection test), asking Windows if it isn't.
+#[cfg(windows)]
+#[must_use]
+pub fn ensure_launcher() -> Outcome {
+    ensure_rules(&launcher_rule().into_iter().collect::<Vec<_>>())
+}
+
 #[cfg(not(windows))]
 #[must_use]
 pub fn ensure(_dir: &Path) -> Outcome {
+    Outcome::Present
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn ensure_launcher() -> Outcome {
     Outcome::Present
 }
 
@@ -176,12 +241,36 @@ mod tests {
     #[test]
     fn the_script_quotes_the_games_folder() {
         let program = PathBuf::from(r"C:\Games\Tom Clancy's Ghost Recon Future Soldier\Future Soldier DX11.exe");
-        let script = script(std::slice::from_ref(&program));
+        let rule = Rule {
+            name: rule_name(&program),
+            program,
+            udp_only: false,
+        };
+        let script = script(std::slice::from_ref(&rule));
         assert!(script.contains(r"-Program 'C:\Games\Tom Clancy''s Ghost Recon Future Soldier\Future Soldier DX11.exe'"));
         assert!(script.contains("-DisplayName 'Ghost Recon Future Soldier (Cross-Com) (Future Soldier DX11.exe)'"));
         assert!(script.contains("-Direction Inbound"));
         // Only blocking rules for exactly this program are taken out.
         assert!(script.contains("$_.Action -eq 'Block'"));
+        assert!(!script.contains("-Protocol"), "the game: every protocol");
+    }
+
+    #[test]
+    fn the_launchers_rule_is_for_udp_under_one_name() {
+        let rule = Rule {
+            name: LAUNCHER_RULE.into(),
+            program: PathBuf::from(r"C:\Users\Kozak\Downloads\crosscom-launcher.exe"),
+            udp_only: true,
+        };
+        let script = script(std::slice::from_ref(&rule));
+        assert!(
+            script.contains("Get-NetFirewallRule -DisplayName 'Cross-Com launcher (connection test)' -ErrorAction SilentlyContinue | Remove-NetFirewallRule"),
+            "{script}"
+        );
+        assert!(
+            script.contains(r"-Program 'C:\Users\Kozak\Downloads\crosscom-launcher.exe' -Protocol UDP -Action Allow"),
+            "{script}"
+        );
     }
 
     #[test]
