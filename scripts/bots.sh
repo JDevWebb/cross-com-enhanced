@@ -3,7 +3,10 @@
 # machine (HTTP on 8080, so no root is needed), three accounts, then crosscom-testbot
 #   - signing in as the game does (and a wrong password refused),
 #   - asking a friend, who accepts and is invited into a party,
-#   - hosting a Quick Match that another finds and joins.
+#   - hosting a Quick Match that another finds and joins (and leaves at once, which the connection
+#     records count as a join that ended early),
+#   - what the client does about its router: the address echo, the router report and the reach
+#     packet.
 # Fails if any of them does, with the server's log.
 #
 #   scripts/bots.sh BIN_DIR          (BIN_DIR has crosscom-server and crosscom-testbot)
@@ -74,4 +77,12 @@ sleep 2
 run botalpha --join &
 check botalpha $! "finds a Quick Match and joins it"
 check botcharlie "$host" "hosts a Quick Match that someone joins"
+
+summary=$("$server" --config "$work/crosscom-server.toml" connections 1) || failed "no connection records: $summary"
+# The Quick Match joiner left at once; the party's guest disconnected with the party open.
+grep -q "the player left: 1$" <<<"$summary" || failed "the join that ended at once wasn't recorded: $summary"
+echo "bots: ok: records the join that ended early"
+
+run botbravo --reach &
+check botbravo $! "the address echo, the router report and the reach packet"
 echo "bots: all passed"

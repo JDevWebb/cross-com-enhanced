@@ -44,6 +44,9 @@ pub struct Config {
     /// Send each run's log to the server after it (on unless set to false), with the Windows
     /// user name and the password taken out (see `runs`).
     pub send_logs: bool,
+    /// Ask the router to forward the game's peer-to-peer port while it runs (UPnP, PCP or
+    /// NAT-PMP), so other players reach it directly (on unless set to false).
+    pub port_forwarding: bool,
 }
 
 impl Default for Config {
@@ -59,6 +62,7 @@ impl Default for Config {
             overlay: true,
             overlay_key: DEFAULT_OVERLAY_KEY.to_owned(),
             send_logs: true,
+            port_forwarding: true,
         }
     }
 }

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crosscom_client_net::check;
 use crosscom_launcher::dlc;
 use crosscom_launcher::server;
 use slint::platform::software_renderer::MinimalSoftwareWindow;
@@ -26,7 +27,7 @@ use crate::AppWindow;
 /// shows.
 const WIDTH: u32 = 1180;
 const HEIGHT: u32 = 780;
-const TALL: u32 = 920;
+const TALL: u32 = 990;
 /// About, whole, down to its small print and Slint's attribution.
 const ABOUT_HEIGHT: u32 = 1480;
 /// Where the made-up game is.
@@ -64,6 +65,7 @@ fn ready() -> core::Info {
         overlay: true,
         overlay_key: "F5".into(),
         send_logs: true,
+        port_forwarding: true,
         dlc: packs(&[]),
     }
 }
@@ -149,6 +151,18 @@ fn settings(w: &AppWindow) {
     w.set_opt_overlay(view.overlay);
     w.set_opt_overlay_key(view.overlay_key);
     w.set_opt_send_logs(view.send_logs);
+    w.set_opt_port_forwarding(view.port_forwarding);
+    let report = check::Report {
+        seen: Some("203.0.113.24:51022".parse().expect("an address")),
+        nat: check::Nat::Consistent,
+        router: Ok(check::Router {
+            how: "UPnP",
+            public: "203.0.113.24:51023".parse().expect("an address"),
+        }),
+        forward_works: Some(true),
+        problem: None,
+    };
+    ui::show_connection(w, &Ok(report));
     let status = core::LogsStatus {
         last: Some(("20261115-123456-ab12cd".into(), 1_794_746_096)),
         said: None,

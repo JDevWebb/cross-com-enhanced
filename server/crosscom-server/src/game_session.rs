@@ -23,6 +23,7 @@ use slog::info;
 use slog::Logger;
 
 use crate::accounts::Accounts;
+use crate::connections;
 use crate::friends::Friends;
 use crate::invitations::Invitations;
 use crate::notify;
@@ -198,7 +199,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
 
     fn leave_session(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: LeaveSessionRequest,
@@ -206,6 +207,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<LeaveSessionResponse, Error> {
         let pid = player(ci)?;
+        connections::ended(logger, pid, key(&request.game_session_key), connections::End::Left);
         self.sessions.remove(key(&request.game_session_key), &[pid]).map_err(error)?;
         Ok(LeaveSessionResponse)
     }
@@ -441,7 +443,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
 
     fn add_participants(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: AddParticipantsRequest,
@@ -454,12 +456,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             return Err(Error::AccessDenied);
         }
         self.sessions.add(k, &request.public_participant_ids.0, &request.private_participant_ids.0).map_err(error)?;
+        for &added in request.public_participant_ids.0.iter().chain(&request.private_participant_ids.0) {
+            connections::joined(logger, added, k, pid);
+        }
         Ok(AddParticipantsResponse)
     }
 
     fn remove_participants(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: RemoveParticipantsRequest,
@@ -478,6 +483,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         }
         if !only_self && !self.sessions.is_host(pid, k) {
             return Err(Error::AccessDenied);
+        }
+        let how = if only_self { connections::End::Left } else { connections::End::Removed };
+        for &out in ids {
+            connections::ended(logger, out, k, how);
         }
         self.sessions.remove(k, &request.participant_ids.0).map_err(error)?;
         Ok(RemoveParticipantsResponse)
@@ -554,12 +563,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let k = key(&request.game_session_key);
         self.sessions.join(pid, k).map_err(error)?;
         info!(logger, "{pid:#x} joined session {k:?}");
+        if let Some(session) = self.sessions.get(k) {
+            connections::joined(logger, pid, k, session.host);
+        }
         Ok(JoinSessionResponse)
     }
 
     fn abandon_session(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: AbandonSessionRequest,
@@ -567,6 +579,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<AbandonSessionResponse, Error> {
         let pid = player(ci)?;
+        connections::ended(logger, pid, key(&request.game_session_key), connections::End::Left);
         self.sessions.remove(key(&request.game_session_key), &[pid]).map_err(error)?;
         Ok(AbandonSessionResponse)
     }

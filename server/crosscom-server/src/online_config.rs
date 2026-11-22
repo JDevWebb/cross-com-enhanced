@@ -72,6 +72,8 @@ pub struct Http {
     pub proxies: crate::proxy::Trusted,
     /// Players' logs.
     pub logs: crate::logs::Logs,
+    /// Clients' reports of their routers, and their connection tests.
+    pub reach: crate::reach::Reach,
 }
 
 /// Serves the online config, the launcher's API and sign-up if on, until the process ends.
@@ -199,6 +201,8 @@ enum Route {
     Login,
     Leaderboard,
     Logs,
+    Forward,
+    Reach,
     /// A connection that sends nothing, such as the container's health check.
     Nothing,
     Other,
@@ -214,6 +218,8 @@ fn route(request_line: &str) -> Route {
         ("GET", crate::leaderboard::PATH) => Route::Leaderboard,
         ("POST", crate::api::LOGIN_PATH) => Route::Login,
         ("POST", crate::logs::PATH) => Route::Logs,
+        ("POST", crate::reach::FORWARD_PATH) => Route::Forward,
+        ("POST", crate::reach::REACH_PATH) => Route::Reach,
         ("POST", p) if p == crate::signup::PATH => Route::SignUp,
         _ => Route::Other,
     }
@@ -259,6 +265,20 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             let target = line.split(' ').nth(1).unwrap_or_default();
             http.api.leaderboard(target.split_once('?').map_or("", |(_, query)| query))
         }
+        Route::Forward => match body(crate::reach::MAX_BODY) {
+            None => too_big(),
+            Some(body) => {
+                let (answer, pid) = http.reach.forward(peer, body);
+                if let Some(pid) = pid {
+                    info!(logger, "{peer}: {pid:#x}'s client reported its router: {}", String::from_utf8_lossy(body));
+                }
+                answer
+            }
+        },
+        Route::Reach => match body(crate::reach::MAX_BODY) {
+            None => too_big(),
+            Some(body) => http.reach.reach(peer, body),
+        },
         Route::Login => match body(crate::api::MAX_BODY) {
             None => too_big(),
             Some(body) => {
@@ -322,6 +342,9 @@ mod tests {
         assert_eq!(route("POST /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1"), Route::Other);
         assert_eq!(route("POST /accounts HTTP/1.1"), Route::SignUp);
         assert_eq!(route("GET /accounts HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /api/forward HTTP/1.1"), Route::Forward);
+        assert_eq!(route("POST /api/reach HTTP/1.1"), Route::Reach);
+        assert_eq!(route("GET /api/reach HTTP/1.1"), Route::Other);
         assert_eq!(route("GET /api/info HTTP/1.1"), Route::Info);
         assert_eq!(route("GET /api/info?x=1 HTTP/1.1"), Route::Info);
         assert_eq!(route("POST /api/info HTTP/1.1"), Route::Other);
@@ -358,6 +381,7 @@ mod tests {
             api,
             proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
             logs: crate::logs::Logs::new(settings, accounts, online),
+            reach: crate::reach::Reach::new(Arc::default()),
         }
     }
 

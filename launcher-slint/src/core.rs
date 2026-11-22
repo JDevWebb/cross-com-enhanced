@@ -97,6 +97,8 @@ pub struct Info {
     pub overlay_key: String,
     /// Send the game's logs to the server after each game.
     pub send_logs: bool,
+    /// Ask the router to forward the game's port while it runs.
+    pub port_forwarding: bool,
     /// The DLC packs, and how each stands in the game's folder (empty with no game).
     pub dlc: Vec<(dlc::Pack, dlc::State)>,
 }
@@ -141,6 +143,7 @@ pub struct Options {
     pub overlay: bool,
     pub overlay_key: String,
     pub send_logs: bool,
+    pub port_forwarding: bool,
 }
 
 /// How the logs stand, for Settings.
@@ -231,8 +234,17 @@ impl Launcher {
             overlay: overlay.on,
             overlay_key: overlay.key,
             send_logs: config.send_logs,
+            port_forwarding: config.port_forwarding,
             dlc,
         }
+    }
+
+    /// The connection test against the server set up (`crosscom_client_net::check`): how well
+    /// other players can reach this PC's game. Takes a few seconds.
+    pub fn test_connection(&self) -> Result<crosscom_client_net::check::Report, String> {
+        let dir = self.game_dir().ok_or("No game set up.")?;
+        let server = settings::client(&dir).server.filter(|s| !s.is_empty()).ok_or("No server set up.")?;
+        Ok(crosscom_client_net::check::run(&server))
     }
 
     /// Sends the game's pending logs (after moving the last run's aside, when no game has it
@@ -357,6 +369,7 @@ impl Launcher {
             if !config.username.is_empty() {
                 config.skip_intro_videos = options.skip_intro;
                 config.send_logs = options.send_logs;
+                config.port_forwarding = options.port_forwarding;
                 let overlay = settings::Overlay {
                     on: options.overlay,
                     key: options.overlay_key,
@@ -521,6 +534,7 @@ mod tests {
             overlay: true,
             overlay_key: "F5".into(),
             send_logs: true,
+            port_forwarding: true,
             dlc: Vec::new(),
         };
         assert!(info.ready());

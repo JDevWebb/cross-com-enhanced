@@ -4,7 +4,7 @@ Two DLLs that replace the game's Ubisoft libraries, in the game's folder:
 
 | File | Replaces | What it does |
 |---|---|---|
-| `ubiorbitapi_r2_loader.dll` | Orbit | Gives the game the account, password and CD key in `crosscom.toml`; sends the game's lookup of `onlineconfigservice.ubi.com` to the Cross-Com server. Cloud saves are kept on this PC. Draws the in-game overlay. Keeps each run's log, and sends earlier runs' to the server. |
+| `ubiorbitapi_r2_loader.dll` | Orbit | Gives the game the account, password and CD key in `crosscom.toml`; sends the game's lookup of `onlineconfigservice.ubi.com` to the Cross-Com server. Cloud saves are kept on this PC. Draws the in-game overlay. Keeps each run's log, and sends earlier runs' to the server. Keeps the game's port forwarded on the router. |
 | `uplay_r1_loader.dll` | Uplay | Answers the six Uplay functions the game calls, without Uplay. |
 
 Both read `crosscom.toml` ([example](crosscom.example.toml)) and log to `crosscom.log`, next to the game's exe. They work with both `Future Soldier DX9.exe` and `Future Soldier DX11.exe`.
@@ -22,6 +22,18 @@ F5 (or `overlay_key`, F1 to F12) opens a panel over the game; it or Esc closes i
 Toasts in the top-right corner say when the game signs in ("Cross-Com: signed in as NAME"), when the server stops answering, and when there's news.
 
 The server's details come from `GET http://<server>/api/info` (its HTTP port, 80), asked every minute on a thread of its own. Drawing uses [hudhook](https://github.com/veeenu/hudhook) (patched, in `vendor/hudhook`) and Dear ImGui over the game's DirectX 11 or 9 frames, by the exe's name. It starts 10 s after the game does, as hooking earlier can stop a fullscreen game from starting. If it can't hook (no DirectX device it can use, a library missing) it says why in `crosscom.log` and the game runs without it. `overlay = false` turns it off: nothing is hooked and no requests are made.
+
+## Port forwarding
+
+Unless `port_forwarding = false`, or the server is on the player's own network or VPN, `ubiorbitapi_r2_loader.dll` keeps the game's peer-to-peer port (UDP 2346) forwarded on the router while the game runs, on a thread of its own (`client/net`, `keep.rs`):
+
+1. It asks the server's address echo, on both of its UDP sign-in ports, how the router maps ports (one public port per socket, or one per destination).
+2. It reports the game's socket on this network to the server (`POST http://<server>/api/forward`, see [docs/hosting.md](../docs/hosting.md#connection-records)), every 20 s until the game has registered it; the server then answers the socket's public port.
+3. It asks the router to forward that public port to the socket (UPnP, then PCP, then NAT-PMP), for 30 minutes at a time. The port the router already gives the socket is asked for, so a forward never takes another PC's.
+4. Once, it checks that a forward lets packets in: a fresh socket's port forwarded the same way, and the server asked to send to it (`POST /api/reach`). A router behind another one agrees to forwards that are no use.
+5. It reports the forward, which the server gives the players in the player's matches, and renews both every 10 minutes. The forward ends half an hour after the game closes.
+
+`crosscom.log` says what happened (`port forward: ...`). The launcher's **Settings › Connection** runs the same checks as a test.
 
 ## Logs
 

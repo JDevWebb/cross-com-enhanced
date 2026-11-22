@@ -1,0 +1,17 @@
+[package]
+name = "crosscom-client-net"
+version = "0.1.0"
+edition = "2021"
+description = "Reaching other players: the router's port forward for the game, and the connection test"
+
+[dependencies]
+crosscom-client-common = { path = "../common" }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# UPnP; PCP and NAT-PMP are done here (portmap.rs).
+igd-next = "0.16"
+
+[target.'cfg(windows)'.dependencies]
+# The default gateway (GetBestRoute), as hudhook's version: one copy in the client DLL.
+windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper"] }

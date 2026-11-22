@@ -98,7 +98,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 </tr>
 <tr>
 <td align="center"><sub>Setup: the game, the server, your account</sub></td>
-<td align="center"><sub>Settings: the overlay, the logs, your server and account</sub></td>
+<td align="center"><sub>Settings: the overlay, the logs, your server and account, your connection</sub></td>
 </tr>
 </table>
 
@@ -119,15 +119,32 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 </tr>
 </table>
 
+### Your connection
+
+Matches are hosted by the players, so other players' games connect to yours. The server introduces you to each other and has both games open the way through your routers, which works for most home connections. While the game runs, Cross-Com also asks your router to **forward the game's port** to your PC (UPnP, PCP or NAT-PMP, if the router allows it), so other players can reach you whatever their own router does.
+
+**Settings › Connection › Test my connection** shows how reachable you are:
+
+- **Open:** other players can reach your game directly. Nothing to do.
+- **Moderate:** you can play with most players. Two players whose routers are both strict may not reach each other.
+- **Strict:** your router gives each connection a different port, so many players won't be able to reach you. Turn on **UPnP** in your router's settings (often under *Advanced* or *NAT*), then test again.
+- **Blocked:** the game's traffic didn't reach the server: a firewall or the network you're on may block it.
+
+If the test says another router or your internet provider is in front of yours (a *carrier-grade NAT*, common on mobile and some fibre and satellite connections), port forwarding can't help; your provider may give you a public address if you ask. The test's details say what it found; include them when you [report a problem](#reporting-a-problem) joining or hosting.
+
 ### Antivirus warnings
 
 Some antivirus programs, Microsoft Defender included, may flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases), where each file's VirusTotal results are listed, and check it's the file the release workflow built: its hash, the release key's signature and its build provenance ([Checking a download](docs/releasing.md#checking-a-download)). If it was quarantined, restore it and exclude its folder and the game's folder.
 
 ### What's sent, and when
 
-After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time. Nothing else is collected.
+After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time.
 
 **Settings › Send game logs** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
+
+While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Connection** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
+
+Nothing else is collected.
 
 ## What works
 
@@ -142,7 +159,7 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 <tr><td><b>Multiplayer Challenges</b></td><td>The Daily Friend Challenge and Beat Your Best, and daring a friend back.</td></tr>
 <tr><td><b>News</b></td><td>The server's own news in the main menu's Ghost Feed and on Community Messages.</td></tr>
 <tr><td><b>Leaderboards</b></td><td>The game's own Leaderboards screen can't be opened on PC, so the overlay has its own: every player on the server, by mode.</td></tr>
-<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too. If the host leaves, the match moves to another player.</td></tr>
+<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too, and the client asks your router to forward the game's port when it can. If the host leaves, the match moves to another player. <a href="#your-connection">Settings › Connection</a> tests how reachable you are.</td></tr>
 </table>
 
 <table>

@@ -133,6 +133,12 @@ fn start() {
     }
     logs::start(dir, config());
     overlay::start(config());
+    // The router's forward for the game's peer-to-peer port, on a thread of its own.
+    if let Some(server) = CONFIG.get().filter(|c| c.port_forwarding).and_then(|c| c.server.clone()) {
+        if crosscom_client_net::keep::wanted(&server) {
+            crosscom_client_net::keep::spawn(server);
+        }
+    }
 }
 
 #[cfg(test)]
