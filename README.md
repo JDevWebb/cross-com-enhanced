@@ -144,7 +144,7 @@ After each game you play online, the game's log from that run (`crosscom.log`, n
 
 While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Connection** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
 
-Nothing else is collected.
+All of it goes over HTTPS, as your password does; only a server on your own network or VPN without HTTPS is sent it unencrypted. Nothing else is collected.
 
 ## What works
 
@@ -203,7 +203,7 @@ Found a security problem? Please don't post it in a public issue: report it priv
 
 The server runs in Docker on any small Linux machine, or as a single program without it. One command starts it; you make the accounts, or let players make their own with a sign-up code you give them. Put Caddy in front of it for HTTPS with one more compose file, and one machine can host this server and a [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) server side by side.
 
-**[docs/hosting.md](docs/hosting.md)** has every step: ports, settings, accounts, news, HTTPS, players' logs and upgrades.
+**[docs/hosting.md](docs/hosting.md)** has every step: ports, settings, accounts, news, HTTPS, players' logs and upgrades. A server on the internet needs HTTPS, which means a domain name: the launcher and the client only talk to it encrypted.
 
 ## How it works
 

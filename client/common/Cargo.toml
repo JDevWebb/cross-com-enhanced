@@ -9,6 +9,9 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+# HTTPS to the server's API (http.rs): rustls with ring and the Mozilla roots built in, as the
+# launcher has.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 # The Windows version, for the logs sent to the server (system.rs).

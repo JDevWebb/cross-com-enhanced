@@ -28,8 +28,8 @@ services:
     environment:
       CROSSCOM_DOMAIN: ${CROSSCOM_DOMAIN:?set CROSSCOM_DOMAIN to the server's domain}
     ports:
-      - "80:80/tcp"          # the game's online config and the overlay (plain HTTP), certificates
-      - "443:443/tcp"        # HTTPS: the launcher's sign-in and sign-up
+      - "80:80/tcp"          # the game's online config (plain HTTP), certificates
+      - "443:443/tcp"        # HTTPS: the launcher's and the client's API calls
       - "443:443/udp"        # HTTP/3
     networks:
       https:

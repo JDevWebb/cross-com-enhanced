@@ -1,4 +1,5 @@
-//! The server's two calls for reaching players, on its HTTP port with no password:
+//! The server's two calls for reaching players, over HTTPS (`crosscom_client_common::http`), with
+//! no password:
 //!
 //! - `POST /api/forward` tells it the port this PC's router forwards to the game's peer-to-peer
 //!   socket (or that there's none, and how the router maps ports), and answers where the server
@@ -19,8 +20,6 @@ pub const REACH_PATH: &str = "/api/reach";
 /// What the server's packet for `/api/reach` starts with, before the nonce.
 pub const REACH_PREFIX: &[u8] = b"crosscom-reach ";
 const TIMEOUT: Duration = Duration::from_secs(8);
-/// What its calls say in `X-Crosscom-Client`: the logs say the client's release there.
-const CLIENT: &str = "net";
 
 /// A forward the router made: the port players outside reach the game on, and how it was asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,9 +50,7 @@ pub struct ForwardAnswer {
 
 fn post_json<T: Serialize>(server: &str, path: &str, body: &T) -> Result<Vec<u8>, String> {
     let body = serde_json::to_vec(body).map_err(|e| e.to_string())?;
-    // A Caddy shared with another game's server tells this server's calls from that one's by
-    // this header, as it does the logs (docker/Caddyfile.shared).
-    let headers = [("Content-Type", "application/json".to_owned()), ("X-Crosscom-Client", CLIENT.to_owned())];
+    let headers = [("Content-Type", "application/json".to_owned())];
     let (status, answer) = server_info::post(server, path, &headers, &body, TIMEOUT).map_err(|e| e.0)?;
     if status != 200 {
         let text = String::from_utf8_lossy(&answer);

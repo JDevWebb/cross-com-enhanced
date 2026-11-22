@@ -5,8 +5,8 @@ PC at home with the ports forwarded, a cheap VPS, or a machine on the LAN or VPN
 
 | Port | Protocol | What for |
 |---|---|---|
-| 80 | TCP | The online config the game asks for first (it always uses port 80), the launcher's API and sign-up |
-| 443 | TCP | Only with [HTTPS](#https-with-caddy): the launcher's sign-in and sign-up, encrypted |
+| 80 | TCP | The online config the game asks for first (it always uses port 80); the API, on a LAN or VPN server without HTTPS |
+| 443 | TCP | [HTTPS](#https-with-caddy), which a server on the internet needs: the launcher's and the client's API calls (sign-in, sign-up, logs, router reports, the overlay's reads) |
 | 21030 | UDP | Sign-in |
 | 21031 | UDP | Everything else: profiles, matchmaking, friends |
 
@@ -62,14 +62,16 @@ over the file.
 
 ## HTTPS with Caddy
 
-The launcher sends players' passwords when they sign in or make an account, over HTTPS. It
-falls back to plain HTTP only for a server set up by a private IP address (`10.x`, `172.16-31.x`,
+The launcher and the client DLL use the server's API over HTTPS: passwords when players sign in
+or make an account, players' logs, the client's router reports, and the overlay's reads. They
+fall back to plain HTTP only for a server set up by a private IP address (`10.x`, `172.16-31.x`,
 `192.168.x`, `100.64-127.x` as Tailscale uses, `fc00::/7`, link-local, or this machine) where
-nothing answers on port 443 at all, and tells the player their password went unencrypted. A
-server set up by name is never sent a password unencrypted, whatever its name points at, nor is
-one whose HTTPS answers but fails (a certificate that isn't valid): the launcher refuses and says
-the server needs HTTPS. So a LAN or VPN server without a domain is set up in the launcher by its
-IP address.
+nothing answers on port 443 at all; the launcher tells the player their password went
+unencrypted. A server set up by name or by a public address is only spoken to over HTTPS,
+whatever its name points at, and so is one whose HTTPS answers but fails (a certificate that
+isn't valid): they refuse and say the server needs HTTPS. So a server on the internet needs
+HTTPS (a domain and Caddy, below), and a LAN or VPN server without a domain is set up in the
+launcher by its IP address.
 
 `docker/compose.https.yaml` puts [Caddy](https://caddyserver.com) in front of the server's port
 80. Caddy gets a certificate from Let's Encrypt and renews it by itself. You need:
@@ -86,18 +88,18 @@ echo CROSSCOM_DOMAIN=play.example.org >> docker/.env
 docker compose -f docker/compose.yaml -f docker/compose.https.yaml up -d
 ```
 
-Use the same two `-f` files for every other compose command (`logs`, `exec`, `down`). Players can
-set up the launcher with the domain or the IP address: the game itself only uses port 80.
+Use the same two `-f` files for every other compose command (`logs`, `exec`, `down`). Players set
+up the launcher with the domain: its certificate is for that name.
 
 What stays on plain HTTP, on port 80, and why:
 
 - `GET /OnlineConfigService.svc/GetOnlineConfig`: the game asks for it there and can't use HTTPS.
-- `GET /api/...` (the server's info, news and other read-only answers): the in-game overlay reads
-  them and has no TLS. None carries a password.
-- `POST /api/logs`: [players' logs](#players-logs), sent by the client DLL, which has no TLS.
-  They carry no password, and Caddy takes up to 5 MB of one (the server, 4 MiB).
+- `GET /api/...` (the server's info, news and other read-only answers), for websites and tools
+  that read them; Cross-Com's own launcher and overlay read them over HTTPS. None carries a
+  password.
 
-Everything else on port 80, notably `POST /accounts` and `POST /api/login`, is redirected to
+Everything else on port 80, notably `POST /accounts`, `POST /api/login`, `POST /api/logs` and the
+router reports (`POST /api/forward`, `/api/reach`), is redirected to
 `https://` the domain. Certificates' challenges are answered on port 80 too. The UDP ports aren't
 proxied; the game's own sign-in goes there as before.
 
@@ -273,7 +275,7 @@ read what happened on their PC without asking them for files.
 `crosscom.log` moves to `logs\crosscom-<date>-<time>.log` in the game's folder (the 20 newest are
 kept). The launcher sends the run that just ended as soon as a game it started exits (with the
 game's exit code), and any others still waiting as it starts. A game started without the launcher
-sends the earlier runs itself, over plain HTTP, a little after it signs in. Each run is sent once;
+sends the earlier runs itself, over HTTPS, a little after it signs in. Each run is sent once;
 it's then renamed `*.sent.log`, and the player keeps it.
 
 **What's taken out first.** Before a log leaves the PC, the client takes out the Windows user
@@ -284,9 +286,10 @@ player's PC aren't changed.
 
 **Who may send.** `POST /api/logs` is only taken from an address the account it names
 (`X-Crosscom-Account`) signed in to the game from in the last 24 hours (IPv4 exactly, IPv6 by its
-/64; behind Caddy, the player's own address), otherwise `403`. It isn't a password check because
-the game's own DLL sends logs over plain HTTP, where a password would cross the network
-unencrypted; where the player plays from stands in for it, so strangers can't fill your disk. On
+/64; behind Caddy, the player's own address), otherwise `403`. It isn't a password check: the
+game's own DLL sends logs, and it doesn't hold the player's password for it (the game has it);
+where the player plays from stands in for one, so strangers can't fill your disk. Through Caddy
+it's only taken over HTTPS (`403` otherwise). On
 top of that: 20 an hour from one address (`429`), 4 MiB at most (`413`, refused from the
 `Content-Length` before the body is read), 4 at once. The same run sent twice gets the same report.
 
@@ -387,8 +390,8 @@ private addresses first.
 `POST /api/reach` with `{"port": 40001, "nonce": "0123abcd..."}` sends `crosscom-reach ` and the
 nonce, once, to that port at the caller's own address, which is how the client checks a forward
 works. It only sends to the caller, to port 1024 or above, smaller than the request, and 4 a
-minute from an address; reports are 12 a minute. Both take no password and go over plain HTTP,
-as the client DLL makes them (docker/Caddyfile passes them on port 80).
+minute from an address; reports are 12 a minute. Both take no password, and go over HTTPS:
+through Caddy, the server refuses them over plain HTTP (`403`).
 
 **Tell your players**, with the logs note: "While you play online, your client also tells this
 server about your router (your PC's address on your network, the port it forwards to the game,

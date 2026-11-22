@@ -1,5 +1,5 @@
-//! Reaching players' games: what their clients say about their routers, on the HTTP port with
-//! no password.
+//! Reaching players' games: what their clients say about their routers, with no password;
+//! through a proxy, over HTTPS only (`online_config`).
 //!
 //! - `POST /api/forward` with `{"local": "192.168.1.20:2346", "forward": {"port": 40000, "how":
 //!   "UPnP"} | null, "nat": "consistent"}`: the client's report for the game's peer-to-peer

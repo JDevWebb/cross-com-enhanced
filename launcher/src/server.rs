@@ -2,12 +2,12 @@
 //! its online config, asking how it is (its version, players online and news), signing in to an
 //! account and making one when the server allows sign-up.
 //!
-//! Passwords go over HTTPS. Only a server set up by its private address (a LAN, or a VPN such as
-//! Tailscale, or this machine) may take them over plain HTTP, and only when nothing answers on its
-//! HTTPS port at all; a server set up by name, or on the internet, without HTTPS is refused. What carries no password (the online config, the info) stays
-//! on plain HTTP, as the game itself only speaks that.
+//! The API goes over HTTPS, passwords above all. Only a server set up by its private address (a
+//! LAN, or a VPN such as Tailscale, or this machine) may be asked over plain HTTP, and only when
+//! nothing answers on its HTTPS port at all; a server set up by name, or on the internet, without
+//! HTTPS is refused (`crosscom_client_common::http`, which the client DLL shares). The online
+//! config is asked over plain HTTP, as the game asks it.
 
-use std::net::IpAddr;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -26,7 +26,7 @@ pub const COMMUNITY_NAME: &str = "Community test network";
 /// A note shown beside its name while it isn't open yet; "" once it is.
 pub const COMMUNITY_STATUS: &str = "Launching soon";
 /// Where a server's host learns to set up HTTPS.
-pub const HTTPS_HELP: &str = "https://github.com/JDevWebb/cross-com-enhanced/blob/main/docs/hosting.md#https-with-caddy";
+pub use crosscom_client_common::http::HTTPS_HELP;
 
 /// The server as typed: a host name or address, perhaps with `http://` or `https://` or a
 /// trailing `/`. Port 80 is the game's, so none other is taken.
@@ -63,44 +63,9 @@ pub enum Sent {
     Unencrypted,
 }
 
-/// Whether an address is this machine's or on a private network: a LAN (RFC 1918, IPv6 unique
-/// local), link-local, or the shared range VPNs such as Tailscale use (100.64.0.0/10).
-#[must_use]
-pub fn is_private(ip: IpAddr) -> bool {
-    match ip.to_canonical() {
-        IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (a == 100 && (64..128).contains(&b))
-        }
-        IpAddr::V6(v6) => {
-            let first = v6.segments()[0];
-            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
-        }
-    }
-}
-
-/// Whether passwords may go to `host` over plain HTTP when it has no HTTPS: only when it was
-/// given as a private IP address (see [`is_private`]) or `localhost`. A name is never looked up
-/// for this: its DNS could say private for the check and send the connection elsewhere.
-fn may_send_unencrypted(host: &str) -> bool {
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    let ip = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    ip.parse::<IpAddr>().is_ok_and(is_private)
-}
-
-/// Whether an HTTPS attempt failed before reaching anything: refused, unreachable or timed out
-/// while connecting. A failure after that (a certificate that isn't valid, a broken handshake)
-/// may be someone in the way, and never leads to plain HTTP.
-pub(crate) fn nothing_answered(error: &ureq::Error) -> bool {
-    use std::io::ErrorKind;
-    match error {
-        ureq::Error::ConnectionFailed | ureq::Error::Timeout(ureq::Timeout::Connect) => true,
-        ureq::Error::Io(e) => matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable),
-        _ => false,
-    }
-}
+pub use crosscom_client_common::http::is_private;
+pub(crate) use crosscom_client_common::http::may_go_plain as may_send_unencrypted;
+pub(crate) use crosscom_client_common::http::nothing_answered;
 
 /// Whether a password may go to `host` over plain HTTP after HTTPS failed with `error`.
 fn falls_back_to_plain(host: &str, error: &ureq::Error) -> bool {
@@ -172,12 +137,10 @@ pub const GAME: &str = "ghost-recon-future-soldier";
 /// An error for another game's server: a machine may host two behind one Caddy, and an address
 /// reaches the other's API (see `other_game`).
 pub fn info(server: &str) -> Result<Option<Info>, String> {
-    let url = format!("http://{}/api/info", host(server));
-    let mut response = agent().get(&url).call().map_err(|e| format!("couldn't reach {}: {e}", host(server)))?;
-    match response.status().as_u16() {
+    let response = api_get(server, "/api/info")?;
+    match response.status {
         200 => {
-            let body = response.body_mut().read_to_string().map_err(|e| e.to_string())?;
-            let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| format!("{}'s answer made no sense", host(server)))?;
+            let value: serde_json::Value = serde_json::from_slice(&response.body).map_err(|_| format!("{}'s answer made no sense", host(server)))?;
             if let Some(other) = other_game(&value) {
                 return Err(wrong_game(server, &other));
             }
@@ -207,12 +170,17 @@ fn wrong_game(server: &str, other: &str) -> String {
 /// After the online config answered, whether the same address's API is another game's: what
 /// `check` refuses. Anything else (no API, no answer) is left to the game to find out.
 fn api_is_other_game(server: &str) -> Option<String> {
-    let mut response = agent().get(&format!("http://{}/api/info", host(server))).call().ok()?;
-    if response.status() != 200 {
+    let response = api_get(server, "/api/info").ok()?;
+    if response.status != 200 {
         return None;
     }
-    let value: serde_json::Value = serde_json::from_str(&response.body_mut().read_to_string().ok()?).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&response.body).ok()?;
     other_game(&value)
+}
+
+/// Asks the server's API for `path`, over HTTPS (see `crosscom_client_common::http`).
+fn api_get(server: &str, path: &str) -> Result<crosscom_client_common::http::Response, String> {
+    crosscom_client_common::http::request(&host(server), "GET", path, &[("Accept", "application/json".into())], &[], TIMEOUT).map_err(|e| e.0)
 }
 
 /// Checks a name and password with the server: the account's ID, `None` when the server is

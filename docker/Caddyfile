@@ -3,11 +3,11 @@
 # CROSSCOM_DOMAIN is the server's domain; its DNS A record points at this machine, and ports 80
 # and 443 reach it. Caddy gets the certificate itself, from Let's Encrypt over port 80.
 #
-# Passwords (POST /accounts, POST /api/login) are taken over HTTPS only. Port 80 still answers
-# what carries none, over plain HTTP: the game asks for its online config there and can't do
-# HTTPS, the in-game overlay reads the API without TLS, the client DLL sends players' logs
-# (POST /api/logs, up to 4 MiB; the server takes them only from players' own addresses), and it
-# and the launcher report their routers and test them (POST /api/forward and /api/reach, small).
+# The launcher and the client DLL use the API over HTTPS: passwords (POST /accounts,
+# POST /api/login), players' logs (POST /api/logs, up to 4 MiB) and router reports and tests
+# (POST /api/forward, /api/reach) are taken over HTTPS only, by the server too. Port 80 still
+# answers, over plain HTTP, the game's online config (the game asks for it there and can't do
+# HTTPS) and the API's reads.
 {
 	# Port 80 is set out below rather than redirecting everything to HTTPS.
 	auto_https disable_redirects
@@ -26,26 +26,6 @@
 		not path /api/login
 	}
 	handle @plain {
-		reverse_proxy server:80
-	}
-	@logs {
-		method POST
-		path /api/logs
-	}
-	handle @logs {
-		request_body {
-			max_size 5MB
-		}
-		reverse_proxy server:80
-	}
-	@reach {
-		method POST
-		path /api/forward /api/reach
-	}
-	handle @reach {
-		request_body {
-			max_size 1KB
-		}
 		reverse_proxy server:80
 	}
 	handle {
