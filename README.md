@@ -123,7 +123,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 
 Matches are hosted by the players, so other players' games connect to yours. The server introduces you to each other and has both games open the way through your routers, which works for most home connections. While the game runs, Cross-Com also asks your router to **forward the game's port** to your PC (UPnP, PCP or NAT-PMP, if the router allows it), so other players can reach you whatever their own router does.
 
-**Settings › Connection › Test my connection** shows how reachable you are:
+**Settings › Connection › Test my connection** shows how reachable you are. It has the server send a packet to the port your router forwards, so Windows Firewall has to let the launcher receive it: Setup adds that rule with the game's (the same permission prompt), and a launcher you've moved since asks again.
 
 - **Open:** other players can reach your game directly. Nothing to do.
 - **Moderate:** you can play with most players. Two players whose routers are both strict may not reach each other.

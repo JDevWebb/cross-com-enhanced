@@ -244,7 +244,15 @@ impl Launcher {
     pub fn test_connection(&self) -> Result<crosscom_client_net::check::Report, String> {
         let dir = self.game_dir().ok_or("No game set up.")?;
         let server = settings::client(&dir).server.filter(|s| !s.is_empty()).ok_or("No server set up.")?;
-        Ok(crosscom_client_net::check::run(&server))
+        // The test's packet comes in to the launcher: Windows Firewall has to let it (Setup adds
+        // the rule; a launcher that moved asks again).
+        use crosscom_launcher::firewall::Outcome;
+        let unchecked = match crosscom_launcher::firewall::ensure_launcher() {
+            Outcome::Present | Outcome::Added => None,
+            Outcome::Declined => Some("Windows Firewall wasn't allowed to let the test in (the game checks it itself when you play)".to_owned()),
+            Outcome::Failed(why) => Some(format!("the launcher couldn't be let through Windows Firewall ({why})")),
+        };
+        Ok(crosscom_client_net::check::run_with(&server, unchecked))
     }
 
     /// Sends the game's pending logs (after moving the last run's aside, when no game has it

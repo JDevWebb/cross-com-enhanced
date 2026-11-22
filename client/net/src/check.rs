@@ -70,6 +70,9 @@ pub struct Report {
     pub router: Result<Router, String>,
     /// Whether the server's packet came in through the forward.
     pub forward_works: Option<bool>,
+    /// Why the forward wasn't checked, when it wasn't asked to be (Windows Firewall wouldn't let
+    /// the test's packet in).
+    pub unchecked: Option<String>,
     /// Why the server couldn't be tested, if it couldn't.
     pub problem: Option<String>,
 }
@@ -128,9 +131,14 @@ impl Report {
         });
         match (&self.router, self.forward_works) {
             (Ok(r), Some(true)) => lines.push(format!("Port forwarding: works ({}).", r.how)),
-            (Ok(r), _) => lines.push(format!(
+            (Ok(r), Some(false)) => lines.push(format!(
                 "Port forwarding: the router agreed ({}), but nothing came in through it. Another router may be in front of it.",
                 r.how
+            )),
+            (Ok(r), None) => lines.push(format!(
+                "Port forwarding: the router agreed ({}), but it wasn't checked: {}.",
+                r.how,
+                self.unchecked.as_deref().unwrap_or("the server couldn't be asked to send to it")
             )),
             (Err(e), _) => lines.push(format!("Port forwarding: not available ({}).", short(e))),
         }
@@ -197,6 +205,12 @@ pub fn mapping(ports: &[SocketAddr]) -> (Option<SocketAddrV4>, Nat) {
 /// Asks the router to forward a fresh socket's port, and the server to send to it: the forward,
 /// and whether the server's packet came in through it. The forward is taken away after.
 pub fn forwarding(server: &str, local: Option<Ipv4Addr>) -> (Result<Router, String>, Option<bool>) {
+    forwarding_checked(server, local, true)
+}
+
+/// As [`forwarding`], asking the server to send to the forward only when `check` (this program
+/// can receive what it sends).
+fn forwarding_checked(server: &str, local: Option<Ipv4Addr>, check: bool) -> (Result<Router, String>, Option<bool>) {
     let socket = match UdpSocket::bind((local.unwrap_or(Ipv4Addr::UNSPECIFIED), 0)) {
         Ok(s) => s,
         Err(e) => return (Err(e.to_string()), None),
@@ -212,6 +226,10 @@ pub fn forwarding(server: &str, local: Option<Ipv4Addr>) -> (Result<Router, Stri
         how: mapping.how,
         public: mapping.public,
     };
+    if !check {
+        mapping.remove();
+        return (Ok(router), None);
+    }
     let nonce = format!("{:016x}", u64::from_le_bytes(echo::nonce()));
     let works = match api::reach(server, router.public.port(), &nonce) {
         Ok(_) => Some(came_in(&socket, &nonce)),
@@ -258,6 +276,13 @@ pub fn private(ip: IpAddr) -> bool {
 /// The whole test against `server`.
 #[must_use]
 pub fn run(server: &str) -> Report {
+    run_with(server, None)
+}
+
+/// The whole test against `server`; without checking that the forward lets packets in when
+/// `unchecked` says why it can't be (Windows Firewall won't let this program be sent to).
+#[must_use]
+pub fn run_with(server: &str, unchecked: Option<String>) -> Report {
     let ports = match server_udp(server) {
         Ok(p) => p,
         Err(e) => {
@@ -266,6 +291,7 @@ pub fn run(server: &str) -> Report {
                 nat: Nat::Unknown,
                 router: Err(e.clone()),
                 forward_works: None,
+                unchecked: None,
                 problem: Some(e),
             }
         }
@@ -277,16 +303,18 @@ pub fn run(server: &str) -> Report {
             nat: Nat::Unknown,
             router: Err(why.clone()),
             forward_works: None,
+            unchecked: None,
             problem: Some(why),
         };
     }
     let (seen, nat) = mapping(&ports);
-    let (router, forward_works) = forwarding(server, None);
+    let (router, forward_works) = forwarding_checked(server, None, unchecked.is_none());
     Report {
         seen,
         nat,
         router,
         forward_works,
+        unchecked,
         problem: None,
     }
 }
@@ -304,6 +332,7 @@ mod tests {
                 public: "203.0.113.7:40001".parse().unwrap(),
             }),
             forward_works,
+            unchecked: None,
             problem: None,
         }
     }
@@ -336,6 +365,18 @@ mod tests {
             ..report(Nat::Consistent, None)
         };
         assert!(r.details().iter().any(|l| l.contains("internet provider")));
+    }
+
+    #[test]
+    fn a_forward_that_wasnt_checked_says_why() {
+        let r = Report {
+            unchecked: Some("Windows Firewall wasn't allowed to let the test in".into()),
+            ..report(Nat::Consistent, None)
+        };
+        assert_eq!(r.verdict(), Verdict::Moderate);
+        assert!(r.details().iter().any(|l| l.contains("wasn't checked: Windows Firewall")), "{:?}", r.details());
+        let r = report(Nat::Consistent, Some(false));
+        assert!(r.details().iter().any(|l| l.contains("nothing came in")));
     }
 
     #[test]
