@@ -10,6 +10,11 @@
 //! is recorded as that. Each record has what both players' clients said about their routers
 //! (`reach`): whether they forward the game's port and how they map ports.
 //!
+//! A search's join can fail before it starts: the player picks a lobby and asks to reach its
+//! host, can't, and gives up without the host ever adding them (the game then hosts a lobby of
+//! its own). So that choice is noted too (`Sessions::choose`), and recorded as `unreached` when
+//! the host hasn't added the player within [`UNREACHED_AFTER`].
+//!
 //! Kept in the database for [`KEPT_FOR`], with no addresses: players by account, and whether the
 //! two were on one network. `crosscom-server connections [DAYS]` sums them up.
 
@@ -32,6 +37,8 @@ use crate::sessions::Sessions;
 
 /// A join that ends sooner than this is counted as ending early.
 pub const SHORT: Duration = Duration::from_secs(90);
+/// A player who chose a lobby and hasn't been added to it this long after never got in.
+pub const UNREACHED_AFTER: Duration = Duration::from_secs(60);
 /// How long records are kept.
 const KEPT_FOR: u64 = 90 * 24 * 3600;
 /// Joins followed at once; an open join older than [`FORGET_AFTER`] is recorded as stayed.
@@ -63,6 +70,8 @@ struct Open {
 pub struct Connections {
     db: Mutex<Connection>,
     open: Mutex<HashMap<(u32, Key), Open>>,
+    /// Lobbies players chose from a search and haven't been added to yet: when, and the host.
+    attempts: Mutex<HashMap<(u32, Key), Open>>,
     /// Each player's latest probe requests: a joiner asks to reach a match's host just before
     /// the host adds it, so they count towards the join that follows.
     probes: Mutex<HashMap<u32, Vec<Instant>>>,
@@ -80,7 +89,8 @@ pub struct Record {
     pub host: u32,
     pub seconds: u64,
     pub probes: u32,
-    /// `stayed`, `left`, `removed`, `dropped`, or `host_gone` (its host had gone first).
+    /// `stayed`, `left`, `removed`, `dropped`, `host_gone` (its host had gone first), or
+    /// `unreached` (it chose the lobby but the host never added it).
     pub outcome: &'static str,
     pub same_network: bool,
     pub forwarded: bool,
@@ -93,7 +103,7 @@ pub struct Record {
 impl Record {
     #[must_use]
     pub fn early(&self) -> bool {
-        matches!(self.outcome, "left" | "removed" | "dropped")
+        matches!(self.outcome, "left" | "removed" | "dropped" | "unreached")
     }
 }
 
@@ -120,6 +130,7 @@ impl Connections {
         Ok(Self {
             db: Mutex::new(db),
             open: Mutex::default(),
+            attempts: Mutex::default(),
             probes: Mutex::default(),
         })
     }
@@ -128,11 +139,38 @@ impl Connections {
         self.open.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// `pid` chose `key`, hosted by `host`, from a search, and asks to reach it.
+    pub fn attempted(&self, logger: &Logger, sessions: &Sessions, pid: u32, key: Key, host: u32) {
+        self.sweep(logger, sessions);
+        // Already in it (a player that joins before it asks to reach the host).
+        if self.open_joins().contains_key(&(pid, key)) || sessions.get(key).is_some_and(|s| s.has(pid)) {
+            return;
+        }
+        let probes = self.recent_probes(pid);
+        let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if attempts.len() < MAX_OPEN {
+            attempts.entry((pid, key)).or_insert(Open { at: Instant::now(), host, probes });
+        }
+    }
+
+    /// Records the attempts that never got in.
+    pub fn sweep(&self, logger: &Logger, sessions: &Sessions) {
+        let expired: Vec<((u32, Key), Open)> = {
+            let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let keys: Vec<(u32, Key)> = attempts.iter().filter(|(_, o)| o.at.elapsed() >= UNREACHED_AFTER).map(|(k, _)| *k).collect();
+            keys.into_iter().filter_map(|k| attempts.remove(&k).map(|v| (k, v))).collect()
+        };
+        for ((pid, key), attempt) in expired {
+            self.record(logger, sessions, pid, key, &attempt, "unreached");
+        }
+    }
+
     /// `pid` joined `key`, hosted by `host`. A join already followed keeps its start.
     pub fn joined(&self, logger: &Logger, sessions: &Sessions, pid: u32, key: Key, host: u32) {
         if pid == host {
             return;
         }
+        self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(pid, key));
         let mut open = self.open_joins();
         if open.len() >= MAX_OPEN {
             let old: Vec<(u32, Key)> = open.iter().filter(|(_, o)| o.at.elapsed() >= FORGET_AFTER).map(|(k, _)| *k).collect();
@@ -178,6 +216,11 @@ impl Connections {
         }
         for ((player, _), o) in self.open_joins().iter_mut() {
             if *player == pid && o.at.elapsed() < SHORT {
+                o.probes = o.probes.saturating_add(1);
+            }
+        }
+        for ((player, _), o) in self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
+            if *player == pid {
                 o.probes = o.probes.saturating_add(1);
             }
         }
@@ -278,7 +321,7 @@ impl Connections {
                 host: row.get(2)?,
                 seconds: row.get(3)?,
                 probes: row.get(4)?,
-                outcome: ["stayed", "left", "removed", "dropped", "host_gone"]
+                outcome: ["stayed", "left", "removed", "dropped", "host_gone", "unreached"]
                     .into_iter()
                     .find(|o| *o == outcome)
                     .unwrap_or("stayed"),
@@ -296,9 +339,29 @@ impl Connections {
 /// The server's records and its sessions, once it's serving (none in tests and commands).
 static SERVING: OnceLock<(Connections, Arc<Sessions>)> = OnceLock::new();
 
-/// Starts keeping records of the joins of `sessions`.
-pub fn start(connections: Connections, sessions: Arc<Sessions>) {
-    let _ = SERVING.set((connections, sessions));
+/// Starts keeping records of the joins of `sessions`, and a thread recording the attempts that
+/// never got in.
+pub fn start(logger: &Logger, connections: Connections, sessions: Arc<Sessions>) {
+    if SERVING.set((connections, sessions)).is_err() {
+        return;
+    }
+    let sweeping = logger.clone();
+    let swept = std::thread::Builder::new().name("connection records".into()).spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(15));
+        if let Some((c, s)) = SERVING.get() {
+            c.sweep(&sweeping, s);
+        }
+    });
+    if let Err(e) = swept {
+        slog::warn!(logger, "couldn't start recording joins that never got in: {e}");
+    }
+}
+
+/// [`Connections::attempted`], while serving.
+pub fn attempted(logger: &Logger, pid: u32, key: Key, host: u32) {
+    if let Some((c, s)) = SERVING.get() {
+        c.attempted(logger, s, pid, key, host);
+    }
 }
 
 /// [`Connections::joined`], while serving.
@@ -365,8 +428,9 @@ pub fn summary(records: &[Record], days: u64, name: impl Fn(u32) -> String) -> S
     let early = counted.iter().filter(|r| r.early()).count();
     let pct = |n: usize, of: usize| if of == 0 { 0.0 } else { n as f64 * 100.0 / of as f64 };
     let _ = writeln!(out, "Joins in the last {days} days: {}", counted.len());
-    let _ = writeln!(out, "  ended within {} s: {early} ({:.0}%)", SHORT.as_secs(), pct(early, counted.len()));
+    let _ = writeln!(out, "  failed or ended within {} s: {early} ({:.0}%)", SHORT.as_secs(), pct(early, counted.len()));
     for (outcome, said) in [
+        ("unreached", "never got in: the host never added them"),
         ("left", "the player left"),
         ("removed", "the host took them out"),
         ("dropped", "their game lost the server"),
@@ -463,6 +527,32 @@ mod tests {
         assert_eq!(c.since(0).unwrap()[0].probes, 2, "one just before the join, one while it was open");
     }
 
+    /// A player who chose a lobby but was never added is recorded once the wait is over; one who
+    /// was added isn't.
+    #[test]
+    fn an_attempt_that_never_got_in_is_recorded() {
+        let (_dir, c, sessions, key) = setup();
+        c.probed(3);
+        c.attempted(&logger(), &sessions, 3, key, 1);
+        // Player 2 is in the session already (setup added it): its probe isn't an attempt.
+        c.attempted(&logger(), &sessions, 2, key, 1);
+        c.sweep(&logger(), &sessions);
+        assert!(c.since(0).unwrap().is_empty(), "not yet");
+        c.probed(3);
+        for v in c.attempts.lock().unwrap().values_mut() {
+            v.at -= UNREACHED_AFTER;
+        }
+        c.sweep(&logger(), &sessions);
+        let records = c.since(0).unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            (records[0].player, records[0].outcome, records[0].probes),
+            (3, "unreached", 2),
+            "one before, one while waiting"
+        );
+        assert!(records[0].early());
+    }
+
     #[test]
     fn a_join_whose_host_went_first_isnt_counted_as_failing() {
         let (_dir, c, sessions, key) = setup();
@@ -506,7 +596,7 @@ mod tests {
         ];
         let text = summary(&records, 30, |p| format!("player{p}"));
         assert!(text.contains("Joins in the last 30 days: 3"), "{text}");
-        assert!(text.contains("ended within 90 s: 1 (33%)"), "{text}");
+        assert!(text.contains("failed or ended within 90 s: 1 (33%)"), "{text}");
         assert!(text.contains("(and 1 ended because the host had gone"), "{text}");
         assert!(text.contains("both symmetric"), "{text}");
         assert!(text.contains("player2"), "{text}");

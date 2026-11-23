@@ -238,7 +238,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     // The game sessions (secure server); the auth server takes out a restarted host's lobbies.
     let sessions = Arc::new(sessions::Sessions::default());
     match connections::Connections::open(&config.database) {
-        Ok(records) => connections::start(records, Arc::clone(&sessions)),
+        Ok(records) => connections::start(&logger, records, Arc::clone(&sessions)),
         Err(e) => error!(logger, "couldn't open the connection records in {}: {e}; joins aren't recorded", config.database.display()),
     }
     let http = online_config::Http {

@@ -49,7 +49,8 @@ pub fn spawn(server: String) {
     }
 }
 
-fn run(server: &str) {
+/// What [`spawn`]'s thread does, until the process ends (the test bot runs it too).
+pub fn run(server: &str) {
     let ports = match check::server_udp(server) {
         Ok(p) => p,
         Err(e) => {
