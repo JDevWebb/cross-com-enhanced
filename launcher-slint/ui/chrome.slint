@@ -3,6 +3,7 @@
 
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
+import { Btn } from "widgets.slint";
 
 // The menu's icons (24 by 24, stroked).
 export global Icons {
@@ -199,5 +200,57 @@ export component Toast inherits Rectangle {
         text: root.text;
         wrap: word-wrap;
         color: Theme.fg;
+    }
+}
+
+// Before Windows' permission prompt: what it is, why it comes, and what to click. Over the whole
+// window, until Continue or Cancel.
+export component Notice inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> go: "Continue";
+    callback proceed();
+    callback cancel();
+    background: #000000a0;
+    // Clicks outside the card do nothing (the screen behind waits).
+    TouchArea { }
+    FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.cancel(); return accept; }
+            if e.text == Key.Return { root.proceed(); return accept; }
+            reject
+        }
+    }
+    card := Rectangle {
+        width: min(560px, root.width - 64px);
+        height: lay.preferred-height;
+        border-radius: 8px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.accent-dim;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #000000a0;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: root.title;
+        lay := VerticalLayout {
+            padding: 26px;
+            spacing: 14px;
+            Text {
+                text: root.title;
+                font-family: Type.cond;
+                font-weight: 700;
+                font-size: 24px;
+                color: Theme.fg;
+                wrap: word-wrap;
+            }
+            Text { text: root.body; color: Theme.soft; wrap: word-wrap; }
+            HorizontalLayout {
+                padding-top: 6px;
+                spacing: 10px;
+                alignment: end;
+                Btn { text: "Cancel"; clicked => { root.cancel(); } }
+                Btn { text: root.go; kind: "primary"; clicked => { root.proceed(); } }
+            }
+        }
     }
 }

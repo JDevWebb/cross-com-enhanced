@@ -9,7 +9,7 @@ import "../../assets/fonts/IBMPlexMono-Regular.ttf";
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
 import { Spinner } from "widgets.slint";
-import { TitleBar, SideMenu, Toast } from "chrome.slint";
+import { TitleBar, SideMenu, Toast, Notice } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
@@ -44,6 +44,11 @@ export component AppWindow inherits Window {
     in property <string> community-status;
     // What the launcher just did, for a few seconds.
     in property <string> toast;
+    // A notice over everything until it's answered ("" for none): before Windows' permission
+    // prompt, what it's for. `notice-for` says what Continue goes on with.
+    in property <string> notice-title;
+    in property <string> notice-body;
+    in property <string> notice-for;
 
     // Play.
     in property <string> server-state: "asking";
@@ -133,6 +138,9 @@ export component AppWindow inherits Window {
     callback open-logs();
     callback restore();
     callback test-connection();
+    // The notice: go on (with `notice-for`), or not.
+    callback notice-proceed(string);
+    callback notice-cancel(string);
     // About: one of its links, by id.
     callback open-link(string);
 
@@ -255,6 +263,12 @@ export component AppWindow inherits Window {
                     text: root.toast;
                     x: parent.width - self.width - 22px;
                     y: parent.height - self.height - 22px;
+                }
+                if root.notice-title != "": Notice {
+                    title: root.notice-title;
+                    body: root.notice-body;
+                    proceed => { root.notice-proceed(root.notice-for); }
+                    cancel => { root.notice-cancel(root.notice-for); }
                 }
             }
         }

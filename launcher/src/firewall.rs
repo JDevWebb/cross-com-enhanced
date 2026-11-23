@@ -171,6 +171,26 @@ pub fn ensure(dir: &Path) -> Outcome {
     ensure_rules(&rules)
 }
 
+/// Whether [`ensure`] would ask Windows for permission: a rule for the game's exes in `dir`, or
+/// for this launcher, isn't there. The launcher explains the prompt before it comes.
+#[cfg(windows)]
+#[must_use]
+pub fn ensure_would_ask(dir: &Path) -> bool {
+    let mut rules = game_rules(dir);
+    if rules.is_empty() {
+        return false;
+    }
+    rules.extend(launcher_rule());
+    !present(&rules)
+}
+
+/// Whether [`ensure_launcher`] would ask Windows for permission.
+#[cfg(windows)]
+#[must_use]
+pub fn ensure_launcher_would_ask() -> bool {
+    !present(&launcher_rule().into_iter().collect::<Vec<_>>())
+}
+
 /// Makes sure this launcher is allowed (for the connection test), asking Windows if it isn't.
 #[cfg(windows)]
 #[must_use]
@@ -188,6 +208,18 @@ pub fn ensure(_dir: &Path) -> Outcome {
 #[must_use]
 pub fn ensure_launcher() -> Outcome {
     Outcome::Present
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn ensure_would_ask(_dir: &Path) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn ensure_launcher_would_ask() -> bool {
+    false
 }
 
 /// Runs `file` with `args` as administrator (Windows' permission prompt), hidden, and waits for it.
