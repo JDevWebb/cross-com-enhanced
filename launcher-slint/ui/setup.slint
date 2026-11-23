@@ -1,7 +1,8 @@
-// The guided setup: the game's folder (found on its own when it can be), the server (the
-// community test network unless the player chooses another, checked), the account (made here,
-// or an existing one, checked with the server) and the game options; then one press sets it all
-// up.
+// The guided setup, a step at a time: the game's folder (found on its own when it can be), the
+// server (the community test network unless the player chooses another, checked before going on),
+// the account (made here, or an existing one), the game options, and a last step that says what
+// setting up will do (and that Windows will ask for permission, when it will) before one press
+// does it all.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
@@ -82,9 +83,83 @@ export component AccountForm inherits VerticalLayout {
     }
 }
 
+// The steps, as the bar over Setup names them.
+component StepBar inherits HorizontalLayout {
+    in property <[string]> steps;
+    in property <int> current;
+    // A step already done, to go back to.
+    callback go(int);
+    spacing: 6px;
+    for name[i] in root.steps: Rectangle {
+        height: 46px;
+        horizontal-stretch: 1;
+        border-radius: 4px;
+        background: i == root.current ? Theme.selected : transparent;
+        border-width: 1px;
+        border-color: i == root.current ? Theme.accent-dim : Theme.line;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Step " + (i + 1) + ": " + name;
+        TouchArea {
+            mouse-cursor: i < root.current ? pointer : default;
+            clicked => { if i < root.current { root.go(i); } }
+        }
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 8px;
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: i < root.current ? Theme.accent : transparent;
+                    border-width: 1.5px;
+                    border-color: i <= root.current ? Theme.accent : Theme.control-line;
+                    Text {
+                        text: i < root.current ? "✓" : "" + (i + 1);
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: i < root.current ? Theme.on-accent : i == root.current ? Theme.accent : Theme.muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Text {
+                text: name;
+                color: i == root.current ? Theme.fg : i < root.current ? Theme.soft : Theme.muted;
+                font-weight: i == root.current ? 600 : 400;
+                font-size: Type.small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// One line of the last step's summary.
+component Summary inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> mono;
+    spacing: 14px;
+    Text { text: root.label; width: 110px; color: Theme.muted; font-size: Type.small; }
+    Text {
+        text: root.value;
+        color: Theme.fg;
+        font-family: root.mono ? Type.mono : Type.sans;
+        font-size: root.mono ? 12.5px : Type.body;
+        wrap: char-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
 export component SetupScreen inherits Rectangle {
     // No setup yet: the first run.
     in property <bool> first;
+    // The step shown: 0 the game, 1 the server, 2 the account, 3 the options, 4 setting up.
+    in-out property <int> step;
     // The game.
     in property <string> game-dir;
     in property <bool> game-finding;
@@ -117,52 +192,82 @@ export component SetupScreen inherits Rectangle {
     in property <string> missing;
     in property <bool> busy;
     in property <string> error;
+    // On the last step: why Windows will ask for permission, when it will ("" when it won't).
+    in property <string> firewall-note;
     callback choose-game();
     callback check-server();
     callback changed();
     callback run();
     callback cancel();
+    // A step was shown (the last one looks at the firewall rules).
+    callback step-entered(int);
+
+    // Whether the step shown lets the player go on, and what it still needs.
+    property <bool> can-go: root.step == 0 ? root.game-dir != "" && !root.game-finding
+        : root.step == 1 ? root.server-ok != "" && !root.server-checking
+        : root.step == 2 ? root.account-done
+        : root.step == 3 ? true
+        : root.missing == "" && !root.busy;
+    property <string> needs: root.step == 0 ? (root.game-finding ? "Looking for the game…" : "Choose the game's folder.")
+        : root.step == 1 ? (root.server-checking ? "Asking the server…" : root.server-error != "" ? "" : root.community ? "Waiting for the server's answer." : "Enter the server's address, then Check.")
+        : root.step == 2 ? root.missing
+        : "";
+
+    function go-to(n: int) {
+        root.step = n;
+        root.step-entered(n);
+    }
 
     ScrollView {
-        VerticalLayout {
-            padding-left: 40px;
-            padding-right: 40px;
-            padding-top: 30px;
-            padding-bottom: 28px;
-            spacing: 0px;
-            alignment: start;
-
-            Caps { text: root.first ? "FIRST DEPLOYMENT" : "SET UP"; color: Theme.accent; }
-            Text {
-                text: (root.first ? "Get Cross-Com ready" : "Game, server and account").to-uppercase();
-                font-family: Type.cond;
-                font-weight: 700;
-                font-size: 40px;
-                color: Theme.fg;
-                accessible-role: AccessibleRole.text;
-            }
+        HorizontalLayout {
+            alignment: center;
             VerticalLayout {
-                padding-top: 4px;
-                padding-bottom: 22px;
-                Para { text: "Four steps, then the launcher does the rest: it installs Cross-Com's client into the game (keeping the game's own files), makes your account and writes your settings."; }
-            }
+                // A dialog's width, in the middle of the window.
+                width: min(720px, root.width - 80px);
+                padding-top: 30px;
+                padding-bottom: 28px;
+                spacing: 0px;
+                alignment: start;
 
-            HorizontalLayout {
-                spacing: 14px;
-                alignment: stretch;
-                // The game and the server.
+                Caps { text: root.first ? "FIRST DEPLOYMENT" : "SET UP"; color: Theme.accent; }
+                Text {
+                    text: (root.first ? "Get Cross-Com ready" : "Game, server and account").to-uppercase();
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: 40px;
+                    color: Theme.fg;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
                 VerticalLayout {
-                    spacing: 14px;
-                    // Two equal columns, between the page's sides (40 px) and the gap.
-                    width: (root.width - 94px) / 2;
-                    alignment: start;
-                    Card {
+                    padding-top: 4px;
+                    padding-bottom: 18px;
+                    Para { text: "A few steps, then the launcher does the rest: it installs Cross-Com's client into the game (keeping the game's own files), makes your account and writes your settings. You need your own copy of the game."; }
+                }
+                StepBar {
+                    steps: ["The game", "The server", "Your account", "Options", "Set up"];
+                    current: root.step;
+                    go(i) => { if !root.busy { root.go-to(i); } }
+                }
+                VerticalLayout {
+                    padding-top: 6px;
+                    Text {
+                        text: "STEP " + (root.step + 1) + " OF 5";
+                        font-family: Type.mono;
+                        font-size: 10.5px;
+                        letter-spacing: 1.2px;
+                        color: Theme.muted;
+                    }
+                }
+
+                VerticalLayout {
+                    padding-top: 14px;
+                    if root.step == 0: Card {
                         edged: true;
                         edge: root.game-dir != "";
                         min-height: gl.preferred-height;
                         gl := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
+                            padding: 20px;
                             spacing: 10px;
                             CardHead { number: "01"; title: "The game"; note: root.game-dir != "" ? "Found" : ""; }
                             if root.game-finding: HorizontalLayout {
@@ -194,15 +299,15 @@ export component SetupScreen inherits Rectangle {
                             }
                         }
                     }
-                    Card {
+                    if root.step == 1: Card {
                         edged: true;
                         edge: root.server-ok != "";
                         min-height: sl.preferred-height;
                         sl := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
+                            padding: 20px;
                             spacing: 10px;
                             CardHead { number: "02"; title: "The server"; note: root.server-ok != "" ? "Answering" : ""; }
+                            Para { text: "Where you play and your account lives. Everyone on one server can find each other's matches."; }
                             Option {
                                 title: root.community-name;
                                 tag: root.community-status;
@@ -254,29 +359,22 @@ export component SetupScreen inherits Rectangle {
                                 Text { text: "Asking the server…"; color: Theme.muted; }
                             }
                             if !root.server-checking && root.server-ok != "": Text {
-                                text: "The game will sign in at " + root.server-ok + ".";
-                                color: Theme.muted;
+                                text: "It answered: the game will sign in at " + root.server-ok + ".";
+                                color: Theme.good;
                                 wrap: word-wrap;
                             }
                             if !root.server-checking && root.server-error != "": Para { text: root.server-error; color: Theme.bad; }
                         }
                     }
-                }
-                // The account and the options.
-                VerticalLayout {
-                    spacing: 14px;
-                    // Two equal columns, between the page's sides (40 px) and the gap.
-                    width: (root.width - 94px) / 2;
-                    alignment: start;
-                    Card {
+                    if root.step == 2: Card {
                         edged: true;
                         edge: root.account-done;
                         min-height: al.preferred-height;
                         al := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
+                            padding: 20px;
                             spacing: 12px;
                             CardHead { number: "03"; title: "Your account"; }
+                            Para { text: "Your name is what other players see. New here? Make one; the server's host may have given you a sign-up code."; }
                             AccountForm {
                                 new-account <=> root.new-account;
                                 name <=> root.name;
@@ -285,43 +383,91 @@ export component SetupScreen inherits Rectangle {
                                 code <=> root.code;
                                 enabled: !root.busy;
                                 changed => { root.changed(); }
-                                accepted => { if root.missing == "" && !root.busy { root.run(); } }
+                                accepted => { if root.can-go { root.go-to(3); } }
                             }
                         }
                     }
-                    Card {
+                    if root.step == 3: Card {
                         edged: true;
                         edge: true;
                         min-height: ol.preferred-height;
                         ol := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
+                            padding: 20px;
                             spacing: 8px;
                             CardHead { number: "04"; title: "Game options"; }
+                            Para { text: "You can change these any time in Settings."; }
                             Check { text: "Skip the intro videos"; checked <=> root.skip-intro; enabled: !root.busy; }
                             Check { text: "Use DirectX 9 (for older graphics cards)"; checked <=> root.dx9; enabled: !root.busy; }
                         }
                     }
+                    if root.step == 4: Card {
+                        edged: true;
+                        edge: root.missing == "";
+                        min-height: fl.preferred-height;
+                        fl := VerticalLayout {
+                            padding: 20px;
+                            spacing: 10px;
+                            CardHead { number: "05"; title: "Set up"; }
+                            Summary { label: "The game"; value: root.game-dir; mono: true; }
+                            Summary { label: "The server"; value: root.community ? root.community-name + " (" + root.community-host + ")" : root.server-typed; }
+                            Summary { label: "Your account"; value: (root.new-account ? "A new account, " : "Signing in as ") + root.name; }
+                            Summary {
+                                label: "Options";
+                                value: (root.skip-intro ? "Intro videos skipped" : "Intro videos played") + " · " + (root.dx9 ? "DirectX 9" : "DirectX 11");
+                            }
+                            VerticalLayout {
+                                padding-top: 6px;
+                                Para {
+                                    text: "Set up installs Cross-Com's client into the game (keeping the game's own files: Settings can put them back), " + (root.new-account ? "makes your account on the server" : "checks your name and password with the server") + " and saves your settings.";
+                                }
+                            }
+                            if root.firewall-note != "": Rectangle {
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: Theme.warn;
+                                background: Theme.warn.with-alpha(0.06);
+                                min-height: wl.preferred-height;
+                                wl := VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 6px;
+                                    Text { text: "Windows will ask for permission"; color: Theme.warn; font-weight: 600; }
+                                    Text { text: root.firewall-note; color: Theme.soft; wrap: word-wrap; }
+                                }
+                            }
+                            if root.error != "": Para { text: root.error; color: Theme.bad; }
+                        }
+                    }
                 }
-            }
 
-            HorizontalLayout {
-                padding-top: 20px;
-                spacing: 12px;
-                alignment: start;
-                Btn {
-                    text: root.busy ? "Setting up…" : root.first ? "Set up and get ready" : "Save and set up";
-                    kind: "primary";
-                    big: true;
-                    busy: root.busy;
-                    enabled: root.missing == "" && !root.busy;
-                    clicked => { root.run(); }
-                }
-                if !root.first: Btn { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel(); } }
-                VerticalLayout {
-                    alignment: center;
-                    if root.missing != "" && !root.busy && root.error == "": Text { text: root.missing; color: Theme.muted; wrap: word-wrap; }
-                    if root.error != "": Text { text: root.error; color: Theme.bad; wrap: word-wrap; }
+                HorizontalLayout {
+                    padding-top: 18px;
+                    spacing: 12px;
+                    if root.step > 0: Btn { text: "Back"; enabled: !root.busy; clicked => { root.go-to(root.step - 1); } }
+                    if !root.first: Btn { text: "Cancel"; enabled: !root.busy; clicked => { root.cancel(); } }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        if !root.can-go && root.needs != "": Text {
+                            text: root.needs;
+                            color: Theme.muted;
+                            horizontal-alignment: right;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.step < 4: Btn {
+                        text: "Continue";
+                        kind: "primary";
+                        enabled: root.can-go && !root.busy;
+                        clicked => { root.go-to(root.step + 1); }
+                    }
+                    if root.step == 4: Btn {
+                        text: root.busy ? "Setting up…" : "Set up";
+                        kind: "primary";
+                        big: true;
+                        busy: root.busy;
+                        enabled: root.can-go;
+                        clicked => { root.run(); }
+                    }
                 }
             }
         }

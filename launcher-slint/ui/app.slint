@@ -83,6 +83,9 @@ export component AppWindow inherits Window {
     in property <string> setup-missing;
     in property <bool> setup-busy;
     in property <string> setup-error;
+    // The step Setup shows, and (on its last) why Windows will ask for permission, or "".
+    in-out property <int> setup-step;
+    in property <string> setup-firewall-note;
 
     // Settings.
     in-out property <bool> opt-skip-intro;
@@ -129,6 +132,7 @@ export component AppWindow inherits Window {
     callback setup-check-server();
     callback setup-changed();
     callback setup-run();
+    callback setup-step-entered(int);
     // Settings.
     callback options-changed();
     callback account-changed();
@@ -202,6 +206,9 @@ export component AppWindow inherits Window {
                     missing: root.setup-missing;
                     busy: root.setup-busy;
                     error: root.setup-error;
+                    step <=> root.setup-step;
+                    firewall-note: root.setup-firewall-note;
+                    step-entered(n) => { root.setup-step-entered(n); }
                     choose-game => { root.setup-choose-game(); }
                     check-server => { root.setup-check-server(); }
                     changed => { root.setup-changed(); }

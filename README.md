@@ -97,7 +97,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 <td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, and the server and account"></td>
 </tr>
 <tr>
-<td align="center"><sub>Setup: the game, the server, your account</sub></td>
+<td align="center"><sub>Setup, a step at a time: the last step, before it sets everything up</sub></td>
 <td align="center"><sub>Settings: the overlay, the logs, your server and account, your connection</sub></td>
 </tr>
 </table>
