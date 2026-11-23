@@ -476,6 +476,19 @@ fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Res
     }
 }
 
+/// Whether finishing Setup in `dir` will ask Windows for permission (the firewall rules aren't
+/// all there), so the launcher says why first.
+#[must_use]
+pub fn firewall_would_ask(dir: &Path) -> bool {
+    game::is_game_dir(dir) && crosscom_launcher::firewall::ensure_would_ask(dir)
+}
+
+/// Whether the connection test will ask Windows for permission (the launcher's rule isn't there).
+#[must_use]
+pub fn launcher_firewall_would_ask() -> bool {
+    crosscom_launcher::firewall::ensure_launcher_would_ask()
+}
+
 /// Said after an account's done, when its password went unencrypted.
 /// What to add to setup's message about the firewall rules.
 fn firewall_note(outcome: crosscom_launcher::firewall::Outcome) -> String {
