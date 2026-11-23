@@ -226,6 +226,7 @@ fn setup_host(w: &AppWindow) -> String {
 /// test network unless another server is set up.
 fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
     let first = !info.ready();
+    let changing_server = community.is_some();
     let set_up = info.server.as_deref().filter(|h| !server::is_community(h));
     let community = community.unwrap_or(set_up.is_none());
     w.set_setup_game_dir(s(info.game_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default()));
@@ -243,6 +244,9 @@ fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
     w.set_setup_dx9(info.dx9);
     w.set_setup_busy(false);
     w.set_setup_error(s(""));
+    // Changing server starts at the server; a setup from the start, at the game.
+    w.set_setup_step(i32::from(changing_server && info.game_dir.is_some()));
+    w.set_setup_firewall_note(s(""));
     CHECKED.with(|c| c.borrow_mut().clear());
     w.set_setup_server_checking(false);
     setup_changed(w);
@@ -341,14 +345,13 @@ fn choose_game(w: &AppWindow) {
     w.set_setup_game_error(s("Choosing a folder needs Windows."));
 }
 
-/// Before Setup's Windows permission prompt (the firewall rules), and the connection test's.
-const SETUP_NOTICE: (&str, &str) = (
-    "Windows will ask for permission",
-    "Next, Windows asks whether to let Windows PowerShell make changes to your PC. That's the launcher adding \
-     Windows Firewall rules, so the players in your matches can reach your game. It adds rules only for the game \
-     and for this launcher's connection test, and changes nothing else.\n\nClick Yes when Windows asks. With No, \
-     Setup still finishes, but Windows asks again the first time you play online, which can minimise the game.",
-);
+/// On Setup's last step, before the press that brings Windows' permission prompt (the firewall
+/// rules); and the notice before the connection test's.
+pub const SETUP_FIREWALL: &str = "When you press Set up, Windows asks whether to let Windows PowerShell make changes to \
+     your PC. That's the launcher adding Windows Firewall rules, so the players in your matches can reach your game. \
+     It adds rules only for the game and for this launcher's connection test, and changes nothing else.\n\nClick Yes \
+     when Windows asks. With No, Setup still finishes, but Windows asks again the first time you play online, which can \
+     minimise the game.";
 const TEST_NOTICE: (&str, &str) = (
     "Windows will ask for permission",
     "The connection test has the server send a packet to the port your router forwards, and Windows Firewall has \
@@ -370,26 +373,27 @@ fn close_notice(w: &AppWindow) {
     w.set_notice_for(s(""));
 }
 
-/// Setup, after the notice when Windows will ask for permission.
-fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
+/// A step of Setup was shown: on the last, whether Windows will ask for permission, said there
+/// before the press that brings the prompt.
+fn setup_step_entered(w: &AppWindow, step: i32) {
+    if step != 4 {
+        return;
+    }
+    w.set_setup_firewall_note(s(""));
     let dir = PathBuf::from(w.get_setup_game_dir().as_str());
-    w.set_setup_busy(true);
-    let l = l.clone();
     background(
         w,
         move || core::firewall_would_ask(&dir),
-        move |w, asks| {
-            w.set_setup_busy(false);
-            if asks {
-                notice(w, SETUP_NOTICE, "setup");
-            } else {
-                run_setup_now(w, &l);
+        |w, asks| {
+            if w.get_setup_step() == 4 {
+                w.set_setup_firewall_note(s(if asks { SETUP_FIREWALL } else { "" }));
             }
         },
     );
 }
 
-fn run_setup_now(w: &AppWindow, l: &Arc<Launcher>) {
+/// Sets it all up, from Setup's last step (which said whether Windows will ask, and why).
+fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
     let setup = core::Setup {
         game_dir: PathBuf::from(w.get_setup_game_dir().as_str()),
         server: setup_host(w),
@@ -675,6 +679,14 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
     w.on_setup_check_server(on(|w, _| check_server(w)));
     w.on_setup_changed(on(|w, _| setup_changed(w)));
     w.on_setup_run(on(run_setup));
+    {
+        let weak = weak.clone();
+        w.on_setup_step_entered(move |step| {
+            if let Some(w) = weak.upgrade() {
+                setup_step_entered(&w, step);
+            }
+        });
+    }
     w.on_options_changed(on(save_options));
     w.on_account_changed(on(|w, _| account_changed(w)));
     w.on_account_run(on(run_account));
@@ -705,10 +717,8 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         w.on_notice_proceed(move |then| {
             let Some(w) = weak.upgrade() else { return };
             close_notice(&w);
-            match then.as_str() {
-                "setup" => run_setup_now(&w, &l),
-                "test" => test_connection_now(&w, &l),
-                _ => {}
+            if then.as_str() == "test" {
+                test_connection_now(&w, &l);
             }
         });
     }

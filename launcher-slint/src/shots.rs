@@ -139,6 +139,9 @@ fn setup(w: &AppWindow) {
     w.set_setup_missing(s(""));
     w.set_setup_dlc(ui::dlc_rows(&packs(&[])));
     w.set_setup_dlc_note(s(""));
+    // The last step: what's chosen, and why Windows will ask.
+    w.set_setup_step(4);
+    w.set_setup_firewall_note(s(ui::SETUP_FIREWALL));
 }
 
 fn settings(w: &AppWindow) {
@@ -195,7 +198,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
     let shots: [Shot; 5] = [
         ("launcher-play", play, HEIGHT),
         ("launcher-play-missing-dlc", play_missing_dlc, HEIGHT),
-        ("launcher-setup", setup, HEIGHT),
+        ("launcher-setup", setup, TALL),
         ("launcher-settings", settings, TALL),
         ("launcher-about", about, ABOUT_HEIGHT),
     ];
