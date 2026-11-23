@@ -335,7 +335,10 @@ often that happens and with which routers.
 the NAT probes they ask for meanwhile, and recorded when it ends: how long they stayed, and how it
 ended (they left, the host took them out, their game lost the server, or the host had gone
 first). A join that ends within 90 seconds is counted as ending early: likely a failed
-connection, though a player backing out of a lobby looks the same. Each record also has what both
+connection, though a player backing out of a lobby looks the same. A join can also fail before
+it starts: a player picks a lobby from a search, can't reach its host, and gives up (their game
+then hosts a lobby of its own). A lobby picked whose host hasn't added the player within 60
+seconds is recorded as `unreached`. Each record also has what both
 players' clients said about their routers: whether they forward the game's port, and how they map
 ports (consistent, or symmetric: a port per destination, which other players mostly can't punch
 through). Records name players by account, with no addresses, and are kept in the database for
@@ -350,8 +353,9 @@ docker compose -f docker/compose.yaml exec server /app/crosscom-server \
 
 ```text
 Joins in the last 30 days: 120
-  ended within 90 s: 9 (8%)
-    the player left: 6
+  failed or ended within 90 s: 9 (8%)
+    never got in: the host never added them: 3
+    the player left: 3
     the host took them out: 1
     their game lost the server: 2
   (and 4 ended because the host had gone, not counted)
@@ -370,7 +374,9 @@ Players whose joins ended early most often:
 ```
 
 A player near the top of that last list, with a symmetric NAT and no forward, is one to ask to
-turn on UPnP, or to run the launcher's connection test (Settings › Connection).
+turn on UPnP, or to run the launcher's connection test (Settings › Connection). In testing, a
+player behind a symmetric NAT couldn't get into a lobby whose host had no forward either
+(`unreached`), and got in as soon as the host's router forwarded.
 
 **Where the router details come from.** While the game runs, the client reports the game's
 peer-to-peer socket on the player's network to `POST /api/forward`, with the port the router

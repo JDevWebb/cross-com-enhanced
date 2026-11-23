@@ -434,17 +434,15 @@ impl Sessions {
     }
 
     /// `pid` asks to reach `host`: if a search offered `pid` a session `host` hosts, `pid` has
-    /// chosen that one. Its other offers go, so one player wants one session at a time.
-    pub fn choose(&self, pid: u32, host: u32) {
+    /// chosen that one. Its other offers go, so one player wants one session at a time. The
+    /// session chosen, if any.
+    pub fn choose(&self, pid: u32, host: u32) -> Option<Key> {
         let mut inner = self.lock();
-        let Some(chosen) = inner
+        let chosen = inner
             .sessions
             .iter()
             .find(|(_, s)| s.host == host && s.offered.contains(&pid) && s.matches(&[]))
-            .map(|(k, _)| *k)
-        else {
-            return;
-        };
+            .map(|(k, _)| *k)?;
         for (k, session) in &mut inner.sessions {
             session.offered.retain(|&p| p != pid);
             session.wanting.retain(|&p| p != pid);
@@ -452,6 +450,7 @@ impl Sessions {
                 session.wanting.push(pid);
             }
         }
+        Some(chosen)
     }
 
     /// Adds players to public slots (`public`) or private ones (`private`). A player already in

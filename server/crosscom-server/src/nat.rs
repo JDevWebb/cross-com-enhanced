@@ -102,7 +102,9 @@ impl NatTraversal {
                 .and_then(|c| c.parse::<quazal::ConnectionID>().ok())
                 .and_then(|c| client_registry.client_by_connection_id(c));
             if let Some(other) = target.and_then(|t| t.try_borrow().ok().and_then(|t| t.user_id)).filter(|&p| p != caller) {
-                self.sessions.choose(caller, other);
+                if let Some(chosen) = self.sessions.choose(caller, other) {
+                    crate::connections::attempted(logger, caller, chosen, other);
+                }
             }
         }
         for url in targets {

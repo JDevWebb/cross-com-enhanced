@@ -326,6 +326,11 @@ impl Conn {
         Ok(self.socket.local_addr()?)
     }
 
+    /// The server's address.
+    pub fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.socket.peer_addr()?)
+    }
+
     /// This connection's PRUDP session number.
     pub fn session_id(&self) -> u8 {
         self.session_id

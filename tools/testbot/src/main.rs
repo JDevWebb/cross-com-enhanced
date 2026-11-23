@@ -3,7 +3,7 @@
 //! ticket, RegisterEx, and the privileges list. A wrong password must be refused.
 //!
 //! ```text
-//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]
+//! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach | --keep SECONDS HOST]
 //! ```
 //!
 //! With `--signup`, it first makes the account over HTTP, as the launcher does (with the server's
@@ -18,6 +18,12 @@
 //! With `--friend NAME SECONDS` it asks NAME to be friends, waits for the answer, then invites
 //! NAME into a party; with `--answer SECONDS` it waits for a friend request, accepts it, waits
 //! for the invitation and joins the party.
+//!
+//! `crosscom-testbot --connection-test SERVER` (the server's name, as players set it up) runs the
+//! launcher's connection test from this machine, without signing in, and prints what it found.
+//!
+//! With `--keep SECONDS HOST` it plays the game's part on port 2346 and runs the client's port
+//! forward for that long (see `keep`).
 //!
 //! With `--reach` it registers its station, then does what the client does about its router:
 //! the address echo on both of the server's UDP ports, the router report (`/api/forward`),
@@ -153,7 +159,7 @@ async fn sign_in(auth: SocketAddr, name: &str, password: &str) -> Result<(u32, S
 }
 
 /// The secure server: the sealed ticket and an encrypted challenge, which it must answer.
-async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Conn> {
+async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8], bind: SocketAddr) -> Result<Conn> {
     if ticket.len() < 16 + 4 + 16 {
         bail!("ticket too short");
     }
@@ -167,7 +173,7 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
     connect_data.extend(challenge.to_bytes());
     let mut payload = sealed.to_bytes();
     payload.extend(crypt_key(&session_key, &connect_data).to_bytes());
-    let (conn, answer) = Conn::connect(addr, payload).await?;
+    let (conn, answer) = Conn::connect_from(bind, addr, payload).await?;
     let answer: Vec<u8> = decode(&answer).map_err(|_| eyre!("the secure server rejected the ticket"))?;
     if decode::<u32>(&answer)? != challenge.wrapping_add(1) {
         bail!("the secure server answered the challenge wrongly");
@@ -178,8 +184,13 @@ async fn connect_secure(addr: SocketAddr, pid: u32, ticket: &[u8]) -> Result<Con
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, server] = args.as_slice() {
+        if flag == "--connection-test" {
+            return connection_test(server.clone()).await;
+        }
+    }
     let [server, name, password, rest @ ..] = args.as_slice() else {
-        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]");
+        bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach | --keep SECONDS HOST]");
     };
     let server: IpAddr = server.parse()?;
     let mut rest = rest.iter().map(String::as_str).peekable();
@@ -202,7 +213,8 @@ async fn main() -> Result<()> {
         (Some("--friend"), Some(other)) => Mode::Friend(other.to_owned(), rest.next().unwrap_or("30").parse()?),
         (Some("--answer"), Some(secs)) => Mode::Answer(secs.parse()?),
         (Some("--reach"), None) => Mode::Reach,
-        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach]"),
+        (Some("--keep"), Some(secs)) => Mode::Keep(secs.parse()?, rest.next().ok_or_else(|| eyre!("--keep SECONDS HOST"))?.to_owned()),
+        _ => bail!("usage: crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach | --keep SECONDS HOST]"),
     };
 
     let config = online_config(server, http_port).await?;
@@ -231,7 +243,9 @@ async fn main() -> Result<()> {
     let (pid, secure_addr, ticket) = sign_in(auth, name, password).await?;
     println!("ok   signed in as {name} (PID {pid:#x}); secure server {secure_addr}");
 
-    let mut conn = connect_secure(secure_addr, pid, &ticket).await?;
+    // As the game's peer-to-peer socket for --keep, else any port.
+    let bind: SocketAddr = if matches!(mode, Mode::Keep(..)) { "0.0.0.0:2346" } else { "0.0.0.0:0" }.parse()?;
+    let mut conn = connect_secure(secure_addr, pid, &ticket, bind).await?;
     println!("ok   secure server accepted the ticket");
 
     let urls = vec!["prudp:/address=192.168.1.20;port=3074;sid=15;type=3".parse::<StationURL>().map_err(|e| eyre!("{e:?}"))?];
@@ -271,6 +285,7 @@ async fn main() -> Result<()> {
         Mode::Friend(other, secs) => befriend(&mut conn, &other, secs).await?,
         Mode::Answer(secs) => answer(&mut conn, secs).await?,
         Mode::Reach => reach(&mut conn, pid, &registered, &format!("{server}:{http_port}")).await?,
+        Mode::Keep(secs, host) => keep(&mut conn, pid, &registered, host, secs).await?,
     }
 
     conn.disconnect().await?;
@@ -285,6 +300,7 @@ enum Mode {
     Friend(String, u64),
     Answer(u64),
     Reach,
+    Keep(u64, String),
 }
 
 /// What the game's quick match searches with, and the match it makes when it finds none: a Conflict
@@ -331,6 +347,63 @@ async fn register_urls(conn: &mut Conn, pid: u32, registered: &secure::RegisterE
     )
     .await?;
     println!("ok   registered {url}");
+    Ok(())
+}
+
+/// Prints the client's log lines (`keep`'s).
+struct Printed;
+
+impl log::Log for Printed {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        if record.target().starts_with("crosscom") {
+            println!("log  {}", record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// As the game, on its peer-to-peer port (2346): registers its station at the address the server
+/// sees and on this machine's network, then runs the client's port forward (`keep`) against
+/// `host` for `secs` seconds. Two bots on two PCs behind one router show that each gets a forward
+/// of its own.
+async fn keep(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, host: String, secs: u64) -> Result<()> {
+    let public = registered.url_public.clone();
+    let server_ip: std::net::Ipv4Addr = conn.peer_addr()?.ip().to_string().parse()?;
+    let local = crosscom_client_net::portmap::local_ip_towards(server_ip).ok_or_else(|| eyre!("no local address"))?;
+    let url = |address: &str, port: u16| -> Result<StationURL> {
+        format!("udp:/address={address};port={port};PID={pid};RVCID={}", registered.pid_connection_id)
+            .parse()
+            .map_err(|e| eyre!("{e:?}"))
+    };
+    let urls = vec![url(&public.address, public.port)?, url(&local.to_string(), 2346)?];
+    println!("ok   registering {} and {}", urls[0], urls[1]);
+    conn.call(
+        gs::GAME_SESSION_PROTOCOL_ID,
+        gs::GameSessionProtocolMethod::RegisterUrLs as u32,
+        gs::RegisterUrLsRequest { station_urls: QList(urls) }.to_bytes(),
+    )
+    .await?;
+    let _ = log::set_logger(&Printed).map(|()| log::set_max_level(log::LevelFilter::Info));
+    std::thread::spawn(move || crosscom_client_net::keep::run(&host));
+    // Keeps the connection up meanwhile, as the game does.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < until {
+        let _ = conn.wait_request(0, 0, std::time::Duration::from_secs(5)).await;
+    }
+    Ok(())
+}
+
+/// The launcher's connection test against `server`, printed.
+async fn connection_test(server: String) -> Result<()> {
+    let report = tokio::task::spawn_blocking(move || crosscom_client_net::check::run(&server)).await?;
+    println!("{}", report.summary());
+    for line in report.details() {
+        println!("  {line}");
+    }
+    println!("  (seen at {:?}, NAT {}, router {:?})", report.seen, report.nat.as_str(), report.router);
     Ok(())
 }
 

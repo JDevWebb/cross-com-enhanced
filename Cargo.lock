@@ -380,6 +380,7 @@ dependencies = [
  "crosscom-client-net",
  "eyre",
  "grfs_protocols",
+ "log",
  "md-5",
  "quazal",
  "rand",
