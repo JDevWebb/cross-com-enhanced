@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use clap::App;
 use clap::Arg;
+use clap::ArgAction;
+use clap::Command;
 use nom::AsBytes;
 use quazal_tools::generate::build_import_map;
 use quazal_tools::generate::generate_source;
@@ -19,21 +20,21 @@ const MAGIC: u32 = 0xCD65_2312;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-    let matches = App::new("DDL Binary parser")
-        .arg(Arg::with_name("verbose").long("verbose").short("v").takes_value(false))
-        .arg(Arg::with_name("debug").long("debug").short("d").takes_value(false))
-        .arg(Arg::with_name("output").long("output").short("o").takes_value(true))
-        .arg(Arg::with_name("generate").long("generate").short("g").takes_value(true))
-        .arg(Arg::with_name("id_mapping").long("ids").short("i").takes_value(true))
-        .arg(Arg::with_name("binary").required(true))
+    let matches = Command::new("DDL Binary parser")
+        .arg(Arg::new("verbose").long("verbose").short('v').action(ArgAction::SetTrue))
+        .arg(Arg::new("debug").long("debug").short('d').action(ArgAction::SetTrue))
+        .arg(Arg::new("output").long("output").short('o'))
+        .arg(Arg::new("generate").long("generate").short('g'))
+        .arg(Arg::new("id_mapping").long("ids").short('i'))
+        .arg(Arg::new("binary").required(true))
         .get_matches();
 
-    DEBUG.store(matches.is_present("debug"), std::sync::atomic::Ordering::Relaxed);
-    let binary_path = Path::new(matches.value_of("binary").expect("binary is required"));
+    DEBUG.store(matches.get_flag("debug"), std::sync::atomic::Ordering::Relaxed);
+    let binary_path = Path::new(matches.get_one::<String>("binary").map(String::as_str).expect("binary is required"));
 
     assert!(binary_path.exists(), "{} does not exist", binary_path.to_string_lossy());
 
-    let generate_dir: Option<&Path> = matches.value_of("generate").map(Path::new).map(|p| {
+    let generate_dir: Option<&Path> = matches.get_one::<String>("generate").map(String::as_str).map(Path::new).map(|p| {
         if p.exists() {
             p
         } else {
@@ -42,7 +43,8 @@ fn main() {
     });
 
     let id_mapping: Option<HashMap<String, u16>> = matches
-        .value_of("id_mapping")
+        .get_one::<String>("id_mapping")
+        .map(String::as_str)
         .map(fs::File::open)
         .transpose()
         .expect("Couldn't open id mapping file")
@@ -65,7 +67,7 @@ fn main() {
             eprint!("\rPosition: {pos:#x}");
             eprintln!("\nParsing");
             let (d, mut namespace) = parse_ddl(data, pos).unwrap();
-            if matches.is_present("verbose") {
+            if matches.get_flag("verbose") {
                 println!("{namespace:#?}");
             }
 
@@ -88,7 +90,7 @@ fn main() {
     }
     println!();
 
-    if let Some(output) = matches.value_of("output") {
+    if let Some(output) = matches.get_one::<String>("output").map(String::as_str) {
         println!("[*] Writing parsed DDL to {output}");
         serde_json::to_writer_pretty(fs::File::create(output).expect("could not open output file"), &namespaces).expect("error writing output");
     }
