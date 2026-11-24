@@ -49,7 +49,38 @@ pub struct Login {
 }
 
 /// The longest each sign-in detail may be: the game copies each into an 80-byte buffer.
+///
+/// The user name and CD key are copied as they are, so it's 79 bytes. The password the game is
+/// given as a wide string, which it converts to narrow characters in its own code page as it
+/// copies it into its 80 bytes; one too long for those stops the game (the C runtime's checked
+/// copy). As ASCII it's one byte per character, so a password is given only when it's ASCII and
+/// at most 79 characters; anything else might not fit, and the game wouldn't send it as written
+/// anyway.
 const MAX_DETAIL: usize = 79;
+
+/// `value` if it fits the game's buffer (see [`MAX_DETAIL`]), else nothing (the server then
+/// refuses the sign-in, rather than the game stopping), saying why.
+fn fitting<'a>(name: &str, value: &'a str, ascii_only: bool) -> &'a str {
+    if value.len() > MAX_DETAIL {
+        log::error!("The {name} is longer than the game takes ({MAX_DETAIL} characters): not given to the game");
+        ""
+    } else if ascii_only && !value.is_ascii() {
+        log::error!("The {name} has a character the game can't send (only plain ASCII): not given to the game");
+        ""
+    } else {
+        value
+    }
+}
+
+/// Whether a save of `have` bytes can take `more`: within the largest save kept, counted so it
+/// can't overflow (a `usize` is 32 bits in the game).
+#[cfg_attr(not(all(windows, target_arch = "x86")), allow(dead_code))]
+fn save_fits(have: usize, more: u32) -> bool {
+    usize::try_from(more)
+        .ok()
+        .and_then(|more| have.checked_add(more))
+        .is_some_and(|total| total <= crosscom_client_common::saves::MAX_SIZE)
+}
 
 impl Login {
     /// `packs`: the numbers of the DLC packs installed (`dlc::installed_numbers`), which go to
@@ -66,11 +97,12 @@ impl Login {
                 cd_key = with;
             }
         }
-        // The settings are checked for NULs when they're read, so these can't fail.
+        // The settings are checked for NULs (and their lengths) when they're read, so these can't
+        // fail; the lengths are checked again here, as the game's buffers are what count.
         Self {
-            username: CString::new(config.username.as_str()).unwrap_or_default(),
-            password: config.password.encode_utf16().chain(std::iter::once(0)).collect(),
-            cd_key: CString::new(cd_key).unwrap_or_default(),
+            username: CString::new(fitting("user name", &config.username, false)).unwrap_or_default(),
+            password: fitting("password", &config.password, true).encode_utf16().chain(std::iter::once(0)).collect(),
+            cd_key: CString::new(fitting("CD key", &cd_key, false)).unwrap_or_default(),
         }
     }
 }
@@ -95,6 +127,11 @@ fn start() {
     // (uplay_r1_loader.dll doesn't), so nothing else has it open.
     let rotated = runs::rotate_at_start(&dir);
     let loaded = Config::load(&dir);
+    // The log starts with the server and account this run plays with: it's only sent there.
+    let begun = match loaded.as_ref().ok().and_then(|c| c.server.as_deref().map(|s| (s, c.username.as_str()))) {
+        Some((server, account)) => runs::begin(&dir, server, account),
+        None => Ok(()),
+    };
     let level = loaded.as_ref().ok().and_then(|c| c.log_level.clone());
     logging::init(&dir, "orbit", level.as_deref());
     let exe = std::env::current_exe()
@@ -109,6 +146,9 @@ fn start() {
         Ok(Some(last)) => log::info!("The last run's log is {}", last.display()),
         Ok(None) => {}
         Err(e) => log::warn!("Couldn't move the last run's log aside: {e}"),
+    }
+    if let Err(e) = begun {
+        log::warn!("Couldn't note this run's server in its log (it won't be sent): {e}");
     }
     match loaded {
         Ok(config) => {
@@ -149,15 +189,41 @@ mod tests {
     fn login_strings_are_nul_terminated() {
         let config = Config {
             username: "Kozak".into(),
-            password: "pässword".into(),
+            password: "p4ssword!".into(),
             cd_key: "AAAA-BBBB".into(),
             ..Config::default()
         };
         let login = Login::new(&config, None);
         assert_eq!(login.username.as_bytes_with_nul(), b"Kozak\0");
         assert_eq!(login.cd_key.as_bytes_with_nul(), b"AAAA-BBBB\0");
-        assert_eq!(String::from_utf16(&login.password[..login.password.len() - 1]).unwrap(), "pässword");
+        assert_eq!(String::from_utf16(&login.password[..login.password.len() - 1]).unwrap(), "p4ssword!");
         assert_eq!(login.password.last(), Some(&0));
+    }
+
+    #[test]
+    fn nothing_longer_than_the_games_buffers_is_given() {
+        let config = |password: &str, username: &str| Config {
+            username: username.into(),
+            password: password.into(),
+            ..Config::default()
+        };
+        let longest = "p".repeat(MAX_DETAIL);
+        assert_eq!(Login::new(&config(&longest, "Kozak"), None).password.len(), MAX_DETAIL + 1, "79 and the NUL");
+        assert_eq!(Login::new(&config(&"p".repeat(MAX_DETAIL + 1), "Kozak"), None).password, vec![0]);
+        // Not ASCII: the game's narrow copy could be longer, and isn't what was set anyway.
+        assert_eq!(Login::new(&config("pässword", "Kozak"), None).password, vec![0]);
+        assert_eq!(Login::new(&config("x", &"u".repeat(MAX_DETAIL + 1)), None).username.as_bytes(), b"");
+        assert_eq!(Login::new(&config("x", &"u".repeat(MAX_DETAIL)), None).username.as_bytes().len(), MAX_DETAIL);
+    }
+
+    #[test]
+    fn a_save_cant_overflow_its_size() {
+        use crosscom_client_common::saves::MAX_SIZE;
+        assert!(save_fits(0, 1024));
+        assert!(save_fits(MAX_SIZE - 10, 10));
+        assert!(!save_fits(MAX_SIZE - 10, 11));
+        assert!(!save_fits(usize::MAX - 5, 10), "wraps on 32 bits");
+        assert!(!save_fits(MAX_SIZE, u32::MAX));
     }
 
     #[test]

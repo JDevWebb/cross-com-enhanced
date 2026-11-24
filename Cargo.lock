@@ -317,12 +317,14 @@ dependencies = [
 name = "crosscom-client-net"
 version = "0.1.0"
 dependencies = [
+ "attohttpc",
  "crosscom-client-common",
  "igd-next",
  "log",
  "serde",
  "serde_json",
  "windows",
+ "xmltree",
 ]
 
 [[package]]

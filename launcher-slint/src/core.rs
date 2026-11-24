@@ -55,9 +55,12 @@ pub fn open_url(url: &str) -> Result<(), String> {
     if !plain {
         return Err("Not a link the launcher opens.".into());
     }
-    // Windows' own handler for web addresses (the default browser), not explorer.exe's command line.
+    // Windows' own handler for web addresses (the default browser), not explorer.exe's command line;
+    // rundll32 from Windows' system folder, not whatever the bare name finds first.
     #[cfg(windows)]
-    let opened = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(url).spawn();
+    let opened = crosscom_launcher::windows_dirs::system_program("rundll32.exe")
+        .map_err(std::io::Error::other)
+        .and_then(|rundll32| std::process::Command::new(rundll32).arg("url.dll,FileProtocolHandler").arg(url).spawn());
     #[cfg(not(windows))]
     let opened = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(url).spawn();
     opened.map(|_| ()).map_err(|e| format!("Couldn't open {url}: {e}"))
@@ -419,7 +422,11 @@ impl Launcher {
         let dir = self.game_dir().ok_or("No game set up.")?;
         let logs = dir.join(crosscom_client_common::runs::DIR);
         std::fs::create_dir_all(&logs).map_err(|e| format!("Couldn't make {}: {e}", logs.display()))?;
-        let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+        // explorer from the Windows folder, not whatever the bare name finds first.
+        #[cfg(windows)]
+        let opener = crosscom_launcher::windows_dirs::windows_program("explorer.exe")?;
+        #[cfg(not(windows))]
+        let opener = std::path::PathBuf::from("xdg-open");
         std::process::Command::new(opener)
             .arg(&logs)
             .spawn()
