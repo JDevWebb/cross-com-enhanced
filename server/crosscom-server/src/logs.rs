@@ -10,7 +10,8 @@
 //! A log is only taken from an address the account it names signed in to the game from in the
 //! last 24 hours (`Online::played_from`): the client DLL sends them and doesn't hold the player's
 //! password for it, so where the player plays from stands in for one. Through a proxy, only over
-//! HTTPS (`online_config`). Then at most 20 an hour from an address, and 4 at once.
+//! HTTPS (`online_config`), and never from a web page. Then at most 20 an hour from an address,
+//! 4 at once in all and 2 from one account, each within [`deadline`].
 //!
 //! - `201 {"id": "20261115-123456-ab12cd"}`: kept, as that report;
 //! - `403`: logs turned off (`accept_logs = false`), or not signed in from this address lately;
@@ -18,7 +19,8 @@
 //!
 //! Each is kept as `<logs_dir>/<YYYY-MM-DD>/<id>-<account>.log` with a `.json` beside it (the
 //! headers, the client's address, when it came). Days older than `logs_keep_days` and, past
-//! `logs_max_mb` in all, the oldest reports are deleted as new ones come. Logs are never served
+//! `logs_max_mb` in all, the oldest reports of the account taking the most space are deleted as
+//! new ones come (see `prune`). Logs are never served
 //! back over HTTP: `crosscom-server logs list` and `logs show ID` read them.
 
 use std::collections::HashMap;
@@ -46,8 +48,18 @@ use crate::signup::Answer;
 pub const PATH: &str = "/api/logs";
 /// The biggest log taken (the client sends at most 2 MiB).
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
-/// How long one upload may take in all.
+/// How long one upload may take in all, at most (see [`deadline`]).
 pub const DEADLINE: Duration = Duration::from_secs(60);
+/// How long an upload may go without sending a byte.
+pub const IDLE: Duration = Duration::from_secs(10);
+/// The slowest an upload is waited for, past its first few seconds: a slow line still sends a
+/// log of a few hundred KiB in seconds, and a client trickling a byte at a time can't hold one
+/// of the few slots for the whole of [`DEADLINE`] on a small log.
+const SLOWEST: u64 = 32 * 1024;
+const GRACE: Duration = Duration::from_secs(10);
+/// Uploads one account may have under way at once: the launcher and the client DLL may send
+/// the same run together.
+const AT_ONCE_PER_ACCOUNT: usize = 2;
 /// Uploads an address may make in [`WINDOW`].
 const MAX_PER_ADDRESS: u32 = 20;
 const WINDOW: Duration = Duration::from_secs(60 * 60);
@@ -106,13 +118,18 @@ pub struct Logs {
     /// launcher and the DLL at once) gets the same report.
     taken: Mutex<HashMap<(String, String), String>>,
     at_once: Arc<AtomicUsize>,
+    /// Uploads under way per account.
+    account_at_once: Arc<Mutex<HashMap<u32, usize>>>,
     /// Writing and pruning, one at a time.
     store: Mutex<()>,
 }
 
-/// An upload let through [`Logs::check`]; counts against [`MAX_AT_ONCE`] until dropped.
+/// An upload let through [`Logs::check`]; counts against [`MAX_AT_ONCE`] and its account's
+/// [`AT_ONCE_PER_ACCOUNT`] until dropped.
 pub struct Slot {
     at_once: Arc<AtomicUsize>,
+    account_at_once: Arc<Mutex<HashMap<u32, usize>>>,
+    pid: u32,
     /// The body's length.
     pub len: usize,
 }
@@ -120,7 +137,21 @@ pub struct Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         self.at_once.fetch_sub(1, Ordering::AcqRel);
+        let mut accounts = self.account_at_once.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = accounts.get_mut(&self.pid) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                accounts.remove(&self.pid);
+            }
+        }
     }
+}
+
+/// How long an upload of `len` bytes may take: [`GRACE`] and the time at [`SLOWEST`], at most
+/// [`DEADLINE`].
+#[must_use]
+pub fn deadline(len: usize) -> Duration {
+    (GRACE + Duration::from_secs(len as u64 / SLOWEST)).min(DEADLINE)
 }
 
 /// The value of header `name` in `head` (the request line and headers), if given.
@@ -200,6 +231,7 @@ impl Logs {
             by_account: Mutex::default(),
             taken: Mutex::default(),
             at_once: Arc::default(),
+            account_at_once: Arc::default(),
             store: Mutex::default(),
         }
     }
@@ -236,12 +268,25 @@ impl Logs {
         if !self.allow_account(pid, len as u64, now) {
             return Err(error("429 Too Many Requests", "too many logs from this account today; try again tomorrow"));
         }
-        if self.at_once.fetch_add(1, Ordering::AcqRel) >= MAX_AT_ONCE {
-            self.at_once.fetch_sub(1, Ordering::AcqRel);
-            return Err(error("503 Service Unavailable", "busy; try again later"));
+        {
+            let mut accounts = self.account_at_once.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let under_way = accounts.entry(pid).or_default();
+            if *under_way >= AT_ONCE_PER_ACCOUNT {
+                return Err(error("429 Too Many Requests", "this account is already sending logs; try again later"));
+            }
+            if self.at_once.fetch_add(1, Ordering::AcqRel) >= MAX_AT_ONCE {
+                self.at_once.fetch_sub(1, Ordering::AcqRel);
+                if *under_way == 0 {
+                    accounts.remove(&pid);
+                }
+                return Err(error("503 Service Unavailable", "busy; try again later"));
+            }
+            *under_way += 1;
         }
         Ok(Slot {
             at_once: Arc::clone(&self.at_once),
+            account_at_once: Arc::clone(&self.account_at_once),
+            pid,
             len,
         })
     }
@@ -382,29 +427,73 @@ fn files(day: &Path) -> Vec<(String, PathBuf, u64)> {
     files
 }
 
-/// Deletes the days older than `keep_days`, then the oldest reports until the rest come to at
-/// most `max_bytes`.
+/// One report's files (its log and what's kept beside it), as pruning sees them.
+struct Kept {
+    files: Vec<PathBuf>,
+    bytes: u64,
+}
+
+/// Deletes the days older than `keep_days`, then reports until the rest come to at most
+/// `max_bytes`: each time the oldest of the account taking the most space, so an account that
+/// sends a lot (or many accounts' worth, from one player) only pushes out its own logs, and the
+/// other players' stay. With one account, or all alike, it's simply the oldest first.
 fn prune(dir: &Path, keep_days: u32, max_bytes: u64, now: u64) {
     let oldest_kept = day(now.saturating_sub(u64::from(keep_days) * 86_400));
-    let mut kept = Vec::new();
+    let mut kept_days = Vec::new();
     for (name, path) in days(dir) {
         if name < oldest_kept {
             let _ = fs::remove_dir_all(&path);
         } else {
-            kept.push(path);
+            kept_days.push(path);
         }
     }
-    let all: Vec<(PathBuf, u64)> = kept.iter().flat_map(|d| files(d)).map(|(_, path, size)| (path, size)).collect();
-    let mut total: u64 = all.iter().map(|(_, size)| size).sum();
-    for (path, size) in all {
-        if total <= max_bytes {
+    // Per account (as the file names say; other files count as one more), its reports oldest
+    // first: report IDs start with when they came, and the days are in order.
+    let mut by_account: HashMap<String, (u64, std::collections::VecDeque<Kept>)> = HashMap::new();
+    let mut total = 0;
+    for day in &kept_days {
+        // By file name (without its extension): a report's log and JSON go together.
+        let mut reports: std::collections::BTreeMap<String, (String, Kept)> = std::collections::BTreeMap::new();
+        for (name, path, size) in files(day) {
+            let stem = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem).to_owned();
+            total += size;
+            let account = match stem.get(..22).filter(|id| valid_id(id)) {
+                Some(_) => stem.get(23..).unwrap_or_default().to_lowercase(),
+                None => String::new(),
+            };
+            let (_, report) = reports.entry(stem).or_insert_with(|| (account, Kept { files: Vec::new(), bytes: 0 }));
+            report.files.push(path);
+            report.bytes += size;
+        }
+        for (account, report) in reports.into_values() {
+            let (bytes, queue) = by_account.entry(account).or_default();
+            *bytes += report.bytes;
+            queue.push_back(report);
+        }
+    }
+    while total > max_bytes {
+        // The account taking the most space (on a tie, by name: the same one each time).
+        let Some(account) = by_account
+            .iter()
+            .filter(|(_, (_, queue))| !queue.is_empty())
+            .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then_with(|| b.0.cmp(a.0)))
+            .map(|(account, _)| account.clone())
+        else {
             break;
+        };
+        let Some((bytes, queue)) = by_account.get_mut(&account) else {
+            break;
+        };
+        let Some(report) = queue.pop_front() else {
+            break;
+        };
+        for file in &report.files {
+            let _ = fs::remove_file(file);
         }
-        if fs::remove_file(&path).is_ok() {
-            total -= size;
-        }
+        *bytes -= report.bytes;
+        total -= report.bytes;
     }
-    for day in kept {
+    for day in kept_days {
         // Only succeeds when empty.
         let _ = fs::remove_dir(day);
     }
@@ -553,11 +642,24 @@ mod tests {
             status(logs.check(ip(KOZAK), "POST /api/logs HTTP/1.1\r\nX-Crosscom-Account: Kozak")),
             Some("411 Length Required")
         );
-        let held: Vec<Slot> = (0..MAX_AT_ONCE).map(|_| logs.check(ip(KOZAK), &head("Kozak", 1)).ok().unwrap()).collect();
-        assert_eq!(status(logs.check(ip(KOZAK), &head("Kozak", 1))), Some("503 Service Unavailable"));
+        // One account's uploads at once, then everyone's.
+        let held: Vec<Slot> = (0..AT_ONCE_PER_ACCOUNT).map(|_| logs.check(ip(KOZAK), &head("Kozak", 1)).ok().unwrap()).collect();
+        assert_eq!(status(logs.check(ip(KOZAK), &head("Kozak", 1))), Some("429 Too Many Requests"));
+        let others: Vec<Slot> = (0..MAX_AT_ONCE - AT_ONCE_PER_ACCOUNT)
+            .map(|i| {
+                let name = format!("Housemate{i}");
+                let pid = logs.accounts.add(&name, "x").unwrap();
+                logs.online.signed_in(pid, ip(KOZAK));
+                logs.check(ip(KOZAK), &head(&name, 1)).ok().unwrap()
+            })
+            .collect();
+        logs.online.signed_in(logs.accounts.pid("Pepper").unwrap().unwrap(), ip(KOZAK));
+        assert_eq!(status(logs.check(ip(KOZAK), &head("Pepper", 1))), Some("503 Service Unavailable"));
         drop(held);
+        drop(others);
+        assert!(logs.account_at_once.lock().unwrap().is_empty(), "given back");
         let now = Instant::now();
-        for _ in 0..MAX_PER_ADDRESS - MAX_AT_ONCE as u32 - 1 {
+        for _ in 0..MAX_PER_ADDRESS - MAX_AT_ONCE as u32 - 2 {
             assert!(logs.check_at(ip(KOZAK), &head("Kozak", 1), now).is_ok());
         }
         assert_eq!(status(logs.check_at(ip(KOZAK), &head("Kozak", 1), now)), Some("429 Too Many Requests"));
@@ -639,5 +741,42 @@ mod tests {
         let left: Vec<String> = list(dir.path()).into_iter().map(|r| r.id).collect();
         assert_eq!(left.len(), 3, "{left:?}");
         assert!(left[0].ends_with("09"), "the newest stays");
+    }
+
+    /// One account filling the space pushes out its own logs, not other players' older ones.
+    #[test]
+    fn past_the_cap_the_biggest_accounts_logs_go_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_794_746_096;
+        let report = |at: u64, n: u8, account: &str| Report {
+            id: format!("{}-{n:06x}", &new_id(at)[..15]),
+            account: account.into(),
+            ..Report::default()
+        };
+        // Pepper's, two days old; then a flood of Kozak's.
+        write(dir.path(), &report(now - 2 * 86_400, 1, "Pepper"), &[b'x'; 100]).unwrap();
+        for n in 0..20 {
+            write(dir.path(), &report(now, 0x10 + n, "Kozak"), &[b'x'; 100]).unwrap();
+        }
+        let json = fs::metadata(dir.path().join(day(now)).join(format!("{}.json", stem(&report(now, 0x10, "Kozak")))))
+            .unwrap()
+            .len();
+        prune(dir.path(), 30, 5 * (100 + json + 2), now);
+        let left = list(dir.path());
+        assert!(left.iter().any(|r| r.account == "Pepper"), "the other player's log stays");
+        let kozak: Vec<&Report> = left.iter().filter(|r| r.account == "Kozak").collect();
+        assert!((3..=4).contains(&kozak.len()), "{}", kozak.len());
+        assert!(kozak[0].id.ends_with("000023"), "Kozak's newest stay: {}", kozak[0].id);
+        // Every file of a report goes with it.
+        let files = files(&dir.path().join(day(now)));
+        assert_eq!(files.len(), 2 * kozak.len());
+    }
+
+    #[test]
+    fn a_slow_upload_holds_its_slot_only_so_long() {
+        assert_eq!(deadline(0), GRACE);
+        assert_eq!(deadline(320 * 1024), GRACE + Duration::from_secs(10));
+        assert_eq!(deadline(MAX_BODY), DEADLINE);
+        assert!(IDLE <= GRACE);
     }
 }

@@ -7,12 +7,20 @@
 //!
 //! A sign-in counts as failed from the moment it's let through until it matches, so many tried at
 //! once can't all pass the check while the password hashes are compared.
+//!
+//! The counts live in memory only (a restart forgives them); the addresses each account signed
+//! in from are kept in the database too ([`FailedSignIns::open`]), so a restart doesn't leave
+//! the owners open to being locked out by a stranger's guesses until they next sign in.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
+
+use rusqlite::params;
+use rusqlite::Connection;
 
 /// How long failures count for.
 const WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -29,6 +37,8 @@ const KNOWN_ADDRESSES: usize = 4;
 #[derive(Default)]
 pub struct FailedSignIns {
     tables: Mutex<Tables>,
+    /// Where the addresses accounts signed in from are kept between runs, if anywhere.
+    db: Option<Mutex<Connection>>,
 }
 
 #[derive(Default)]
@@ -109,6 +119,62 @@ pub struct Attempt {
 }
 
 impl FailedSignIns {
+    /// With the addresses accounts signed in from read from, and kept in, the database at
+    /// `path` (table `sign_in_addresses`).
+    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        let db = Connection::open(path)?;
+        db.busy_timeout(Duration::from_secs(5))?;
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sign_in_addresses (
+                name TEXT NOT NULL,
+                address TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (name, address)
+            );",
+        )?;
+        let mut known: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        {
+            let mut rows = db.prepare("SELECT name, address FROM sign_in_addresses ORDER BY name, position")?;
+            let rows = rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (name, address) = row?;
+                if let Ok(address) = address.parse::<IpAddr>() {
+                    known.entry(name).or_default().push(address.to_canonical());
+                }
+            }
+        }
+        for addresses in known.values_mut() {
+            let extra = addresses.len().saturating_sub(KNOWN_ADDRESSES);
+            addresses.drain(..extra);
+        }
+        Ok(Self {
+            tables: Mutex::new(Tables { known, ..Tables::default() }),
+            db: Some(Mutex::new(db)),
+        })
+    }
+
+    /// Keeps `name`'s addresses (as they are now) in the database, if there is one. Best
+    /// effort: failing, they're still known until the server restarts.
+    fn save(&self, name: &str) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        // Under the database's lock, so the last to write writes what's newest.
+        let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let addresses = self.tables().known.get(name).cloned().unwrap_or_default();
+        let _ = (|| -> rusqlite::Result<()> {
+            let tx = db.unchecked_transaction()?;
+            tx.execute("DELETE FROM sign_in_addresses WHERE name = ?1", params![name])?;
+            for (position, address) in addresses.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO sign_in_addresses (name, address, position) VALUES (?1, ?2, ?3)",
+                    params![name, address.to_string(), position as i64],
+                )?;
+            }
+            tx.commit()
+        })();
+    }
+
     fn tables(&self) -> std::sync::MutexGuard<'_, Tables> {
         self.tables.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -150,8 +216,16 @@ impl FailedSignIns {
     }
 
     fn signed_in(&self, address: IpAddr, name: &str, charged: Option<u64>) {
-        let mut tables = self.tables();
         let name = name.to_lowercase();
+        self.remember(address, &name, charged);
+        self.save(&name);
+    }
+
+    /// Clears `name`'s failures, gives back the attempt's charge, and notes `address` as one
+    /// it signed in from.
+    fn remember(&self, address: IpAddr, name: &str, charged: Option<u64>) {
+        let mut tables = self.tables();
+        let name = name.to_owned();
         tables.by_name.remove(&name);
         if let Some(count) = tables.by_address.get_mut(&address_key(address)).filter(|c| Some(c.number) == charged) {
             count.failures = count.failures.saturating_sub(1);
@@ -261,6 +335,27 @@ mod tests {
         }
         assert!(!limits.allowed(ip(99), "Kozak", now), "new addresses are stopped");
         assert!(limits.allowed(home, "Kozak", now), "the owner's usual address isn't");
+    }
+
+    #[test]
+    fn the_owners_addresses_outlast_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crosscom.db");
+        let limits = FailedSignIns::open(&path).unwrap();
+        for i in 0..=KNOWN_ADDRESSES as u8 {
+            limits.signed_in(ip(10 + i), "Kozak", None);
+        }
+        drop(limits);
+        // Restarted: a stranger's guesses still don't lock the owner out.
+        let limits = FailedSignIns::open(&path).unwrap();
+        let now = Instant::now();
+        for i in 0..MAX_PER_NAME {
+            limits.failed(ip(100 + i as u8), "Kozak", now);
+        }
+        assert!(!limits.allowed(ip(99), "Kozak", now));
+        assert!(limits.allowed(ip(10 + KNOWN_ADDRESSES as u8), "kozak", now), "the newest address");
+        assert!(limits.allowed(ip(11), "Kozak", now));
+        assert!(!limits.allowed(ip(10), "Kozak", now), "only the last few are kept");
     }
 
     #[test]

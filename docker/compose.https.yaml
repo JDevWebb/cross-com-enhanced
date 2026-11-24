@@ -27,6 +27,9 @@ services:
       - server
     environment:
       CROSSCOM_DOMAIN: ${CROSSCOM_DOMAIN:?set CROSSCOM_DOMAIN to the server's domain}
+    # Over IPv6, Docker passes connections on from the network's gateway, not the player's own
+    # address (this network has no IPv6): publish these for IPv4 only ("0.0.0.0:80:80/tcp" and
+    # so on, and no AAAA record), or give the network IPv6. See docs/hosting.md, "IPv6".
     ports:
       - "80:80/tcp"          # the game's online config (plain HTTP), certificates
       - "443:443/tcp"        # HTTPS: the launcher's and the client's API calls

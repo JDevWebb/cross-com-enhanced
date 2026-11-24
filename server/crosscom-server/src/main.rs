@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! crosscom-server [--config crosscom-server.toml]
-//! crosscom-server [--config crosscom-server.toml] add-account NAME PASSWORD
+//! crosscom-server [--config crosscom-server.toml] add-account NAME [PASSWORD | -]
 //! crosscom-server [--config crosscom-server.toml] logs [list | show REPORT]
 //! crosscom-server [--config crosscom-server.toml] connections [DAYS]
 //! ```
@@ -73,7 +73,8 @@ enum Command {
     Serve,
     AddAccount {
         name: String,
-        password: String,
+        /// None: read from stdin, so it's in neither the process list nor the shell's history.
+        password: Option<String>,
     },
     /// The players' logs kept: all of them, newest first.
     ListLogs,
@@ -83,10 +84,16 @@ enum Command {
     Connections(u64),
 }
 
+const USAGE: &str = "usage: crosscom-server [--config FILE] [add-account NAME [PASSWORD | -] | logs [list | show REPORT] | connections [DAYS]]";
+
 fn parse_args() -> Result<(PathBuf, Command), String> {
+    parse(std::env::args().skip(1))
+}
+
+/// Reads the command line (without the program's name).
+fn parse(mut args: impl Iterator<Item = String>) -> Result<(PathBuf, Command), String> {
     let mut config = PathBuf::from("crosscom-server.toml");
     let mut rest = Vec::new();
-    let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--config" {
             config = args.next().ok_or("--config needs a file")?.into();
@@ -96,16 +103,20 @@ fn parse_args() -> Result<(PathBuf, Command), String> {
     }
     let command = match rest.as_slice() {
         [] => Command::Serve,
+        [cmd, name] if cmd == "add-account" => Command::AddAccount {
+            name: name.clone(),
+            password: None,
+        },
         [cmd, name, password] if cmd == "add-account" => Command::AddAccount {
             name: name.clone(),
-            password: password.clone(),
+            password: (password != "-").then(|| password.clone()),
         },
         [cmd] if cmd == "logs" => Command::ListLogs,
         [cmd, sub] if cmd == "logs" && sub == "list" => Command::ListLogs,
         [cmd, sub, id] if cmd == "logs" && sub == "show" => Command::ShowLog(id.clone()),
         [cmd] if cmd == "connections" => Command::Connections(30),
         [cmd, days] if cmd == "connections" => Command::Connections(days.parse().map_err(|_| format!("{days} isn't a number of days"))?),
-        _ => return Err("usage: crosscom-server [--config FILE] [add-account NAME PASSWORD | logs [list | show REPORT] | connections [DAYS]]".into()),
+        _ => return Err(USAGE.into()),
     };
     Ok((config, command))
 }
@@ -167,16 +178,16 @@ fn main() -> ExitCode {
     };
 
     match command {
-        Command::AddAccount { name, password } => match accounts.add(&name, &password) {
-            Ok(pid) => {
-                println!("Created {name} (PID {pid:#x})");
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("couldn't create {name}: {e}");
-                ExitCode::FAILURE
-            }
-        },
+        Command::AddAccount { name, password } => {
+            let password = match password.map_or_else(|| read_password(&name), Ok) {
+                Ok(password) => password,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            add_account(&accounts, &name, &password)
+        }
         Command::Serve => serve(&config, accounts),
         Command::Connections(days) => {
             let records = connections::Connections::open(&config.database).and_then(|c| {
@@ -197,6 +208,42 @@ fn main() -> ExitCode {
         }
         Command::ListLogs | Command::ShowLog(_) => ExitCode::SUCCESS,
     }
+}
+
+fn add_account(accounts: &Accounts, name: &str, password: &str) -> ExitCode {
+    match accounts.add(name, password) {
+        Ok(pid) => {
+            println!("Created {name} (PID {pid:#x})");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("couldn't create {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `add-account NAME` (or `NAME -`): the password from stdin, asked for when it's a terminal.
+/// It's echoed there as typed; piped in (`... add-account Kozak < file`), it stays out of sight.
+fn read_password(name: &str) -> Result<String, String> {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprint!("Password for {name}: ");
+    }
+    password_from(stdin.lock())
+}
+
+/// The first line of `input`, without its line ending; refused when empty.
+fn password_from(mut input: impl std::io::BufRead) -> Result<String, String> {
+    let mut line = String::new();
+    input.read_line(&mut line).map_err(|e| format!("couldn't read the password: {e}"))?;
+    let password = line.strip_suffix('\n').unwrap_or(&line);
+    let password = password.strip_suffix('\r').unwrap_or(password);
+    if password.is_empty() {
+        return Err("no password given (on stdin, one line)".into());
+    }
+    Ok(password.to_owned())
 }
 
 fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
@@ -227,7 +274,15 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     let secure = context(config.secure_port);
     let http_listen = SocketAddr::new(config.listen_ip, config.http_port);
     // Failed sign-ins count together, from the game and from the launcher.
-    let failed_sign_ins = Arc::new(rate_limit::FailedSignIns::default());
+    // The addresses each account signed in from are kept in the database (see `rate_limit`).
+    let failed_sign_ins = Arc::new(rate_limit::FailedSignIns::open(&config.database).unwrap_or_else(|e| {
+        error!(
+            logger,
+            "couldn't keep sign-in addresses in {}: {e}; they're forgotten on restart",
+            config.database.display()
+        );
+        rate_limit::FailedSignIns::default()
+    }));
     let online = Arc::new(online::Online::default());
     let stats = match stats::Store::open(&config.database) {
         Ok(store) => Arc::new(store),
@@ -407,5 +462,33 @@ fn address_echo(logger: &Logger, packet: QPacket, client: SocketAddr, socket: &s
     reply.extend_from_slice(format!("udp:/address={};port={}\0", client.ip(), client.port()).as_bytes());
     if let Err(e) = socket.send_to(&reply, client) {
         slog::warn!(logger, "address echo to {client} failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> Result<Command, String> {
+        parse(args.iter().map(|a| (*a).to_owned())).map(|(_, command)| command)
+    }
+
+    #[test]
+    fn add_account_takes_the_password_from_stdin_when_its_left_out() {
+        let password = |args: &[&str]| match parsed(args) {
+            Ok(Command::AddAccount { password, .. }) => password,
+            _ => panic!("not add-account: {args:?}"),
+        };
+        assert_eq!(password(&["add-account", "Kozak", "hunter2"]), Some("hunter2".into()), "as before");
+        assert_eq!(password(&["add-account", "Kozak"]), None);
+        assert_eq!(password(&["--config", "x.toml", "add-account", "Kozak", "-"]), None);
+        assert!(parsed(&["add-account"]).is_err());
+        assert!(parsed(&["add-account", "Kozak", "a", "b"]).is_err());
+
+        assert_eq!(password_from(&b"hunter2\n"[..]), Ok("hunter2".into()));
+        assert_eq!(password_from(&b"hunter2\r\nmore\n"[..]), Ok("hunter2".into()));
+        assert_eq!(password_from(&b"with spaces "[..]), Ok("with spaces ".into()), "as typed");
+        assert!(password_from(&b"\n"[..]).is_err());
+        assert!(password_from(&b""[..]).is_err());
     }
 }
