@@ -5,8 +5,9 @@
 //!   "version": "0.1.0", "players_online": 3, "news": [...], "udp_ports": [21030, 21031]}`, the news as
 //!   the game shows it (see `news.rs`), each `{"title", "body", "date": "YYYY-MM-DD", "shows"}`
 //!   with `shows` null or `"multiplayer"`, `"campaign"` or `"guerrilla"`.
-//! - `POST /api/login` with `{"name": ..., "password": ...}`: `200 {"pid": ...}` when they match
-//!   an account, else `401 {"error": ...}`. Failures count against the same limits as the game's
+//! - `POST /api/login` with `{"name": ..., "password": ...}`: `200 {"pid": ..., "token": ...}` when
+//!   they match an account, with a new game token the game signs in with in place of the password
+//!   (see `accounts.rs`); else `401 {"error": ...}`. Only the password is taken here, not a token. Failures count against the same limits as the game's
 //!   own sign-in (`rate_limit.rs`), so the two together give no more guesses than either:
 //!   `429` once over them.
 //! - `GET /api/leaderboard?mode=...`: every player ranked (see `leaderboard.rs`).
@@ -147,10 +148,15 @@ impl Api {
         let Some(attempt) = self.failed.try_begin(address, &login.name, Instant::now()) else {
             return (error("429 Too Many Requests", "too many failed sign-ins; try again later"), None);
         };
-        match self.accounts.verify(&login.name, &login.password) {
+        // The password only: a game token can't be turned into more of them.
+        match self.accounts.verify_password(&login.name, &login.password) {
             Ok(Some(pid)) => {
                 self.failed.succeeded(attempt);
-                (("200 OK", json!({ "pid": pid }).to_string()), Some(login.name))
+                // The game's own sign-in uses this token, not the password (see `accounts`).
+                match self.accounts.issue_token(pid) {
+                    Ok(token) => (("200 OK", json!({ "pid": pid, "token": token }).to_string()), Some(login.name)),
+                    Err(_) => (error("500 Internal Server Error", "couldn't make a game token"), None),
+                }
             }
             Ok(None) => wrong(),
             Err(_) => (error("500 Internal Server Error", "couldn't check the account"), None),
@@ -210,8 +216,13 @@ pub(crate) mod tests {
         let here: IpAddr = "203.0.113.7".parse().unwrap();
         let ((status, json), name) = api.login(here, &login("kozak", "hunter2"));
         assert_eq!(status, "200 OK");
-        assert_eq!(json, r#"{"pid":1048576}"#);
+        let answer: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(answer["pid"], 1_048_576);
+        let token = answer["token"].as_str().unwrap();
+        assert!(accounts::is_token(token), "{token}");
         assert_eq!(name.as_deref(), Some("kozak"));
+        let ((status, _), _) = api.login(here, &login("kozak", token));
+        assert_eq!(status, "401 Unauthorized", "a token can't sign the launcher in");
         let ((status, json), name) = api.login(here, &login("Kozak", "wrong"));
         assert_eq!((status, json.as_str()), ("401 Unauthorized", r#"{"error":"wrong name or password"}"#));
         assert_eq!(name, None);

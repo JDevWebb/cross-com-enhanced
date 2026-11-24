@@ -26,6 +26,8 @@ pub struct Config {
     pub server: Option<String>,
     /// The account to sign in with.
     pub username: String,
+    /// What the game signs in with: a game token the launcher got over HTTPS (`cct_...`, see
+    /// `is_game_token`), or, set by hand or by an older launcher, the account's password.
     pub password: String,
     /// The game's CD key, sent with the sign-in.
     pub cd_key: String,
@@ -177,6 +179,20 @@ impl Config {
     }
 }
 
+/// What every game token starts with (the server makes them: `crosscom-server`'s `accounts`).
+pub const GAME_TOKEN_PREFIX: &str = "cct_";
+
+/// Whether `secret`, the game's sign-in secret (`password`), is a game token rather than the
+/// player's password. The launcher signs in over HTTPS and writes a token there, so the
+/// password, which the game sends with only the protocol's shared-key encryption, never leaves
+/// the launcher; an older setup has the password, which the launcher swaps for a token.
+#[must_use]
+pub fn is_game_token(secret: &str) -> bool {
+    secret
+        .strip_prefix(GAME_TOKEN_PREFIX)
+        .is_some_and(|rest| rest.len() == 28 && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
 /// `toml`'s message, when it can only name settings ("unknown field `sever`"); any other may quote
 /// a value, such as a password written without quotes, so it's replaced.
 fn safe_message(message: &str) -> String {
@@ -190,6 +206,14 @@ fn safe_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_a_game_token_from_a_password() {
+        assert!(is_game_token(&format!("cct_{}", "aZ9".repeat(9) + "x")));
+        assert!(!is_game_token("hunter2"));
+        assert!(!is_game_token("cct_short"));
+        assert!(!is_game_token(&format!("cct_{}!", "a".repeat(27))));
+    }
 
     #[test]
     fn parses_a_full_file() {

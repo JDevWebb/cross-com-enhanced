@@ -1,4 +1,14 @@
 //! Player accounts, in SQLite. Passwords are kept as Argon2 hashes.
+//!
+//! **Game tokens.** The game sends its sign-in secret inside the Quazal protocol, whose encryption
+//! uses a key every copy of the game shares: anyone who can see a player's traffic can read it. So
+//! the launcher doesn't give the game the player's password: it signs in over HTTPS
+//! (`/api/login`, the password only), gets a game token (`cct_` and 28 random letters and digits,
+//! about 166 bits), and writes that into the game's settings instead. The game signs in with the
+//! token (`verify` takes a token or the password); a token seen on the wire is good only for
+//! this game on this server, and the player's password, which they may use elsewhere, never leaves
+//! the launcher. Tokens are kept as SHA-256 hashes (they're random, so a fast hash is enough), at
+//! most `MAX_TOKENS` per account (the oldest go).
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,6 +23,7 @@ use rand::TryRngCore;
 use rusqlite::params;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
+use sha2::Digest as _;
 
 /// The first player PID; lower ones are left for the server's own principals.
 const FIRST_PID: u32 = 0x0010_0000;
@@ -20,6 +31,12 @@ const FIRST_PID: u32 = 0x0010_0000;
 pub const MAX_NAME_LEN: usize = 32;
 /// The longest password the game can send.
 pub const MAX_PASSWORD_LEN: usize = 79;
+/// What every game token starts with: the launcher tells a token from a password by it.
+pub const TOKEN_PREFIX: &str = "cct_";
+/// The random letters and digits after the prefix.
+const TOKEN_RANDOM_LEN: usize = 28;
+/// The most game tokens an account keeps: one per PC it plays from, and then some.
+const MAX_TOKENS: usize = 10;
 
 pub struct Accounts {
     db: Mutex<Connection>,
@@ -69,7 +86,14 @@ impl Accounts {
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
                 created INTEGER NOT NULL DEFAULT (unixepoch())
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS game_tokens (
+                pid INTEGER NOT NULL,
+                hash BLOB NOT NULL UNIQUE,
+                created INTEGER NOT NULL DEFAULT (unixepoch()),
+                last_used INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS game_tokens_pid ON game_tokens (pid);",
         )?;
         Ok(Self { db: Mutex::new(db) })
     }
@@ -116,9 +140,62 @@ impl Accounts {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// The account's PID, if the name and password match one. An unknown name takes as long as a
-    /// wrong password, so the time taken doesn't tell which names exist.
-    pub fn verify(&self, name: &str, password: &str) -> Result<Option<u32>, Error> {
+    /// The account's PID, if the name and the game's secret match one: one of its game tokens, or
+    /// its password. What the game's own sign-in checks (`ticket`).
+    pub fn verify(&self, name: &str, secret: &str) -> Result<Option<u32>, Error> {
+        if let Some(pid) = self.verify_token(name, secret)? {
+            return Ok(Some(pid));
+        }
+        self.verify_password(name, secret)
+    }
+
+    /// The account's PID, if `token` is one of its game tokens.
+    fn verify_token(&self, name: &str, token: &str) -> Result<Option<u32>, Error> {
+        if !is_token(token) {
+            return Ok(None);
+        }
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pid: Option<u32> = db
+            .query_row(
+                "SELECT accounts.pid FROM accounts JOIN game_tokens ON game_tokens.pid = accounts.pid
+                 WHERE accounts.name = ?1 AND game_tokens.hash = ?2",
+                params![name, token_hash(token).as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if pid.is_some() {
+            db.execute("UPDATE game_tokens SET last_used = unixepoch() WHERE hash = ?1", [token_hash(token).as_slice()])?;
+        }
+        Ok(pid)
+    }
+
+    /// A new game token for the account `pid` (see the module's notes); the oldest beyond
+    /// `MAX_TOKENS` go.
+    pub fn issue_token(&self, pid: u32) -> Result<String, Error> {
+        const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut token = String::from(TOKEN_PREFIX);
+        while token.len() < TOKEN_PREFIX.len() + TOKEN_RANDOM_LEN {
+            let mut byte = [0u8; 1];
+            rand::rngs::OsRng.try_fill_bytes(&mut byte).map_err(|_| Error::Hash)?;
+            // 248 = 4 * 62: anything above is skipped, so every letter is as likely.
+            if usize::from(byte[0]) < 4 * LETTERS.len() {
+                token.push(char::from(LETTERS[usize::from(byte[0]) % LETTERS.len()]));
+            }
+        }
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        db.execute("INSERT INTO game_tokens (pid, hash) VALUES (?1, ?2)", params![pid, token_hash(&token).as_slice()])?;
+        db.execute(
+            "DELETE FROM game_tokens WHERE pid = ?1 AND rowid NOT IN
+               (SELECT rowid FROM game_tokens WHERE pid = ?1 ORDER BY rowid DESC LIMIT ?2)",
+            params![pid, MAX_TOKENS],
+        )?;
+        Ok(token)
+    }
+
+    /// The account's PID, if the name and password match one: the launcher's sign-in, which
+    /// takes the password only (a token can't make more tokens). An unknown name takes as long as
+    /// a wrong password, so the time taken doesn't tell which names exist.
+    pub fn verify_password(&self, name: &str, password: &str) -> Result<Option<u32>, Error> {
         if password.chars().count() > MAX_PASSWORD_LEN {
             return Ok(None);
         }
@@ -136,6 +213,18 @@ impl Accounts {
         };
         Ok(Argon2::default().verify_password(password.as_bytes(), &hash).is_ok().then_some(pid))
     }
+}
+
+/// Whether `secret` has a game token's form.
+#[must_use]
+pub fn is_token(secret: &str) -> bool {
+    secret
+        .strip_prefix(TOKEN_PREFIX)
+        .is_some_and(|rest| rest.len() == TOKEN_RANDOM_LEN && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+fn token_hash(token: &str) -> [u8; 32] {
+    sha2::Sha256::digest(token.as_bytes()).into()
 }
 
 /// A hash to check passwords against when the name is unknown.
@@ -165,6 +254,38 @@ mod tests {
         assert_eq!(accounts.verify("Kozak", "wrong").unwrap(), None);
         assert_eq!(accounts.verify("Pepper", "hunter2").unwrap(), None);
         assert_eq!(accounts.verify("Kozak", &"x".repeat(MAX_PASSWORD_LEN + 1)).unwrap(), None);
+    }
+
+    #[test]
+    fn the_game_signs_in_with_a_token_the_launcher_with_the_password_only() {
+        let accounts = Accounts::in_memory().unwrap();
+        let kozak = accounts.add("Kozak", "s3cret").unwrap();
+        let other = accounts.add("Housemate", "pass").unwrap();
+        let token = accounts.issue_token(kozak).unwrap();
+        assert!(is_token(&token), "{token}");
+        assert_eq!(token.len(), 32, "fits the game's fields");
+        assert_eq!(accounts.verify("Kozak", &token).unwrap(), Some(kozak), "the game, with the token");
+        assert_eq!(accounts.verify("kozak", &token).unwrap(), Some(kozak), "names in any case");
+        assert_eq!(accounts.verify("Kozak", "s3cret").unwrap(), Some(kozak), "the game, with the password still");
+        assert_eq!(accounts.verify("Housemate", &token).unwrap(), None, "another account's token");
+        assert_eq!(accounts.verify_password("Kozak", &token).unwrap(), None, "a token can't sign the launcher in");
+        assert_eq!(accounts.verify_password("Kozak", "s3cret").unwrap(), Some(kozak));
+        let wrong = format!("{TOKEN_PREFIX}{}", "A".repeat(TOKEN_RANDOM_LEN));
+        assert_eq!(accounts.verify("Kozak", &wrong).unwrap(), None, "a token never issued");
+        let _ = other;
+    }
+
+    #[test]
+    fn tokens_are_random_and_only_the_newest_are_kept() {
+        let accounts = Accounts::in_memory().unwrap();
+        let pid = accounts.add("Kozak", "s3cret").unwrap();
+        let first = accounts.issue_token(pid).unwrap();
+        let rest: Vec<String> = (0..MAX_TOKENS).map(|_| accounts.issue_token(pid).unwrap()).collect();
+        assert!(rest.iter().all(|t| *t != first));
+        assert_eq!(accounts.verify("Kozak", &first).unwrap(), None, "the oldest went");
+        assert!(rest.iter().all(|t| accounts.verify("Kozak", t).unwrap() == Some(pid)));
+        assert!(!is_token("cct_short"));
+        assert!(!is_token(&format!("cct_{}!", "a".repeat(TOKEN_RANDOM_LEN - 1))));
     }
 
     #[test]
