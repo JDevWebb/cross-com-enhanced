@@ -164,6 +164,7 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
         self.packs.signed_in(pid, packs);
         // A new sign-in is a game started afresh: it's in none of the sessions its last game was.
         crate::connections::gone(logger, pid);
+        crate::announce::forget(pid);
         let stale = self.sessions.signed_in_afresh(pid);
         if stale > 0 {
             info!(logger, "{pid:#x} signed in again: taken out of {stale} session(s) its last game was in");

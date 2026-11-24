@@ -76,6 +76,8 @@ struct ReachRequest {
 pub struct Matched {
     pub pid: u32,
     pub announced: bool,
+    /// The report brings a forward it didn't have before (or on another port).
+    pub new_forward: bool,
 }
 
 pub struct Reach {
@@ -155,7 +157,10 @@ impl Reach {
                 .flatten()
                 .and_then(|pid| self.sessions.socket_of(pid, client, local).map(|(port, announced)| ((pid, port), announced)))
         };
+        let mut new_forward = false;
         if let Some(((pid, _), _)) = found {
+            let before = self.sessions.reachability(pid).and_then(|r| r.forward.map(|(port, _)| port));
+            new_forward = forward.as_ref().is_some_and(|(port, _)| before != Some(*port));
             self.sessions.set_reachability(
                 pid,
                 Reachability {
@@ -170,7 +175,7 @@ impl Reach {
         let port = found.and_then(|((_, port), _)| port);
         let open = found.and_then(|((pid, _), _)| crate::announce::open(pid));
         let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
-        (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced }))
+        (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced, new_forward }))
     }
 
     /// `POST /api/reach` from `client` with `body`.
@@ -221,7 +226,11 @@ mod tests {
     }
 
     fn matched(pid: u32, announced: bool) -> Option<Matched> {
-        Some(Matched { pid, announced })
+        Some(Matched {
+            pid,
+            announced,
+            new_forward: false,
+        })
     }
 
     fn json_of(answer: &Answer) -> serde_json::Value {
@@ -240,8 +249,17 @@ mod tests {
             home,
             br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
         );
-        assert_eq!((answer.0, pid), ("200 OK", matched(k, true)));
+        let new = Matched {
+            new_forward: true,
+            ..matched(k, true).unwrap()
+        };
+        assert_eq!((answer.0, pid), ("200 OK", Some(new)), "a new forward: its player's address is checked afresh");
         assert_eq!(r.sessions.forward_of(k), Some(40000));
+        let (_, pid) = r.forward(
+            home,
+            br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
+        );
+        assert_eq!(pid, matched(k, true), "the same forward renewed: nothing new");
         // A housemate's client, its game not registered yet: never taken for Kozak's.
         let (answer, pid) = r.forward(
             home,

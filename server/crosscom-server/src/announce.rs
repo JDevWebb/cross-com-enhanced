@@ -39,8 +39,9 @@ use crate::sessions::Sessions;
 pub const WAIT: Duration = Duration::from_millis(1500);
 /// Copies of each probe sent, a moment apart: one lost would call a reachable game unreachable.
 const COPIES: usize = 2;
-/// How soon the same address is checked again for a player.
-const AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
+/// How soon the same address is checked again for a player (it registers its URLs with each
+/// session it makes; a new sign-in forgets what was found, see [`forget`]).
+const AGAIN_AFTER: Duration = Duration::from_secs(2 * 60);
 /// Probes waiting for an answer at most.
 const MAX_PENDING: usize = 4096;
 /// The connection ID the server's probes give as their sender's.
@@ -124,14 +125,17 @@ impl Announce {
     }
 
     /// Checks `pid`'s announced address, unless it was just checked (or is being).
-    pub fn check(&self, logger: &Logger, sessions: &Sessions, pid: u32) {
+    ///
+    /// `afresh`: whatever the last check found (a forward was just made: the address may be the
+    /// same, but what's in front of it isn't).
+    pub fn check(&self, logger: &Logger, sessions: &Sessions, pid: u32, afresh: bool) {
         let Some((to, rvcid)) = announced(sessions, pid) else {
             return;
         };
         let token: [u8; 4] = rand::random();
         {
             let mut state = self.state();
-            let recent = state.results.get(&pid).is_some_and(|c| c.to == to && c.at.elapsed() < AGAIN_AFTER);
+            let recent = !afresh && state.results.get(&pid).is_some_and(|c| c.to == to && c.at.elapsed() < AGAIN_AFTER);
             let waiting = state.pending.values().any(|p| p.pid == pid && p.to == to);
             if recent || waiting || state.pending.len() >= MAX_PENDING {
                 return;
@@ -217,6 +221,12 @@ impl Announce {
         }
     }
 
+    /// Forgets what was found for `pid`: its game started afresh, and what's in front of it may
+    /// have changed (a forward gone with the last game).
+    pub fn forget(&self, pid: u32) {
+        self.state().results.remove(&pid);
+    }
+
     /// What the last check of `pid` found.
     #[must_use]
     pub fn checked(&self, pid: u32) -> Option<Checked> {
@@ -243,9 +253,16 @@ pub fn start(logger: &Logger, sessions: Arc<Sessions>) -> std::io::Result<()> {
 }
 
 /// [`Announce::check`], while serving.
-pub fn check(logger: &Logger, pid: u32) {
+pub fn check(logger: &Logger, pid: u32, afresh: bool) {
     if let Some((a, s)) = SERVING.get() {
-        a.check(logger, s, pid);
+        a.check(logger, s, pid, afresh);
+    }
+}
+
+/// [`Announce::forget`], while serving.
+pub fn forget(pid: u32) {
+    if let Some((a, _)) = SERVING.get() {
+        a.forget(pid);
     }
 }
 
@@ -328,7 +345,7 @@ mod tests {
         let a = Announce::new().unwrap();
         let answering = game(77);
         registered(&sessions, 1, answering, 77);
-        a.check(&logger(), &sessions, 1);
+        a.check(&logger(), &sessions, 1, false);
         let c = run_until_settled(&a, 1).unwrap();
         assert!(c.open, "{c:?}");
         assert_eq!(c.to, answering);
@@ -337,13 +354,13 @@ mod tests {
         let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
         let SocketAddr::V4(quiet) = silent.local_addr().unwrap() else { panic!() };
         registered(&sessions, 2, quiet, 78);
-        a.check(&logger(), &sessions, 2);
+        a.check(&logger(), &sessions, 2, false);
         assert!(!run_until_settled(&a, 2).unwrap().open);
 
         // Another game at that address: not this player's.
         let other = game(99);
         registered(&sessions, 3, other, 79);
-        a.check(&logger(), &sessions, 3);
+        a.check(&logger(), &sessions, 3, false);
         assert!(!run_until_settled(&a, 3).unwrap().open, "another game answered");
     }
 
@@ -352,11 +369,18 @@ mod tests {
         let sessions = Sessions::default();
         let a = Announce::new().unwrap();
         registered(&sessions, 1, game(5), 5);
-        a.check(&logger(), &sessions, 1);
-        a.check(&logger(), &sessions, 1);
+        a.check(&logger(), &sessions, 1, false);
+        a.check(&logger(), &sessions, 1, false);
         assert_eq!(a.state().pending.len(), 1, "one check at a time");
         run_until_settled(&a, 1);
-        a.check(&logger(), &sessions, 1);
+        a.check(&logger(), &sessions, 1, false);
         assert!(a.state().pending.is_empty(), "checked a moment ago");
+        a.check(&logger(), &sessions, 1, true);
+        assert_eq!(a.state().pending.len(), 1, "a forward was just made: checked again");
+        run_until_settled(&a, 1);
+        a.forget(1);
+        assert_eq!(a.checked(1), None, "signed in afresh");
+        a.check(&logger(), &sessions, 1, false);
+        assert_eq!(a.state().pending.len(), 1, "checked again");
     }
 }
