@@ -476,6 +476,92 @@ fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Res
     }
 }
 
+/// One line of Play's checklist: what's checked, how it stands ("good", "warn", "bad" or
+/// "muted"), and what it means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    pub label: &'static str,
+    pub value: String,
+    pub tone: &'static str,
+    pub detail: String,
+}
+
+/// Play's checklist for the game in `dir`: the firewall rules, the port forward, and how other
+/// players reached the last game (what the client wrote, see `crosscom_client_net::keep`).
+/// Asks Windows about the firewall rules: off the window's thread.
+#[must_use]
+pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
+    let firewall = if crosscom_launcher::firewall::ensure_would_ask(dir) {
+        Check {
+            label: "Firewall",
+            value: "Rules missing".into(),
+            tone: "warn",
+            detail: "Windows may stop other players reaching your game. Set up › Finish adds the rules (Windows asks first).".into(),
+        }
+    } else {
+        Check {
+            label: "Firewall",
+            value: "Game allowed".into(),
+            tone: "good",
+            detail: "Windows lets other players reach your game.".into(),
+        }
+    };
+    let forwarding = if port_forwarding {
+        Check {
+            label: "Port forwarding",
+            value: "On".into(),
+            tone: "good",
+            detail: "Asked of your router (UPnP, PCP or NAT-PMP) while the game runs.".into(),
+        }
+    } else {
+        Check {
+            label: "Port forwarding",
+            value: "Off".into(),
+            tone: "muted",
+            detail: "Turned off in Settings › Connection.".into(),
+        }
+    };
+    let file = std::fs::read(dir.join(crosscom_client_net::keep::STATUS_FILE)).ok();
+    let last = file.and_then(|f| serde_json::from_slice::<crosscom_client_net::keep::Connection>(&f).ok());
+    vec![firewall, forwarding, connection_check(last.as_ref(), now)]
+}
+
+/// The checklist's line for the last game's connection.
+fn connection_check(last: Option<&crosscom_client_net::keep::Connection>, now: u64) -> Check {
+    use crosscom_client_net::keep::Reachable;
+    let label = "Last game";
+    let Some(c) = last.filter(|c| c.reachable() != Reachable::Checking) else {
+        return Check {
+            label,
+            value: "Not checked yet".into(),
+            tone: "muted",
+            detail: "The server checks who can reach your game during your next game.".into(),
+        };
+    };
+    let r = c.reachable();
+    let tone = match r {
+        Reachable::Open => "good",
+        Reachable::Moderate => "warn",
+        _ => "bad",
+    };
+    Check {
+        label,
+        value: format!("{} · {}", r.title(), ago(now.saturating_sub(c.at))),
+        tone,
+        detail: r.advice().into(),
+    }
+}
+
+/// "5 min ago".
+fn ago(secs: u64) -> String {
+    match secs {
+        0..=119 => "just now".into(),
+        120..=7199 => format!("{} min ago", secs / 60),
+        7200..=172_799 => format!("{} h ago", secs / 3600),
+        _ => format!("{} days ago", secs / 86400),
+    }
+}
+
 /// Whether finishing Setup in `dir` will ask Windows for permission (the firewall rules aren't
 /// all there), so the launcher says why first.
 #[must_use]
@@ -575,5 +661,34 @@ mod tests {
         assert!(!Info { account: None, ..info.clone() }.ready());
         let no_packs = dlc::PACKS.iter().map(|&p| (p, dlc::State::Missing)).collect();
         assert!(Info { dlc: no_packs, ..info }.ready(), "missing packs only warn: Play still goes");
+    }
+}
+
+#[cfg(test)]
+mod checklist_tests {
+    use crosscom_client_net::keep::Connection;
+
+    use super::*;
+
+    #[test]
+    fn the_last_games_connection() {
+        assert_eq!(connection_check(None, 1000).value, "Not checked yet");
+        let open = Connection {
+            nat: "consistent".into(),
+            forward: Some("UPnP 203.0.113.7:2346".into()),
+            open: Some(true),
+            at: 1000,
+        };
+        let c = connection_check(Some(&open), 1000 + 600);
+        assert_eq!((c.value.as_str(), c.tone), ("Open · 10 min ago", "good"));
+        let strict = Connection {
+            nat: "symmetric".into(),
+            forward: None,
+            open: Some(false),
+            at: 0,
+        };
+        assert_eq!(connection_check(Some(&strict), 3 * 86400).tone, "bad");
+        let unchecked = Connection { open: None, ..strict };
+        assert_eq!(connection_check(Some(&unchecked), 10).value, "Not checked yet");
     }
 }

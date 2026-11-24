@@ -7,7 +7,7 @@ import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
 import { Btn, Caps, Tag, Dot, Card, Spinner } from "widgets.slint";
 import { Icon, Icons } from "chrome.slint";
-import { InfoView, NewsRow } from "types.slint";
+import { InfoView, NewsRow, CheckRow } from "types.slint";
 import { DlcNotice } from "dlc.slint";
 
 // A card of the status row: its label, its value, and a line under it.
@@ -42,6 +42,9 @@ export component PlayScreen inherits Rectangle {
     in property <[NewsRow]> news;
     in property <string> news-note;
     in property <bool> news-loading;
+    // Play's checklist: the firewall, the port forward, the last game's connection (empty while
+    // it's being looked at).
+    in property <[CheckRow]> checks;
     in property <bool> starting;
     in property <string> said;
     in property <bool> failed;
@@ -195,6 +198,19 @@ export component PlayScreen inherits Rectangle {
                         color: Theme.muted;
                     }
                     if root.said != "": Text { text: root.said; color: root.failed ? Theme.bad : Theme.fg; wrap: word-wrap; }
+                }
+            }
+
+            // The checklist: what decides whether other players can reach your game.
+            if root.checks.length > 0: HorizontalLayout {
+                padding-top: 26px;
+                spacing: 14px;
+                for check in root.checks: StatusCard {
+                    width: (root.width - 108px) / 3;
+                    value: check.value;
+                    value-color: check.tone == "good" ? Theme.good : check.tone == "warn" ? Theme.warn : check.tone == "bad" ? Theme.bad : Theme.fg;
+                    detail: check.detail;
+                    Caps { text: check.label.to-uppercase(); }
                 }
             }
 

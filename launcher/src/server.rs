@@ -74,14 +74,18 @@ fn falls_back_to_plain(host: &str, error: &ureq::Error) -> bool {
 
 /// Why a password didn't go to a server whose HTTPS failed with `error`.
 fn needs_https(host: &str, error: &ureq::Error) -> String {
+    if crosscom_client_common::http::lookup_failed(error) {
+        return crosscom_client_common::http::lookup_failed_said(host, error);
+    }
     if may_send_unencrypted(host) {
         // A private address whose HTTPS answered but failed: not a server without HTTPS.
         format!("{host}'s HTTPS didn't work ({error}), so your password wasn't sent. Whoever runs the server can check its HTTPS: {HTTPS_HELP}")
     } else {
         format!(
-            "{host} didn't answer over HTTPS ({error}). Passwords only go to a server set up by name or \
-             on the internet encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}. \
-             A server on your own network or VPN without HTTPS can be set up by its IP address."
+            "{host} didn't answer over HTTPS ({error}). It may be down for now; try again in a moment. If it \
+             never answers, it may not have HTTPS: passwords only go to a server set up by name or on the \
+             internet encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}. A server on \
+             your own network or VPN without HTTPS can be set up by its IP address."
         )
     }
 }
@@ -89,7 +93,13 @@ fn needs_https(host: &str, error: &ureq::Error) -> String {
 /// Where the server says to sign in, from its online config (the address the game will use).
 pub fn check(server: &str) -> Result<String, String> {
     let url = format!("http://{}{ONLINE_CONFIG}", host(server));
-    let mut response = agent().get(&url).call().map_err(|e| format!("couldn't reach {}: {e}", host(server)))?;
+    let mut response = agent().get(&url).call().map_err(|e| {
+        if crosscom_client_common::http::lookup_failed(&e) {
+            crosscom_client_common::http::lookup_failed_said(&host(server), &e)
+        } else {
+            format!("couldn't reach {}: {e}", host(server))
+        }
+    })?;
     if response.status() != 200 {
         return Err(format!("{} answered {}: is it a Cross-Com server?", host(server), response.status()));
     }

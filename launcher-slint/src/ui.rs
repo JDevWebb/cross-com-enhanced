@@ -20,6 +20,7 @@ use crate::core;
 use crate::core::ClientState;
 use crate::core::Launcher;
 use crate::AppWindow;
+use crate::CheckRow;
 use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
@@ -182,12 +183,41 @@ fn open(w: &AppWindow, l: &Arc<Launcher>, screen: &str) {
     }
 }
 
+/// Play's checklist, looked at off the window's thread (Windows is asked about the firewall).
+fn load_checks(w: &AppWindow, l: &Arc<Launcher>) {
+    let l = l.clone();
+    background(
+        w,
+        move || {
+            let info = l.info();
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            info.game_dir.map(|dir| core::checklist(&dir, info.port_forwarding, now)).unwrap_or_default()
+        },
+        |w, checks| show_checks(w, &checks),
+    );
+}
+
+/// Shows Play's checklist.
+pub fn show_checks(w: &AppWindow, checks: &[core::Check]) {
+    let rows = checks
+        .iter()
+        .map(|c| CheckRow {
+            label: s(c.label),
+            value: s(&c.value),
+            tone: s(c.tone),
+            detail: s(&c.detail),
+        })
+        .collect::<Vec<_>>();
+    w.set_checks(ModelRc::new(VecModel::from(rows)));
+}
+
 /// Play: asks the server how it is, and for its news.
 fn load_news(w: &AppWindow, l: &Arc<Launcher>) {
     if w.get_news_loading() {
         return;
     }
     w.set_news_loading(true);
+    load_checks(w, l);
     if w.get_server_state() != "up" {
         w.set_server_state(s("asking"));
         w.set_server_detail(s("Asking the server…"));
@@ -618,6 +648,8 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
                     // "The game is starting." no longer holds once it has ended.
                     w.set_play_said(s(""));
                     w.set_play_failed(false);
+                    // What the game found about its connection, on the checklist.
+                    load_checks(&w, &after);
                     send_logs(&w, &after, exit);
                 });
             });

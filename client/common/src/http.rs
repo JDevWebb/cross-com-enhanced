@@ -109,14 +109,36 @@ pub fn nothing_answered(error: &ureq::Error) -> bool {
     }
 }
 
+/// Whether `error` is the server's name not being found (no such name, or the DNS not answering
+/// for now), rather than anything about the server itself.
+#[must_use]
+pub fn lookup_failed(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::HostNotFound => true,
+        // Windows' WSAHOST_NOT_FOUND, WSATRY_AGAIN, WSANO_RECOVERY and WSANO_DATA.
+        ureq::Error::Io(e) => e.raw_os_error().is_some_and(|code| (11001..=11004).contains(&code)) || e.to_string().contains("failed to lookup address"),
+        _ => false,
+    }
+}
+
+/// What to say when `host`'s name wasn't found.
+#[must_use]
+pub fn lookup_failed_said(host: &str, error: &ureq::Error) -> String {
+    format!("Couldn't look up {host} ({error}). Check the address is right, or try again in a moment: your internet connection or its DNS may be down.")
+}
+
 /// Why a server whose HTTPS failed with `error` wasn't asked.
 fn needs_https(host: &str, error: &ureq::Error) -> String {
+    if lookup_failed(error) {
+        return lookup_failed_said(host, error);
+    }
     if may_go_plain(host) {
         format!("{host}'s HTTPS didn't work ({error}). Whoever runs the server can check it: {HTTPS_HELP}")
     } else {
         format!(
-            "{host} didn't answer over HTTPS ({error}). A server set up by name or on the internet needs HTTPS; \
-             whoever runs it can set it up: {HTTPS_HELP}"
+            "{host} didn't answer over HTTPS ({error}). It may be down for now; try again in a moment. If it never \
+             answers, it may not have HTTPS, which a server set up by name or on the internet needs; whoever runs it \
+             can set it up: {HTTPS_HELP}"
         )
     }
 }
@@ -221,6 +243,17 @@ mod tests {
     }
 
     #[test]
+    fn a_name_not_found_isnt_said_to_need_https() {
+        let windows = ureq::Error::Io(std::io::Error::from_raw_os_error(11002));
+        assert!(lookup_failed(&windows));
+        assert!(lookup_failed(&ureq::Error::HostNotFound));
+        assert!(needs_https("play.example.org", &windows).starts_with("Couldn't look up play.example.org"));
+        let refused = ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(!lookup_failed(&refused));
+        assert!(needs_https("play.example.org", &refused).contains("may be down"));
+    }
+
+    #[test]
     fn urls() {
         assert_eq!(url("https", "play.example.net", None, "/api/info"), "https://play.example.net/api/info");
         assert_eq!(url("http", "127.0.0.1", Some(8080), "/api/info"), "http://127.0.0.1:8080/api/info");
@@ -258,6 +291,6 @@ mod tests {
     fn a_public_server_is_only_asked_over_https() {
         // TEST-NET-3, routed nowhere: nothing answers.
         let e = request("203.0.113.7", "GET", "/api/info", &[], &[], Duration::from_millis(300)).unwrap_err();
-        assert!(e.0.contains("needs HTTPS"), "{e}");
+        assert!(e.0.contains("needs; whoever runs it can set it up"), "{e}");
     }
 }

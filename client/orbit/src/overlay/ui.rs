@@ -367,6 +367,24 @@ impl Overlay {
             let _t = ui.push_style_color(StyleColor::Text, MUTED);
             ui.text_wrapped(format!("The server answered, without its details ({why}); it may be an older version."));
         }
+        if let Some(c) = &s.connection {
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+            self.strong(ui, FG, "YOUR CONNECTION");
+            let reachable = c.reachable();
+            let color = match reachable {
+                crosscom_client_net::keep::Reachable::Open => GOOD,
+                crosscom_client_net::keep::Reachable::Checking => MUTED,
+                _ => BAD,
+            };
+            self.row(ui, "Others reach you", reachable.title(), color);
+            self.row(ui, "Port forward", c.forward.as_deref().unwrap_or("none"), FG);
+            self.row(ui, "Router", &c.nat, FG);
+            ui.spacing();
+            let _t = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped(reachable.advice());
+        }
     }
 
     /// The lobby this game is in, and the lobbies it makes: how many players a Quick Match or
