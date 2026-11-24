@@ -184,6 +184,14 @@ pub fn ensure_would_ask(dir: &Path) -> bool {
     !present(&rules)
 }
 
+/// Whether Windows Firewall lets the game's exes in `dir` in (this launcher's own rule, for the
+/// connection test, aside: it goes with where the launcher is).
+#[cfg(windows)]
+#[must_use]
+pub fn game_allowed(dir: &Path) -> bool {
+    present(&game_rules(dir))
+}
+
 /// Whether [`ensure_launcher`] would ask Windows for permission.
 #[cfg(windows)]
 #[must_use]
@@ -214,6 +222,12 @@ pub fn ensure_launcher() -> Outcome {
 #[must_use]
 pub fn ensure_would_ask(_dir: &Path) -> bool {
     false
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn game_allowed(_dir: &Path) -> bool {
+    true
 }
 
 #[cfg(not(windows))]

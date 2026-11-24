@@ -491,7 +491,7 @@ pub struct Check {
 /// Asks Windows about the firewall rules: off the window's thread.
 #[must_use]
 pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
-    let firewall = if crosscom_launcher::firewall::ensure_would_ask(dir) {
+    let firewall = if !crosscom_launcher::firewall::game_allowed(dir) {
         Check {
             label: "Firewall",
             value: "Rules missing".into(),
