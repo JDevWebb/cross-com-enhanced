@@ -13,7 +13,9 @@ set -euo pipefail
 
 # The release key's public half. sign-release.sh --keygen writes it here and in docs/releasing.md
 # (with its fingerprint); a release is signed with its private half, which stays off GitHub.
-RELEASE_KEY_PEM=""
+RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAz8ux0mceIUIneqPhVCDoQaKcSWPIiUwa//3bdhjkYW4=
+-----END PUBLIC KEY-----"
 
 VERSION=${1:?usage: scripts/verify-release.sh <version, e.g. 0.1.0> [dir]}
 DIR=${2:-.}
