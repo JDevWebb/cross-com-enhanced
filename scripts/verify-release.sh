@@ -6,9 +6,10 @@
 #
 #   scripts/verify-release.sh 0.1.0 [DIR]       (DIR: the folder with the downloads; default .)
 #
-# Needs OpenSSL 3 (for Ed25519) and sha256sum or shasum. On Windows, compare the files' hashes
-# with SHA256SUMS instead (Get-FileHash in PowerShell), and check their build provenance with
-# gh attestation verify: docs/releasing.md says how.
+# Needs bash, OpenSSL 3 (for Ed25519) and sha256sum or shasum: Linux, macOS, or on Windows Git
+# Bash (Git for Windows ships bash, coreutils and OpenSSL 3). It prints the release key's
+# fingerprint: compare it with the one the maintainer publishes outside this repository
+# (docs/releasing.md says where), so a changed copy of this script can't pass with another key.
 set -euo pipefail
 
 # The release key's public half. sign-release.sh --keygen writes it here and in docs/releasing.md
@@ -30,6 +31,8 @@ openssl version | grep -Eq '^OpenSSL [3-9]' || die "needs OpenSSL 3 or later for
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 printf '%s\n' "$RELEASE_KEY_PEM" >"$work/release.pem"
+fingerprint=$(openssl pkey -pubin -in "$work/release.pem" -outform DER | openssl dgst -sha256 -r | cut -d' ' -f1)
+echo "Release key fingerprint (SHA-256, DER): $fingerprint"
 
 # What's signed: a purpose line, the version (so a release can't be passed off as another), then
 # the file exactly. The signature is base64, on one line.
