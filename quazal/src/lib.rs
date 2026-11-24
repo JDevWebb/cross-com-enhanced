@@ -95,6 +95,15 @@ pub struct ClientInfo<T = ()> {
     /// the packets sent in reply, so a retransmission is answered again
     /// instead of being handled twice.
     pub(crate) handled: std::collections::VecDeque<(u16, Vec<Vec<u8>>)>,
+    /// The bytes of reply packets kept in `handled`: bounded per connection, and counted in the
+    /// registry's total (see `prudp::keep_replies`).
+    pub(crate) handled_bytes: usize,
+    /// The highest sequence number of this client's data packets so far: one far from it is
+    /// refused (see `prudp::sequence_expected`).
+    pub(crate) highest_sequence: Option<u16>,
+    /// Data packets from this connection's address with a signature that isn't any of its
+    /// connections': since when they're counted, and how many (see `prudp::note_miss`).
+    pub(crate) misses: (std::time::Instant, u32),
     /// When the replies to a retransmission were last sent again: at most one resend in
     /// [`REPLAY_GAP`](crate::prudp), so repeating a few-byte packet can't ask for a large
     /// reply over and over.
@@ -150,6 +159,9 @@ impl<T> ClientInfo<T> {
             last_vports: None,
             connection_id: None,
             handled: std::collections::VecDeque::new(),
+            handled_bytes: 0,
+            highest_sequence: None,
+            misses: (std::time::Instant::now(), 0),
             last_replay: None,
             replying: None,
             unacked: std::collections::BTreeMap::new(),

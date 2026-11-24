@@ -302,14 +302,24 @@ impl Store {
             for row in rows {
                 let keys = keys_blob(&row.keys);
                 for (column, value, op) in &row.values {
-                    let value = if *op == OP_ADD {
-                        let stored: Option<Vec<u8>> = get
-                            .query_row(params![pid, value_type, row.board, keys, column], |r| r.get(0))
+                    // The leaderboard's numbers are kept sane (see `leaderboard`).
+                    let ranked = value_type == SEND_INT32 && crate::leaderboard::ranked(row.board, &row.keys, *column);
+                    let stored: Option<Vec<u8>> = if *op == OP_ADD || ranked {
+                        get.query_row(params![pid, value_type, row.board, keys, column], |r| r.get(0))
                             .optional()
-                            .map_err(db_error)?;
+                            .map_err(db_error)?
+                    } else {
+                        None
+                    };
+                    let value = if *op == OP_ADD {
                         add_value(value_type, stored.as_deref(), value)
                     } else {
                         value.clone()
+                    };
+                    let value = if ranked {
+                        crate::leaderboard::sane_write(*column, stored.as_deref(), &value)
+                    } else {
+                        value
                     };
                     set.execute(params![pid, value_type, row.board, keys, column, value]).map_err(db_error)?;
                 }
@@ -857,6 +867,23 @@ mod tests {
         assert_eq!(add_value(1, Some(&v(i32::MAX)), &v(5)), v(i32::MAX), "saturates");
         assert_eq!(add_value(3, Some(&1.5f32.to_le_bytes()), &2.0f32.to_le_bytes()), 3.5f32.to_le_bytes().to_vec());
         assert_eq!(add_value(4, Some(&[1, 0, b'a']), &[1, 0, b'b']), vec![1, 0, b'b'], "a string is set");
+    }
+
+    /// The leaderboard's numbers, written as the game does (op 2): kept as written within reason,
+    /// never negative, and growing a few matches' worth at most; other boards as written.
+    #[test]
+    fn leaderboard_numbers_are_kept_sane() {
+        let store = Store::in_memory().unwrap();
+        let v = |n: i32| n.to_le_bytes().to_vec();
+        let send = |board: u8, values: Vec<(u8, Vec<u8>, u8)>| vec![Row { board, keys: vec![2], values }];
+        store.write(1, SEND_INT32, &send(10, vec![(2, v(40), OP_SET), (3, v(-7), OP_SET)])).unwrap();
+        store
+            .write(1, SEND_INT32, &send(10, vec![(2, v(41), OP_SET), (3, v(1_000_000), OP_SET), (7, v(9), OP_ADD)]))
+            .unwrap();
+        store.write(1, SEND_INT32, &send(11, vec![(3, v(-7), OP_SET)])).unwrap();
+        let got: Vec<(u8, Vec<u8>)> = store.rows(1, SEND_INT32, 10).unwrap().into_iter().map(|(_, c, v)| (c, v)).collect();
+        assert_eq!(got, vec![(2, v(41)), (3, v(20)), (7, v(9))]);
+        assert_eq!(store.rows(1, SEND_INT32, 11).unwrap()[0].2, v(-7), "another board: as written");
     }
 
     #[test]

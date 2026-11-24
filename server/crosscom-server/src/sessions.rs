@@ -12,7 +12,10 @@ use std::time::Instant;
 use quazal::rmc::types::StationURL;
 use rand::Rng;
 
-/// Sessions kept at most, and per host. The game makes one as a player opens Multiplayer.
+/// Sessions kept at most, and per host. The game makes one as a player opens Multiplayer. When
+/// there are as many as can be kept, a new one takes the place of the oldest with nobody but its
+/// host in it (or else the oldest): a few thousand accounts making sessions mustn't stop everyone
+/// else making theirs.
 const MAX_SESSIONS: usize = 10_000;
 const MAX_PER_HOST: usize = 4;
 /// Players in one session, and properties on one.
@@ -56,6 +59,9 @@ pub struct Session {
     pub joined: Vec<u32>,
     /// Players refused hosting it (see [`Sessions::take_over`]), and when.
     refused: Vec<(u32, std::time::Instant)>,
+    /// Players its host took out (the most recent [`MAX_OFFERED`]): they may not join it again
+    /// on their own, only if the host invites or adds them again.
+    removed: Vec<u32>,
     /// When it was made, in order: IDs are random, so they don't tell.
     created: u64,
 }
@@ -142,6 +148,30 @@ impl Session {
     pub fn joined(&self, pid: u32) -> bool {
         self.joined.contains(&pid)
     }
+
+    /// Whether the session has a public slot free (whatever else it is: a custom match or a party
+    /// may have public slots too).
+    fn public_slot_free(&self) -> bool {
+        let public = self.attribute(PUBLIC_SLOTS).unwrap_or(0);
+        let taken = self.participants.iter().filter(|p| !self.private.contains(p)).count();
+        u32::try_from(taken).is_ok_and(|taken| taken < public)
+    }
+
+    /// Whether `pid` may join the session itself (`GameSession.JoinSession`): not if its host took
+    /// it out; otherwise if a search offered it the session (or it chose it), it was invited, the
+    /// host already added it, or the session has a public slot free. Anyone who knew a session's
+    /// key used to be able to join it, and then see its members' addresses.
+    fn may_join(&self, pid: u32) -> bool {
+        if self.removed.contains(&pid) {
+            return false;
+        }
+        self.participants.contains(&pid)
+            || self.offered.contains(&pid)
+            || self.wanting.contains(&pid)
+            || self.accepted.contains(&pid)
+            || self.invited.iter().any(|i| i.pid == pid && i.at.elapsed() < INVITED_FOR)
+            || self.public_slot_free()
+    }
 }
 
 /// Whether a station URL a player claims for itself may be passed on: an address on a private
@@ -163,6 +193,8 @@ pub enum Error {
     NotFound,
     NotHost,
     Full,
+    /// Not a session the player may join (see [`Session::may_join`]).
+    NotAllowed,
 }
 
 /// What a player's client said about its router (`/api/forward`, see `reach`).
@@ -195,6 +227,12 @@ struct Inner {
     urls: HashMap<u32, (StationURL, Vec<StationURL>)>,
     /// Per player: its client's last report of its router.
     reachability: HashMap<u32, Reachability>,
+}
+
+/// The session to end to make room for a new one: the oldest with nobody but its host in it, or
+/// else the oldest.
+fn oldest_to_end(sessions: &BTreeMap<Key, Session>) -> Option<Key> {
+    sessions.iter().min_by_key(|(_, s)| (s.participants.len() > 1, s.created)).map(|(k, _)| *k)
 }
 
 fn set_attributes(into: &mut Vec<(u32, u32)>, from: &[(u32, u32)]) {
@@ -369,7 +407,9 @@ impl Sessions {
             inner.sessions.remove(key);
         }
         if inner.sessions.len() >= MAX_SESSIONS {
-            return Err(Error::Full);
+            if let Some(oldest) = oldest_to_end(&inner.sessions) {
+                inner.sessions.remove(&oldest);
+            }
         }
         // Random, so one session's ID doesn't lead to the others.
         let key = loop {
@@ -395,6 +435,7 @@ impl Sessions {
                 accepted: Vec::new(),
                 joined: vec![host],
                 refused: Vec::new(),
+                removed: Vec::new(),
                 created,
             },
         );
@@ -427,7 +468,11 @@ impl Sessions {
         Ok(())
     }
 
+    /// `pid` joins the session itself, if it may (see [`Session::may_join`]).
     pub fn join(&self, pid: u32, key: Key) -> Result<(), Error> {
+        if !self.lock().sessions.get(&key).ok_or(Error::NotFound)?.may_join(pid) {
+            return Err(Error::NotAllowed);
+        }
         self.add(key, &[pid], &[])?;
         let mut inner = self.lock();
         if let Some(session) = inner.sessions.get_mut(&key) {
@@ -441,6 +486,10 @@ impl Sessions {
     /// Notes that `sender`, a member, invited `pid` into the session.
     pub fn invite(&self, key: Key, sender: u32, pid: u32) {
         if let Some(session) = self.lock().sessions.get_mut(&key) {
+            // The host asking a player it took out back in.
+            if sender == session.host {
+                session.removed.retain(|&p| p != pid);
+            }
             session.invited.retain(|i| i.pid != pid && i.at.elapsed() < INVITED_FOR);
             if session.invited.len() < MAX_OFFERED {
                 session.invited.push(Invited {
@@ -515,6 +564,7 @@ impl Sessions {
                 }
                 session.participants.push(pid);
             }
+            session.removed.retain(|&p| p != pid);
             session.private.retain(|&p| p != pid);
             if is_private {
                 session.private.push(pid);
@@ -541,6 +591,20 @@ impl Sessions {
             let _ = self.remove(*key, &[pid]);
         }
         keys.len()
+    }
+
+    /// The host took `pids` out: as [`Self::remove`], and they may not join again on their own.
+    pub fn remove_by_host(&self, key: Key, pids: &[u32]) -> Result<(), Error> {
+        if let Some(session) = self.lock().sessions.get_mut(&key) {
+            for &pid in pids.iter().filter(|&&p| p != session.host) {
+                session.removed.retain(|&p| p != pid);
+                if session.removed.len() >= MAX_OFFERED {
+                    session.removed.remove(0);
+                }
+                session.removed.push(pid);
+            }
+        }
+        self.remove(key, pids)
     }
 
     /// Takes players out; the next one hosts if the host left, and the session ends when the
@@ -747,6 +811,61 @@ mod tests {
         assert!(sessions.take_over(key, 14, |_| false), "the host asking again");
         assert!(!sessions.take_over((1, 999), 14, |_| true));
         assert!(sessions.is_member(11, key) && !sessions.is_member(12, key));
+    }
+
+    /// Joining takes an offer, a choice, an invitation, being added already or a free public
+    /// slot; never once the host took the player out, until it asks them back.
+    #[test]
+    fn a_player_joins_only_a_session_it_may() {
+        let sessions = Sessions::default();
+        let party = sessions.create(10, 1, &[(7, 1), (3, 0), (4, 6)]).unwrap();
+        assert_eq!(sessions.join(11, party), Err(Error::NotAllowed), "a key alone");
+        assert_eq!(sessions.join(11, (1, 12345)), Err(Error::NotFound));
+        sessions.offer(party, 11);
+        sessions.join(11, party).unwrap();
+        sessions.invite(party, 10, 12);
+        sessions.join(12, party).unwrap();
+        sessions.add(party, &[], &[13]).unwrap();
+        sessions.join(13, party).unwrap();
+        sessions.remove_by_host(party, &[12]).unwrap();
+        assert_eq!(sessions.join(12, party), Err(Error::NotAllowed), "taken out by the host");
+        sessions.invite(party, 11, 12);
+        assert_eq!(sessions.join(12, party), Err(Error::NotAllowed), "not by another member's invitation");
+        sessions.invite(party, 10, 12);
+        sessions.join(12, party).unwrap();
+        // Public slots: anyone, while one is free.
+        let lobby = sessions.create(20, 1, &[(3, 2)]).unwrap();
+        sessions.join(21, lobby).unwrap();
+        assert_eq!(sessions.join(22, lobby), Err(Error::NotAllowed), "full");
+        // A player leaving on its own may come back.
+        sessions.remove(lobby, &[21]).unwrap();
+        sessions.join(21, lobby).unwrap();
+    }
+
+    /// With as many sessions as can be kept, a new one ends the oldest with only its host in it.
+    #[test]
+    fn a_new_session_takes_the_place_of_the_oldest_lonely_one() {
+        let sessions = Sessions::default();
+        let busy = sessions.create(1, 1, &[(3, 12)]).unwrap();
+        sessions.join(2, busy).unwrap();
+        let lonely = sessions.create(3, 1, &[]).unwrap();
+        // The rest, newer, straight into the table (made one by one, this took seconds).
+        {
+            let mut inner = sessions.lock();
+            let model = inner.sessions[&lonely].clone();
+            for n in 0..MAX_SESSIONS as u32 - 2 {
+                let session = Session {
+                    host: 1000 + n,
+                    created: 1000 + u64::from(n),
+                    ..model.clone()
+                };
+                inner.sessions.insert((1, 1_000_000 + n), session);
+            }
+        }
+        assert_eq!(sessions.search(1, usize::MAX).len(), MAX_SESSIONS);
+        sessions.create(99_999, 1, &[]).unwrap();
+        assert_eq!(sessions.search(1, usize::MAX).len(), MAX_SESSIONS);
+        assert!(sessions.get(lonely).is_none() && sessions.get(busy).is_some());
     }
 
     #[test]
@@ -1043,7 +1162,7 @@ mod tests {
     #[test]
     fn only_players_who_joined_count_as_joined() {
         let sessions = Sessions::default();
-        let key = sessions.create(10, 1, &[]).unwrap();
+        let key = sessions.create(10, 1, &[(3, 12)]).unwrap();
         sessions.add(key, &[11], &[]).unwrap();
         sessions.join(12, key).unwrap();
         let session = sessions.get(key).unwrap();

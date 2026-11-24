@@ -102,13 +102,42 @@ pub struct KerberosTicket {
     pub internal: KerberosTicketInternal,
 }
 
-impl KerberosTicket {
-    /// Derives a key from a peer PID and a password.
-    fn derive_key(peer_pid: u32, password: Option<&str>) -> Vec<u8> {
-        // derive key
-        let count = 65000 + (peer_pid % 1024);
-        let mut key = password.unwrap_or("UbiDummyPwd").as_bytes().to_vec();
+/// Derived keys kept (see [`KerberosTicket::derive_key`]): every key the server makes is from one
+/// of two passwords (players' tickets use the game's default, the telemetry account's its own),
+/// and a key depends on the PID only by `pid % 1024`, so 2048 are all of them.
+const DERIVED_KEYS_KEPT: usize = 2048;
 
+/// Derived keys by password and round count.
+type DerivedKeys = std::collections::HashMap<(String, u32), Vec<u8>>;
+
+/// Keys made by [`KerberosTicket::derive_key`].
+fn derived_keys() -> std::sync::MutexGuard<'static, DerivedKeys> {
+    static KEYS: std::sync::LazyLock<std::sync::Mutex<DerivedKeys>> = std::sync::LazyLock::new(Default::default);
+    KEYS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl KerberosTicket {
+    /// Derives a key from a peer PID and a password: some 65,000 rounds of MD5, so each ticket
+    /// cost the server that much, and signing in as the telemetry account (whose password is
+    /// public) over and over could keep it busy. It depends only on the password and
+    /// `pid % 1024`, so keys once made are kept (at most [`DERIVED_KEYS_KEPT`]).
+    fn derive_key(peer_pid: u32, password: Option<&str>) -> Vec<u8> {
+        let count = 65000 + (peer_pid % 1024);
+        let password = password.unwrap_or("UbiDummyPwd");
+        if let Some(key) = derived_keys().get(&(password.to_owned(), count)) {
+            return key.clone();
+        }
+        let key = Self::derive_key_uncached(count, password);
+        let mut keys = derived_keys();
+        if keys.len() >= DERIVED_KEYS_KEPT {
+            keys.clear();
+        }
+        keys.insert((password.to_owned(), count), key.clone());
+        key
+    }
+
+    fn derive_key_uncached(count: u32, password: &str) -> Vec<u8> {
+        let mut key = password.as_bytes().to_vec();
         for _ in 0..count {
             let h = Md5::new().chain(key).finalize();
             key = h.to_vec();
@@ -204,6 +233,18 @@ mod tests {
         tampered[0] ^= 1;
         assert!(KerberosTicket::from_bytes(&tampered, 0x1234, None, &key).is_err(), "MAC mismatch");
         assert!(KerberosTicket::from_bytes(&bytes, 0x1234, Some("JaDe!"), &key).is_err(), "another password's key");
+    }
+
+    /// A key comes out the same from the cache as made afresh, and differs by password and by
+    /// `pid % 1024` only.
+    #[test]
+    fn derived_keys_are_kept_and_the_same() {
+        let made = KerberosTicket::derive_key_uncached(65000 + 7, "UbiDummyPwd");
+        assert_eq!(KerberosTicket::derive_key(7, None), made);
+        assert_eq!(KerberosTicket::derive_key(7, None), made, "from the cache");
+        assert_eq!(KerberosTicket::derive_key(7 + 1024, None), made, "the same pid % 1024");
+        assert_ne!(KerberosTicket::derive_key(7, Some("JaDe!")), made);
+        assert_ne!(KerberosTicket::derive_key(8, None), made);
     }
 
     #[test]

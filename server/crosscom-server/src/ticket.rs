@@ -47,6 +47,93 @@ struct TicketGranting {
     failed: Arc<FailedSignIns>,
     packs: Arc<crate::packs::Packs>,
     sessions: Arc<crate::sessions::Sessions>,
+    signed_in: SignIns,
+}
+
+/// Sign-ins that succeed, per address and per account, as (burst, then a second): each makes a
+/// ticket, and the telemetry account (whose password is public) or a player's own could
+/// otherwise be signed in as over and over. Per address, a burst for a household or a LAN party
+/// signing in together (two each: the player and the telemetry account); per account (not the
+/// shared telemetry one), a game restarted a few times in a row.
+const SIGN_INS_PER_ADDRESS: (f64, f64) = (60.0, 1.0);
+const SIGN_INS_PER_ACCOUNT: (f64, f64) = (10.0, 1.0 / 30.0);
+/// Addresses and accounts counted at once; the one counted longest ago makes room.
+const MAX_SIGN_IN_SOURCES: usize = 20_000;
+
+/// A token bucket: the tokens, and when it was last filled.
+type Bucket = (f64, Instant);
+
+#[derive(Default)]
+struct SignIns(std::sync::Mutex<SignInTables>);
+
+#[derive(Default)]
+struct SignInTables {
+    by_address: std::collections::HashMap<std::net::IpAddr, Bucket>,
+    by_account: std::collections::HashMap<u32, Bucket>,
+}
+
+/// `key`'s bucket, refilled until `now` (a new key's starts full). A full table first forgets its
+/// oldest bucket.
+fn bucket<K: std::hash::Hash + Eq + Copy>(table: &mut std::collections::HashMap<K, Bucket>, key: K, (burst, rate): (f64, f64), now: Instant) -> &mut Bucket {
+    if table.len() >= MAX_SIGN_IN_SOURCES && !table.contains_key(&key) {
+        if let Some(oldest) = table.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| *k) {
+            table.remove(&oldest);
+        }
+    }
+    let bucket = table.entry(key).or_insert((burst, now));
+    bucket.0 = (bucket.0 + now.saturating_duration_since(bucket.1).as_secs_f64() * rate).min(burst);
+    bucket.1 = bucket.1.max(now);
+    bucket
+}
+
+impl SignIns {
+    fn tables(&self) -> std::sync::MutexGuard<'_, SignInTables> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether `from` may sign in now (asked before the password is, which costs to check).
+    fn address_may(&self, from: std::net::IpAddr, now: Instant) -> bool {
+        per_address_lifted() || bucket(&mut self.tables().by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 >= 1.0
+    }
+
+    /// Counts a sign-in as `pid` from `from` that succeeded; false (and nothing counted) when the
+    /// address or the account is over its rate. The shared telemetry account is counted by
+    /// address only: every game signs in as it.
+    fn succeeded(&self, from: std::net::IpAddr, pid: u32, now: Instant) -> bool {
+        let mut tables = self.tables();
+        let tables = &mut *tables;
+        let lifted = per_address_lifted();
+        if !lifted && bucket(&mut tables.by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 < 1.0 {
+            return false;
+        }
+        if pid != TRACKING_PID {
+            let account = bucket(&mut tables.by_account, pid, SIGN_INS_PER_ACCOUNT, now);
+            if account.0 < 1.0 {
+                return false;
+            }
+            account.0 -= 1.0;
+        }
+        if !lifted {
+            bucket(&mut tables.by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 -= 1.0;
+        }
+        true
+    }
+}
+
+/// Whether the per-address limits are lifted (`FE_MAX_CONNECTIONS_PER_IP`: the load test's
+/// players all sign in from one address).
+fn per_address_lifted() -> bool {
+    quazal::prudp::many_per_ip().is_some()
+}
+
+/// Refuses a sign-in on a connection that already signed in (as anyone): one connection is one
+/// sign-in, so a connection can't make ticket after ticket, nor change who it is.
+fn not_signed_in_yet<CI>(logger: &Logger, ci: &ClientInfo<CI>) -> Result<(), Error> {
+    if let Some(pid) = ci.user_id {
+        warn!(logger, "a second sign-in on {}'s connection (signed in as {pid:#x}) refused", ci.address());
+        return Err(Error::AccessDenied);
+    }
+    Ok(())
 }
 
 /// The signed-in player. The tracking principal, which anyone can sign in as (its password is
@@ -109,6 +196,11 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             warn!(logger, "plain Login as {:?} from {} refused", request.str_user_name, ci.address());
             return Err(Error::AccessDenied);
         }
+        not_signed_in_yet(logger, ci)?;
+        if !self.signed_in.succeeded(ci.address().ip(), TRACKING_PID, Instant::now()) {
+            warn!(logger, "Login as {TRACKING_NAME} from {} refused: too many sign-ins from there", ci.address());
+            return Err(Error::AccessDenied);
+        }
         ci.user_id = Some(TRACKING_PID);
         Ok(LoginResponse {
             return_value: QResult::Ok,
@@ -128,6 +220,11 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<LoginExResponse, Error> {
+        not_signed_in_yet(logger, ci)?;
+        if !self.signed_in.address_may(ci.address().ip(), Instant::now()) {
+            warn!(logger, "sign-in from {} refused: too many sign-ins from there", ci.address());
+            return Err(Error::AccessDenied);
+        }
         let mut classes = ClassRegistry::default();
         classes.register_class::<UbiAuthenticationLoginCustomData>("UbiAuthenticationLoginCustomData");
         let data = request.o_extra_data.into_inner(&classes)?;
@@ -159,6 +256,10 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
                 return Err(Error::InternalError);
             }
         };
+        if !self.signed_in.succeeded(from, pid, Instant::now()) {
+            warn!(logger, "sign-in as {:?} from {} refused: signed in too often lately", login.user_name, ci.address());
+            return Err(Error::AccessDenied);
+        }
         // The DLC packs Cross-Com's client says the game has (see `packs`).
         let packs = crate::packs::from_online_key(&login.online_key);
         self.packs.signed_in(pid, packs);
@@ -214,6 +315,7 @@ pub fn new_protocol<CI: 'static>(
         failed,
         packs,
         sessions,
+        signed_in: SignIns::default(),
     }))
 }
 
@@ -229,6 +331,37 @@ mod tests {
         assert!(player(&ci).is_err());
         ci.user_id = Some(0x0010_0000);
         assert_eq!(player(&ci).unwrap(), 0x0010_0000);
+    }
+
+    /// Sign-ins that succeed: a burst then a rate per address, and per account (but not the
+    /// shared telemetry account, which every game signs in as).
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn successful_sign_ins_are_limited_per_address_and_account() {
+        let limits = SignIns::default();
+        let now = Instant::now();
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let player = 0x0010_0000;
+        let ok = (0..20).filter(|i| limits.succeeded(ip(&format!("192.0.2.{i}")), player, now)).count();
+        assert_eq!(ok, SIGN_INS_PER_ACCOUNT.0 as usize, "one account, from anywhere");
+        assert!(limits.succeeded(ip("192.0.2.99"), player, now + Duration::from_secs(31)), "one more after a while");
+        let ok = (0..100).filter(|_| limits.succeeded(ip("198.51.100.1"), TRACKING_PID, now)).count();
+        assert_eq!(ok, SIGN_INS_PER_ADDRESS.0 as usize, "the telemetry account: per address only");
+        assert!(!limits.address_may(ip("198.51.100.1"), now));
+        assert!(limits.address_may(ip("198.51.100.2"), now));
+        for _ in 0..SIGN_INS_PER_ADDRESS.0 as usize {
+            assert!(limits.succeeded(ip("2001:db8::1"), TRACKING_PID, now));
+        }
+        assert!(!limits.address_may(ip("2001:db8::2"), now), "IPv6 counts by its /64");
+    }
+
+    #[test]
+    fn a_connection_signs_in_once() {
+        let logger = Logger::root(slog::Discard, slog::o!());
+        let mut ci = ClientInfo::<()>::new("192.0.2.1:3074".parse().unwrap());
+        assert!(not_signed_in_yet(&logger, &ci).is_ok());
+        ci.user_id = Some(TRACKING_PID);
+        assert!(not_signed_in_yet(&logger, &ci).is_err());
     }
 
     #[test]
