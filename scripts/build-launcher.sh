@@ -2,15 +2,16 @@
 # Builds the launcher for Windows -> dist/crosscom-launcher.exe, the one file players need: the
 # client DLLs first (32-bit, as the game), then the launcher (launcher-slint) with them built in.
 # Everything in the build image (IMAGE, default fes-build:local); TARGET is where the build
-# volume's outputs go inside it (default /target).
+# volume's outputs go inside it (default /target). The build gets the source read-only, without
+# .git, and the exe is copied out afterwards (scripts/build-container.sh).
 #
 #   scripts/build-launcher.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. scripts/build-container.sh
 image=${IMAGE:-fes-build:local}
 target=${TARGET:-/target}
-mkdir -p dist
-docker run --rm -v "$PWD":/src -w /src -v fe-cargo-registry:/usr/local/cargo/registry \
+docker run --rm "${CONFINED[@]}" "${SOURCE_MOUNTS[@]}" -w /src -v fe-cargo-registry:/usr/local/cargo/registry \
   -v fe-xwin-cache:/root/.cache/cargo-xwin -v ccb-target:/target \
   -e XWIN_ACCEPT_LICENSE=1 -e XWIN_ARCH=x86,x86_64 -e T="$target" "$image" sh -euc '
   # The client DLLs the launcher carries.
@@ -23,6 +24,6 @@ docker run --rm -v "$PWD":/src -w /src -v fe-cargo-registry:/usr/local/cargo/reg
   rustup target add x86_64-pc-windows-msvc >/dev/null 2>&1
   CARGO_TARGET_DIR=$T/launcher-slint CROSSCOM_CLIENT_DIR=$T/client \
     cargo xwin build -q --release --features embed-dlls --target x86_64-pc-windows-msvc
-  cp $T/launcher-slint/x86_64-pc-windows-msvc/release/crosscom-launcher.exe /src/dist/
 '
+copy_out "$image" "$target/launcher-slint/x86_64-pc-windows-msvc/release/crosscom-launcher.exe" dist
 ls -la dist/crosscom-launcher.exe

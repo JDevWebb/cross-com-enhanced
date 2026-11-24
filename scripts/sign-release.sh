@@ -9,9 +9,9 @@
 #   - the tag's commit, which must be on main on GitHub;
 #   - every download against SHA256SUMS (their hashes), and that SHA256SUMS lists exactly them;
 #   - each download's build provenance (gh attestation verify: built by this repository's release
-#     workflow, from this tag), when gh can.
+#     workflow, .github/workflows/release.yml, from this tag). A gh too old to check that stops it.
 #
-# The key never meets the build: OpenSSL signs, in the build image, in a container with no
+# The key never meets the build: OpenSSL signs, in SIGN_IMAGE (below), in a container with no
 # network, a read-only filesystem, the key mounted read-only and nothing else but a copy of what
 # it signs. What's signed is a purpose line, the version and the file (scripts/verify-release.sh
 # says exactly), so a signature can't be reused for another version. The signature is then
@@ -34,7 +34,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 KEY=${RELEASE_KEY:-$HOME/.config/cross-com-release/release.key}
 REPO=${REPO:-JDevWebb/cross-com-enhanced}
-IMAGE=${IMAGE:-fes-build:local}
+WORKFLOW="$REPO/.github/workflows/release.yml"
+# What OpenSSL runs in with the key: Docker's official buildpack-deps image (Debian bookworm, its
+# OpenSSL 3 and coreutils), pinned by digest, so it's exactly this image whatever any tag says
+# later. Not the build image (fes-build:local): that's a mutable local tag, made and used for
+# cargo builds of third-party code. Update the digest by hand
+# (docker buildx imagetools inspect buildpack-deps:bookworm-curl).
+SIGN_IMAGE=buildpack-deps:bookworm-curl@sha256:47829a8a72a39ce95fd43d0676572a3e6b7488caa2d6cadae9fe90b0ff77e755
 die() { echo "error: $*" >&2; exit 1; }
 ask() { printf '%s [y/N] ' "$1"; read -r a; [ "$a" = y ] || [ "$a" = Y ]; }
 
@@ -82,7 +88,12 @@ pem=$(carried_key)
 # The key players read in the docs is the same one.
 grep -qF -- "$(printf '%s\n' "$pem" | sed -n 2p)" docs/releasing.md ||
   die "docs/releasing.md doesn't give the release key verify-release.sh carries; not signing"
-docker image inspect "$IMAGE" >/dev/null 2>&1 || die "no $IMAGE image here (the build image)"
+# gh checks each download's build provenance below; one too old for that can't vouch for them.
+gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref' && gh attestation verify --help | grep -q -- '--signer-workflow' ||
+  die "this gh can't check build provenance (gh attestation verify --source-ref --signer-workflow); update it"
+# By digest, so Docker checks what it fetches.
+docker image inspect "$SIGN_IMAGE" >/dev/null 2>&1 || docker pull -q "$SIGN_IMAGE" >/dev/null ||
+  die "couldn't fetch $SIGN_IMAGE"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -113,23 +124,20 @@ listed=$(cut -c67- "$sums" | LC_ALL=C sort)
 [ -z "$(printf '%s\n' "$listed" | uniq -d)" ] || die "SHA256SUMS lists a file twice; not signing it"
 present=$(cd "$work/release" && find . -mindepth 1 -maxdepth 1 ! -name SHA256SUMS -exec basename {} \; | LC_ALL=C sort)
 [ "$listed" = "$present" ] || die "SHA256SUMS doesn't list exactly the release's downloads; not signing it"
-# Every download against SHA256SUMS before vouching for it, with GNU sha256sum (the build image),
-# which refuses what it can't read.
-docker run --rm --network none -v "$work/release":/release:ro -w /release "$IMAGE" sha256sum --strict -c SHA256SUMS
+# Every download against SHA256SUMS before vouching for it, with GNU sha256sum (SIGN_IMAGE), which
+# refuses what it can't read.
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+  -v "$work/release":/release:ro -w /release "$SIGN_IMAGE" sha256sum --strict -c SHA256SUMS
 echo
 echo "SHA256SUMS (compare with the release workflow's \"Collect and checksum\" step):"
 cat "$sums"
 echo
-if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
-  for f in "$work/release"/*; do
-    [ "$(basename "$f")" = SHA256SUMS ] && continue
-    gh attestation verify "$f" --repo "$REPO" --source-ref "refs/tags/$TAG" >/dev/null ||
-      die "$(basename "$f") has no build provenance from $REPO's workflow at $TAG"
-  done
-  echo "Every download's build provenance checks out (this repository's workflow, at $TAG)."
-else
-  echo "This gh can't check build provenance (gh attestation verify --source-ref); skipped."
-fi
+for f in "$work/release"/*; do
+  [ "$(basename "$f")" = SHA256SUMS ] && continue
+  gh attestation verify "$f" --repo "$REPO" --source-ref "refs/tags/$TAG" --signer-workflow "$WORKFLOW" >/dev/null ||
+    die "$(basename "$f") has no build provenance from $WORKFLOW at $TAG"
+done
+echo "Every download's build provenance checks out (this repository's release workflow, at $TAG)."
 
 # The server's image, by digest, built by this repository's workflow from this tag.
 owner=$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')
@@ -139,17 +147,9 @@ digest=$(docker buildx imagetools inspect "$image:$VERSION-unsigned" --format '{
 if [ -z "$digest" ]; then
   ask "$image:$VERSION-unsigned isn't there. Sign the release without its server image?" || { echo "Not signed."; exit 1; }
 else
-  if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
-    gh attestation verify "oci://$image@$digest" --repo "$REPO" --source-ref "refs/tags/$TAG" >/dev/null ||
-      die "$image@$digest has no build provenance from $REPO's workflow at $TAG; not signing it"
-    echo "The server image $image@$digest: built by this repository's workflow, at $TAG."
-  else
-    # Without gh's check, its revision label, exactly (the workflow sets it to the commit).
-    revision=$(docker buildx imagetools inspect "$image@$digest" --format '{{json .Image}}' 2>/dev/null |
-      grep -o '"org.opencontainers.image.revision": *"[0-9a-f]\{40\}"' | head -1 | cut -d'"' -f4 || true)
-    [ "$revision" = "$commit" ] || die "$image@$digest says it was built from ${revision:-no commit}, not $commit; not signing it"
-    echo "The server image $image@$digest: labelled with $commit (this gh can't check its provenance)."
-  fi
+  gh attestation verify "oci://$image@$digest" --repo "$REPO" --source-ref "refs/tags/$TAG" --signer-workflow "$WORKFLOW" >/dev/null ||
+    die "$image@$digest has no build provenance from $WORKFLOW at $TAG; not signing it"
+  echo "The server image $image@$digest: built by this repository's release workflow, at $TAG."
   printf '%s@%s\n' "$image" "$digest" >"$work/sign/IMAGE"
 fi
 ask "Sign $TAG (commit $commit)?" || { echo "Not signed."; exit 1; }
@@ -159,7 +159,7 @@ ask "Sign $TAG (commit $commit)?" || { echo "Not signed."; exit 1; }
 cp "$sums" "$work/sign/SHA256SUMS"
 # shellcheck disable=SC2016
 docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  --user "$(id -u):$(id -g)" -e VERSION="$VERSION" -v "$KEY":/key:ro -v "$work/sign":/release "$IMAGE" sh -euc '
+  --user "$(id -u):$(id -g)" -e VERSION="$VERSION" -v "$KEY":/key:ro -v "$work/sign":/release "$SIGN_IMAGE" sh -euc '
     sign() { # PURPOSE FILE
       { printf "%s\n%s\n" "$1" "$VERSION"; cat "/release/$2"; } > /tmp/signed
       openssl pkeyutl -sign -inkey /key -rawin -in /tmp/signed -out /tmp/signature

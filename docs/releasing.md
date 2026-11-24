@@ -15,25 +15,51 @@ Every release has, next to its files:
 | `IMAGE`, `IMAGE.sig` | The server's Docker image, by digest, and the release key's signature of it |
 | `THIRD-PARTY-NOTICES.txt` | The libraries the files are built with, and their licences |
 
-**On Windows**, compare the file's hash with its line in `SHA256SUMS`:
+**The launcher checks its own updates:** when it updates itself, it refuses a release unless
+`SHA256SUMS.sig` is the release key's signature for that version, and the new exe unless it
+matches `SHA256SUMS` ([How the launcher updates itself](#how-the-launcher-updates-itself)). The
+checks below are for the first download, and for the server.
 
-```powershell
-Get-FileHash .\crosscom-launcher.exe
-```
+**Check the signature, on every system.** A matching hash alone proves nothing: `SHA256SUMS`
+comes from the same release page as the files, so whoever could replace a file could replace its
+line too. Comparing hashes (`Get-FileHash` in PowerShell, `sha256sum`) only shows a download
+wasn't damaged on the way. The signature is what shows the release key signed this release.
 
-**With OpenSSL 3** (Linux, macOS, or Git Bash on Windows), in a folder with the downloads and
-`SHA256SUMS` and `SHA256SUMS.sig`, check the signature and every file at once with
-[`scripts/verify-release.sh`](../scripts/verify-release.sh), which carries the release key:
+[`scripts/verify-release.sh`](../scripts/verify-release.sh) carries the release key, checks
+`SHA256SUMS.sig`, then every file you have against `SHA256SUMS`, and prints the key's
+fingerprint. It needs bash and OpenSSL 3:
+- **Windows:** use **Git Bash**, which comes with [Git for Windows](https://git-scm.com/download/win)
+  (bash, `sha256sum` and OpenSSL 3, nothing else to install).
+- **Linux and macOS:** a terminal; macOS's own `openssl` is LibreSSL, so install OpenSSL 3
+  (`brew install openssl@3`) and put it first on your `PATH`.
 
-```sh
-scripts/verify-release.sh 0.1.0
-```
+1. Put the downloads, `SHA256SUMS` and `SHA256SUMS.sig` in one folder.
+2. Download `verify-release.sh` from the release's tag (not from `main`, and not a copy someone
+   sent you) into the same folder:
+   `https://raw.githubusercontent.com/JDevWebb/cross-com-enhanced/v0.1.0/scripts/verify-release.sh`
+   (with the release's version in place of `0.1.0`). In Git Bash:
+   ```sh
+   curl -fsSLO https://raw.githubusercontent.com/JDevWebb/cross-com-enhanced/v0.1.0/scripts/verify-release.sh
+   ```
+3. Run it there, with the version:
+   ```sh
+   bash verify-release.sh 0.1.0
+   ```
+   It must end with `verify-release: N file(s) of 0.1.0 check out.`; anything else, don't use
+   the files.
+4. Compare the fingerprint it prints with the one the maintainer publishes **outside this
+   repository**, on [their GitHub profile](https://github.com/JDevWebb), and with
+   [the one below](#the-release-key). The script and the key come from the same repository as the
+   release; the fingerprint published elsewhere is what shows they weren't swapped together.
 
 **Build provenance:** with the [GitHub CLI](https://cli.github.com), this shows a file was built
-by this repository's release workflow, from the release's tag:
+by this repository's release workflow, from the release's tag (put the release's version in both
+places):
 
 ```sh
-gh attestation verify crosscom-launcher.exe --repo JDevWebb/cross-com-enhanced
+gh attestation verify crosscom-launcher.exe --repo JDevWebb/cross-com-enhanced \
+  --source-ref refs/tags/v0.1.0 \
+  --signer-workflow JDevWebb/cross-com-enhanced/.github/workflows/release.yml
 ```
 
 **VirusTotal:** each release's notes link every file's report. The files aren't code-signed yet,
@@ -45,6 +71,18 @@ see [Antivirus warnings](../README.md#antivirus-warnings).
 `ghcr.io/jdevwebb/crosscom-server:<version>` is the server's image for a release. `IMAGE` names it
 by digest, and `verify-release.sh` checks `IMAGE.sig`; pull it by that digest to get exactly the
 image that was signed. [hosting.md](hosting.md) builds it from source instead.
+
+**Never deploy an image tagged `:<version>-unsigned`.** The release workflow pushes each build
+under that tag before anyone has checked or signed it; only the digest in a signed `IMAGE` (and
+the `:<version>` and `:latest` tags `sign-release.sh` gives it) is a release.
+
+Its build provenance, like a file's:
+
+```sh
+gh attestation verify oci://ghcr.io/jdevwebb/crosscom-server@sha256:<digest from IMAGE> \
+  --repo JDevWebb/cross-com-enhanced --source-ref refs/tags/v0.1.0 \
+  --signer-workflow JDevWebb/cross-com-enhanced/.github/workflows/release.yml
+```
 
 ### The release key
 
@@ -60,6 +98,10 @@ MCowBQYDK2VwAyEAz8ux0mceIUIneqPhVCDoQaKcSWPIiUwa//3bdhjkYW4=
 
 SHA-256 fingerprint of the key (DER): `771ca1615e3caea5f91eb62ee01ad5b6eeaeee30460fd4c85aba4778ec7315c2`
 <!-- /release-key -->
+
+The same fingerprint is published outside this repository, on the maintainer's
+[GitHub profile](https://github.com/JDevWebb). If the two ever differ, don't trust either: report
+it ([SECURITY.md](../SECURITY.md)).
 
 What it signs, for checking by hand: a file of the purpose line `cross-com/release/v1` (or
 `cross-com/image/v1` for `IMAGE`), a newline, the version (`0.1.0`), a newline, then the signed
@@ -109,23 +151,30 @@ By hand, the same steps are:
    ```
 
 The release workflow (`.github/workflows/release.yml`):
-- checks the tag matches `release.toml`;
+- checks the tag matches `release.toml`, and that the tag's commit is on `main` (a tag anywhere
+  else builds nothing);
 - builds the client DLLs and the launcher with them inside on a Windows runner, the server on
   Linux, and `THIRD-PARTY-NOTICES.txt` (`scripts/notices.sh`, with cargo-about and `about.toml`);
 - writes `SHA256SUMS` and attests each file's build provenance;
 - scans the files with VirusTotal (`scripts/virustotal.sh`; needs the `VT_API_KEY` secret, a
   free VirusTotal account's key: without it, the notes link each file's report by its hash);
 - makes the GitHub release as a draft, with the notes;
-- pushes the server image to `ghcr.io`, tagged `:<version>-unsigned` only.
+- pushes the server image to `ghcr.io`, tagged `:<version>-unsigned` only. **That tag is never
+  to be deployed:** it's the unchecked build, waiting for `sign-release.sh`.
 
 `sign-release.sh`:
 - checks that the tag's commit is on `main`, every download against `SHA256SUMS`, that
-  `SHA256SUMS` lists exactly the downloads, and each download's build provenance (when gh can),
-  and prints the commit and hashes to compare with the workflow run;
+  `SHA256SUMS` lists exactly the downloads, and each download's build provenance
+  (`gh attestation verify --source-ref refs/tags/<tag> --signer-workflow .../release.yml`; it
+  stops if gh is too old for that), and prints the commit and hashes to compare with the
+  workflow run;
 - checks the `-unsigned` server image was built by the workflow from the tag, and writes its
   digest to `IMAGE`;
 - signs the version and `SHA256SUMS` (and `IMAGE`) with OpenSSL, in a container with no network,
-  a read-only filesystem and the key mounted read-only;
+  a read-only filesystem and the key mounted read-only. That container runs Docker's official
+  `buildpack-deps:bookworm-curl` image, pinned by digest in the script (Debian's OpenSSL 3), not
+  the build image: `fes-build:local` is a local tag anyone with Docker here can point elsewhere,
+  and it runs third-party build scripts;
 - checks the signatures with `verify-release.sh`, as everyone else checks them, uploads them and
   publishes the draft;
 - tags the server image `:<version>` (and `:latest` for a release). That needs gh's token to have
@@ -136,8 +185,8 @@ A tag with a suffix (`v0.2.0-rc.1`) makes a pre-release, which isn't followed by
 
 ### The first time
 
-1. Make the release key, once, on the machine you'll release from (it needs Docker and the build
-   image, `fes-build:local`), and back it up somewhere safe and offline:
+1. Make the release key, once, on the machine you'll release from (it needs OpenSSL 3), and back
+   it up somewhere safe and offline:
    ```sh
    scripts/sign-release.sh --keygen
    ```
@@ -146,11 +195,30 @@ A tag with a suffix (`v0.2.0-rc.1`) makes a pre-release, which isn't followed by
    from `verify-release.sh` (`launcher/build.rs`) and checks its own updates with it, so commit
    the key **before the first release is tagged**: a launcher built without it never updates
    itself, and its players have to fetch the next release by hand.
-2. On GitHub, in the repository's settings: add the `VT_API_KEY` secret (Secrets and variables ›
-   Actions), turn on private vulnerability reporting (Security), and let Actions make releases
-   and packages (Actions › General › Workflow permissions: read and write).
-3. Sign the GitHub CLI in with the scopes the scripts need:
-   `gh auth login` then `gh auth refresh -s write:packages`.
+2. Publish the key's fingerprint (the one above, which `--keygen` prints) somewhere this
+   repository doesn't control, so a player can tell a swapped key from the real one: your GitHub
+   profile README (the `JDevWebb/JDevWebb` repository), and your website if you have one. The
+   checking steps above point players there. Update it only if the key ever changes, and say why.
+3. On GitHub, in the repository's settings:
+   - **Secrets and variables › Actions:** add the `VT_API_KEY` secret.
+   - **Security:** turn on private vulnerability reporting.
+   - **Actions › General › Workflow permissions:** *Read repository contents and packages
+     permissions* (read-only), and leave *Allow GitHub Actions to create and approve pull
+     requests* off. Every workflow here declares its own `permissions:` (the release jobs ask
+     for `contents: write`, `packages: write`, `id-token: write` and `attestations: write`
+     themselves), so nothing needs more by default.
+   - **Actions › General › Actions permissions:** turn on *Require actions to be pinned to a
+     full-length commit SHA* (every action here is pinned already).
+   - **Releases:** turn on *immutable releases*, so a published release's files and tag can't be
+     changed or replaced afterwards. (Drafts stay editable, which `sign-release.sh` needs.)
+   - **Rules › Rulesets:** a tag ruleset, active, targeting `v*`: *Restrict creations* (with
+     yourself as the only bypass), *Restrict updates*, *Restrict deletions* and *Block force
+     pushes*, so only you can make a release tag and none can be moved once it's there.
+   - **Rules › Rulesets:** a branch ruleset for `main` (no deletions, no force pushes), since a
+     tag only builds when its commit is on `main`.
+4. Sign the GitHub CLI in with the scopes the scripts need:
+   `gh auth login` then `gh auth refresh -s write:packages`. `sign-release.sh` needs a gh new
+   enough for `gh attestation verify --source-ref --signer-workflow`.
 
 ## CI
 

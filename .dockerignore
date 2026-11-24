@@ -1,5 +1,34 @@
+# The server image's build context is the repository's root: only what the build needs goes in,
+# and nothing local or secret.
+
+# Build output
+target
 target*
 dist
-.git
 **/*.db
+**/*.db-*
+**/*.sqlite
 **/*.log
+**/*.log.*
+
+# Git, editors, and the tools' own folders
+.git
+.github
+.claude
+.codeman-uploads
+.idea
+.vscode
+**/.DS_Store
+**/*~
+**/*.swp
+
+# Settings and secrets
+.env
+**/.env
+docker/.env
+**/service*.toml
+crosscom-server.toml
+
+# Notes kept beside the repository, not in it
+CLAUDE.md
+release_blockers.md
