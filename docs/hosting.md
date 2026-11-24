@@ -427,8 +427,11 @@ touched.
 
 **When a game announces the wrong adapter.** A PC with a VPN, Hyper-V or VirtualBox may have its
 game announce that adapter's address on its network instead of the one that reaches the server.
-The client's router report names the right one: the server then puts it first for players at the
-same house, and logs `... announced another adapter's address than the one reaching the server`.
+The client's router report names the right one, and carries the player's game token as proof it's
+theirs: the server then puts it first for players at the same house, and logs `... announced
+another adapter's address than the one reaching the server`. A report without a token (an older
+client) is kept only when it names the socket the game announced, so someone else behind the
+same public address can't point the player's joins elsewhere.
 In testing, the game picked its peer-to-peer address well: on a PC whose VPN adapter (Tailscale)
 had a lower interface metric than its Wi-Fi, it announced the Wi-Fi address for peer-to-peer and
 listed the VPN's only for its connection to the server, which isn't given to other players.

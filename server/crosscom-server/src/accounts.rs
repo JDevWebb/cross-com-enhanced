@@ -149,6 +149,12 @@ impl Accounts {
         self.verify_password(name, secret)
     }
 
+    /// The account named `name`'s PID, if `token` is one of its game tokens: proof that a report
+    /// (`reach`) is the player's own.
+    pub fn token_owner(&self, name: &str, token: &str) -> Result<Option<u32>, Error> {
+        self.verify_token(name, token)
+    }
+
     /// The account's PID, if `token` is one of its game tokens.
     fn verify_token(&self, name: &str, token: &str) -> Result<Option<u32>, Error> {
         if !is_token(token) {

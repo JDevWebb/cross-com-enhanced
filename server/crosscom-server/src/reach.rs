@@ -50,6 +50,10 @@ struct ForwardRequest {
     /// Whose report it is (older clients don't say).
     #[serde(default)]
     account: String,
+    /// The game token the player's game signs in with (see `accounts`): proof the report is the
+    /// player's own, from a client that has one.
+    #[serde(default)]
+    token: Option<String>,
     local: String,
     forward: Option<Forward>,
     #[serde(default)]
@@ -165,9 +169,20 @@ impl Reach {
         // announcing it is the player's own word for it. (A game that announced another
         // adapter's address, a VPN's, gets the port to forward but nothing kept: its housemates
         // reach it as the game announced.)
-        let found = found.map(|((pid, port), announced)| ((pid, port), announced && self.announces(pid, local)));
+        //
+        // A report carrying the player's game token is the player's own whatever socket it names:
+        // kept, so a game that announced another adapter's address still gets the right one put
+        // first for its housemates (`Sessions::unannounced_local`).
+        let found = found.map(|((pid, port), announced)| {
+            let own = announced && self.announces(pid, local);
+            let proven = request
+                .token
+                .as_deref()
+                .is_some_and(|t| self.accounts.token_owner(request.account.trim(), t).ok().flatten() == Some(pid));
+            ((pid, port), own, own || proven)
+        });
         let mut new_forward = false;
-        if let Some(((pid, _), true)) = found {
+        if let Some(((pid, _), _, true)) = found {
             let before = self.sessions.reachability(pid).and_then(|r| r.forward.map(|(port, _)| port));
             new_forward = forward.as_ref().is_some_and(|(port, _)| before != Some(*port));
             self.sessions.set_reachability(
@@ -181,16 +196,16 @@ impl Reach {
                 },
             );
         }
-        let port = found.and_then(|((_, port), _)| port);
+        let port = found.and_then(|((_, port), _, _)| port);
         // A new forward is checked afresh once this is answered: what was found before it isn't
         // what's in front of the game now.
         let open = if new_forward {
             None
         } else {
-            found.and_then(|((pid, _), _)| crate::announce::open(pid))
+            found.and_then(|((pid, _), _, _)| crate::announce::open(pid))
         };
         let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
-        (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced, new_forward }))
+        (("200 OK", answer), found.map(|((pid, _), announced, _)| Matched { pid, announced, new_forward }))
     }
 
     /// Whether `pid`'s game announced `local` as one of its peer-to-peer sockets (a `udp` station
@@ -307,6 +322,24 @@ mod tests {
         assert_eq!(pid, matched(k, true));
         let (_, pid) = r.forward(home, br#"{"local":"192.168.1.21:2346","forward":null,"nat":"consistent"}"#);
         assert_eq!(pid, None);
+    }
+
+    /// A report carrying the player's game token is theirs, whatever socket it names (the game
+    /// announced a VPN adapter's address in its place): kept. Another account's token isn't proof.
+    #[test]
+    fn a_report_with_the_players_token_is_kept_wherever_it_points() {
+        let (r, k) = reach();
+        let home: IpAddr = "198.51.100.7".parse().unwrap();
+        let token = r.accounts.issue_token(k).unwrap();
+        let body = format!(r#"{{"account":"Kozak","token":"{token}","local":"10.8.0.5:2346","forward":null,"nat":"consistent"}}"#);
+        let (answer, pid) = r.forward(home, body.as_bytes());
+        assert_eq!((answer.0, pid), ("200 OK", matched(k, false)), "not the announced socket");
+        assert_eq!(r.sessions.reachability(k).map(|r| r.local.to_string()), Some("10.8.0.5:2346".into()), "but kept");
+        let housemate = r.accounts.pid("Housemate").unwrap().unwrap();
+        let theirs = r.accounts.issue_token(housemate).unwrap();
+        let body = format!(r#"{{"account":"Kozak","token":"{theirs}","local":"192.168.1.66:2346","forward":{{"port":40066,"how":"UPnP"}},"nat":"consistent"}}"#);
+        let _ = r.forward(home, body.as_bytes());
+        assert_eq!(r.sessions.forward_of(k), None, "another account's token proves nothing");
     }
 
     /// A report naming a socket the game didn't announce (a VPN adapter's address in the game's

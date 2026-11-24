@@ -388,7 +388,7 @@ async fn keep(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse
     .await?;
     let _ = log::set_logger(&Printed).map(|()| log::set_max_level(log::LevelFilter::Info));
     let account = name.to_owned();
-    std::thread::spawn(move || crosscom_client_net::keep::run(&host, &account));
+    std::thread::spawn(move || crosscom_client_net::keep::run(&host, &account, None));
     // Keeps the connection up meanwhile, as the game does.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < until {
@@ -429,6 +429,7 @@ async fn reach(conn: &mut Conn, pid: u32, registered: &secure::RegisterExRespons
         println!("ok   the address echo sees this PC at {seen}, the same on both ports");
         let report = |forward: Option<api::Forward>| api::ForwardReport {
             account: account.clone(),
+            token: None,
             local: local.to_string(),
             forward,
             nat: nat.as_str().into(),
