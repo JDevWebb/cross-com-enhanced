@@ -110,6 +110,15 @@ and it refuses passwords unless `X-Forwarded-Proto` says HTTPS. From any other a
 headers are ignored. If `172.31.80.0/24` is already used on the machine, change the subnet,
 Caddy's address and `CROSSCOM_TRUSTED_PROXIES` in `compose.https.yaml` together.
 
+**IPv6.** The compose network has no IPv6, so when a player reaches ports 80 or 443 over IPv6,
+Docker passes the connection on to Caddy from the network's gateway (`172.31.80.1`), and Caddy
+can only name that: every IPv6 player looks like one client, sharing its limits, and the
+launcher's connection test can't tell where to send its packet (the server refuses it rather
+than send it to the gateway). Either publish Caddy's ports for IPv4 only (`"0.0.0.0:80:80/tcp"`,
+`"0.0.0.0:443:443/tcp"`, `"0.0.0.0:443:443/udp"` in `compose.https.yaml`; give the domain no
+`AAAA` record), or give the `https` network IPv6 (`enable_ipv6: true` and an IPv6 subnet under
+its `ipam`), so Caddy sees players' own addresses.
+
 Caddy runs from the official image, pinned by digest, on a read-only filesystem with only the
 capability to bind ports 80 and 443. Its certificates live in the `caddy_data` volume; keep it,
 or Let's Encrypt's rate limits may bite after a few rebuilds.
@@ -204,10 +213,17 @@ Each player needs an account: a name (letters, digits, `-`, `_`, `.`; up to 32) 
 
 ```sh
 docker compose -f docker/compose.yaml exec server /app/crosscom-server \
-  --config /srv/crosscom/crosscom-server.toml add-account NAME PASSWORD
+  --config /srv/crosscom/crosscom-server.toml add-account NAME
 ```
 
-(Without Docker: `crosscom-server --config crosscom-server.toml add-account NAME PASSWORD`.)
+It asks for the password and reads one line (shown as you type it). Or pipe it in, with `-T` so
+Docker passes stdin on: `docker compose -f docker/compose.yaml exec -T server /app/crosscom-server
+--config /srv/crosscom/crosscom-server.toml add-account NAME < password.txt` (`-` in the
+password's place means the same). Giving the password on the command line (`add-account NAME
+PASSWORD`) still works, but it's then in your shell's history and, while it runs, the machine's
+process list.
+
+(Without Docker: `crosscom-server --config crosscom-server.toml add-account NAME`.)
 
 **Made by players**, when sign-up is on: the launcher does it, or by hand:
 
@@ -247,6 +263,14 @@ when an address reaches another game's server (on a machine that hosts both, see
 `shows` is `null`, `"multiplayer"`, `"campaign"` or `"guerrilla"`. A player counts from their
 sign-in until their game disconnects, or a minute after it stops answering. `udp_ports` are the
 sign-in ports, which clients' connection tests ask (see [Connection records](#connection-records)).
+
+The `POST`s (`/api/login`, `/accounts`, the router reports) take JSON only, sent as
+`Content-Type: application/json` (`415` otherwise), and none from a web page: one carrying an
+`Origin` header, or a browser's `Sec-Fetch-Site` other than `same-origin` or `none`, is refused
+(`403`). Otherwise any website a player opened could have their browser post here in their
+name; a script, a bot or `curl` sends neither header. The HTTP side answers 64 connections at
+once, 4 from one address (behind Caddy, from one player), keeping the last 8 for the game's
+online config.
 
 `POST /api/login` with `{"name": "Kozak", "password": "their-password"}` checks an account:
 `200 {"pid": ...}` when it matches, `401 {"error": "wrong name or password"}` when it doesn't.
@@ -291,7 +315,10 @@ game's own DLL sends logs, and it doesn't hold the player's password for it (the
 where the player plays from stands in for one, so strangers can't fill your disk. Through Caddy
 it's only taken over HTTPS (`403` otherwise). On
 top of that: 20 an hour from one address (`429`), 4 MiB at most (`413`, refused from the
-`Content-Length` before the body is read), 4 at once. The same run sent twice gets the same report.
+`Content-Length` before the body is read), 4 at once in all and 2 from one account, each given 10
+seconds plus a second for every 32 KiB (a minute at most) and cut off after 10 seconds without a
+byte. Never from a web page (`403` with an `Origin` header). The same run sent twice gets the
+same report.
 
 **Where they're kept.** In `logs_dir` (`logs` beside the database: `/srv/crosscom/logs` in the
 Docker volume), a folder a day: `<YYYY-MM-DD>/<report id>-<account>.log`, with a `.json` beside it
@@ -299,8 +326,9 @@ holding what the client said (account, client and launcher versions, DX11 or DX9
 version, the run's file name, the exit code), the client's address and when it came. A report ID
 is the time it came (UTC) and six random hex digits: `20261115-123456-ab12cd`; the launcher shows
 the player the last one in its Settings, so they can tell you which is theirs. Logs older than
-`logs_keep_days` (30), and the oldest past `logs_max_mb` (2048) in all, are deleted as new ones
-come. They're never served over HTTP.
+`logs_keep_days` (30) are deleted as new ones come, and past `logs_max_mb` (2048) in all, the
+oldest of whichever account takes the most space: an account sending many only pushes out its
+own. They're never served over HTTP.
 
 **Reading them:**
 

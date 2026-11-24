@@ -71,7 +71,8 @@ struct ReachRequest {
 }
 
 /// The player a router report was matched to, and whether its game announced the socket the
-/// report names (else it announced another adapter's address).
+/// report names, and so it was kept (else the game announced another adapter's address, or the
+/// report wasn't the player's own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Matched {
     pub pid: u32,
@@ -157,8 +158,16 @@ impl Reach {
                 .flatten()
                 .and_then(|pid| self.sessions.socket_of(pid, client, local).map(|(port, announced)| ((pid, port), announced)))
         };
+        // Kept only when the game announced the socket the report names. Anyone behind the same
+        // public address can name the player (housemates, a guest on the Wi-Fi), and without a
+        // password; a report naming any socket could send the player's joins to a forward of
+        // their own, or point housemates' games at another machine on the network. The game
+        // announcing it is the player's own word for it. (A game that announced another
+        // adapter's address, a VPN's, gets the port to forward but nothing kept: its housemates
+        // reach it as the game announced.)
+        let found = found.map(|((pid, port), announced)| ((pid, port), announced && self.announces(pid, local)));
         let mut new_forward = false;
-        if let Some(((pid, _), _)) = found {
+        if let Some(((pid, _), true)) = found {
             let before = self.sessions.reachability(pid).and_then(|r| r.forward.map(|(port, _)| port));
             new_forward = forward.as_ref().is_some_and(|(port, _)| before != Some(*port));
             self.sessions.set_reachability(
@@ -182,6 +191,16 @@ impl Reach {
         };
         let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
         (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced, new_forward }))
+    }
+
+    /// Whether `pid`'s game announced `local` as one of its peer-to-peer sockets (a `udp` station
+    /// URL; at sign-in it registers only its connection to the server, which says nothing).
+    fn announces(&self, pid: u32, local: SocketAddrV4) -> bool {
+        let address = local.ip().to_string();
+        self.sessions
+            .registered(pid)
+            .iter()
+            .any(|u| u.scheme == "udp" && u.address == address && u.port == local.port())
     }
 
     /// `POST /api/reach` from `client` with `body`.
@@ -290,16 +309,54 @@ mod tests {
         assert_eq!(pid, None);
     }
 
-    /// A game that announced another adapter's address (a VPN's): the report is still its
-    /// player's, and its socket on the network is the one the client found.
+    /// A report naming a socket the game didn't announce (a VPN adapter's address in the game's
+    /// place, or someone else at the same public address naming the player): answered, so the
+    /// client can forward the right port, but nothing kept.
     #[test]
-    fn a_report_naming_a_socket_the_game_didnt_announce_is_still_its_players() {
+    fn a_report_naming_a_socket_the_game_didnt_announce_isnt_kept() {
         let (r, k) = reach();
         let home: IpAddr = "198.51.100.7".parse().unwrap();
         let (answer, pid) = r.forward(home, br#"{"account":"Kozak","local":"10.8.0.5:2346","forward":null,"nat":"consistent"}"#);
         assert_eq!((answer.0, pid), ("200 OK", matched(k, false)));
         assert_eq!(json_of(&answer)["port"], 56877, "the client can forward the right port");
-        assert_eq!(r.sessions.reachability(k).unwrap().local, "10.8.0.5:2346".parse().unwrap());
+        assert_eq!(r.sessions.reachability(k), None);
+        // A housemate naming Kozak, with a forward of their own: Kozak's joins aren't sent there.
+        let (answer, pid) = r.forward(
+            home,
+            br#"{"account":"Kozak","local":"192.168.1.66:2346","forward":{"port":40066,"how":"UPnP"},"nat":"consistent"}"#,
+        );
+        assert_eq!((answer.0, pid), ("200 OK", matched(k, false)), "not a new forward: nothing to check");
+        assert_eq!(r.sessions.forward_of(k), None);
+        // Kozak's own report, naming the socket its game announced, is kept.
+        r.forward(
+            home,
+            br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
+        );
+        assert_eq!(r.sessions.forward_of(k), Some(40000));
+        let (_, pid) = r.forward(home, br#"{"account":"Kozak","local":"192.168.1.66:2346","forward":null,"nat":"symmetric"}"#);
+        assert_eq!(pid, matched(k, false));
+        assert_eq!(r.sessions.forward_of(k), Some(40000), "a spoofed report doesn't take it away either");
+        assert_eq!(r.sessions.reachability(k).unwrap().nat, "consistent");
+    }
+
+    /// Signed in, not yet in Multiplayer: the game has announced no peer-to-peer socket, so a
+    /// report can't be matched to one and isn't kept (the client waits for the port anyway).
+    #[test]
+    fn nothing_kept_before_the_game_announces_its_socket() {
+        let (r, _) = reach();
+        let pepper = r.accounts.add("Pepper", "hunter24").unwrap();
+        r.sessions.set_urls(
+            pepper,
+            "prudp:/address=198.51.100.8;port=2347".parse().unwrap(),
+            vec!["prudp:/address=198.51.100.8;port=2347;sid=15;type=3".parse().unwrap()],
+        );
+        let (answer, pid) = r.forward(
+            "198.51.100.8".parse().unwrap(),
+            br#"{"account":"Pepper","local":"192.168.1.30:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
+        );
+        assert_eq!((answer.0, pid), ("200 OK", matched(pepper, false)));
+        assert_eq!(json_of(&answer)["port"], serde_json::Value::Null);
+        assert_eq!(r.sessions.reachability(pepper), None);
     }
 
     #[test]

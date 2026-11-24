@@ -74,6 +74,26 @@ impl Trusted {
     pub fn trusts(&self, address: IpAddr) -> bool {
         self.0.iter().any(|n| n.contains(address))
     }
+
+    /// Whether `address` is a trusted proxy or on its network, taken as the /24 (IPv4) or /64
+    /// (IPv6) around each proxy named (or the network named, when narrower than that). When the
+    /// proxy names a client there, it's most likely not a client at all but the gateway of the
+    /// proxy's Docker network: Docker passes on a connection that came over IPv6, to a network
+    /// without IPv6, from the gateway's address. Wider networks named (`0.0.0.0/0`) say nothing
+    /// of where the proxy is, so only the addresses they contain count.
+    #[must_use]
+    pub fn beside(&self, address: IpAddr) -> bool {
+        self.0.iter().any(|n| {
+            let around = if n.address.is_ipv4() { 24 } else { 64 };
+            n.contains(address)
+                || (n.prefix >= around
+                    && Network {
+                        address: n.address,
+                        prefix: around,
+                    }
+                    .contains(address))
+        })
+    }
 }
 
 /// Who sent a request.
@@ -162,6 +182,19 @@ mod tests {
         assert!("10.0.0.0/x".parse::<Network>().is_err());
         assert!(Trusted::parse(&["172.31.80.10", "nope"]).is_err());
         assert_eq!(Trusted::parse::<&str>(&[]).unwrap(), Trusted::default());
+    }
+
+    #[test]
+    fn knows_the_proxys_own_network() {
+        let trusted = Trusted::parse(&["172.31.80.10", "fd00:1:2:3::10"]).unwrap();
+        assert!(trusted.beside(ip("172.31.80.10")), "the proxy itself");
+        assert!(trusted.beside(ip("172.31.80.1")), "the Docker network's gateway");
+        assert!(trusted.beside(ip("fd00:1:2:3::1")));
+        assert!(!trusted.beside(ip("172.31.81.1")));
+        assert!(!trusted.beside(ip("198.51.100.7")), "a player");
+        let wide = Trusted::parse(&["0.0.0.0/0"]).unwrap();
+        assert!(wide.beside(ip("198.51.100.7")), "trusted, so beside");
+        assert!(!Trusted::default().beside(ip("172.31.80.1")));
     }
 
     const PROXY: &str = "172.31.80.10";
