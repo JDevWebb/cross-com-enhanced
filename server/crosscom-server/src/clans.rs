@@ -105,8 +105,43 @@ const RATING: u8 = 0;
 const RATING_RANGE: (u32, u32) = (100, 3000);
 const LEVEL: u8 = 20;
 const MAX_LEVEL: u32 = 20;
-/// The most one change may add (a match brings a few thousand experience at most).
+/// The most one change may add (a match brings a few thousand experience at most), or raise a
+/// value by when it keeps the larger (how 3); for the counts of matches (wins and losses, and
+/// wins per mode), a few matches' worth.
 const MAX_ADDED: u32 = 100_000;
+const MAX_COUNT_ADDED: u32 = 10;
+/// The properties that count matches: 1 wins, 2 losses, 6 to 12 wins per mode.
+const COUNTS: [u8; 9] = [1, 2, 6, 7, 8, 9, 10, 11, 12];
+/// The most any other property may be (experience, mostly): a squad of 50 playing every day for
+/// years stays well within it.
+const MAX_VALUE: u32 = 1_000_000_000;
+/// The most a count of matches may be.
+const MAX_COUNT: u32 = 10_000_000;
+
+/// A squad property's new value after a member's change (`how` 0 adds `value`, 3 keeps the
+/// larger, 4 the smaller), or none for a change the game doesn't make (an unknown `how`, or an
+/// addition of more than one match brings). The game's own changes only: whatever a member
+/// sends, the rating stays within 100 to 3000, the level within 20, a count of matches grows by
+/// a few at a time, and nothing past [`MAX_COUNT`] or [`MAX_VALUE`].
+fn changed_property(id: u8, old: u32, value: u32, how: u8) -> Option<u32> {
+    let counts = COUNTS.contains(&id);
+    let step = if counts { MAX_COUNT_ADDED } else { MAX_ADDED };
+    let new = match how {
+        0 if value <= step => old.saturating_add(value),
+        3 => old.max(value),
+        4 if old == 0 => value,
+        4 => old.min(value),
+        _ => return None,
+    };
+    // Raised by at most a step at once, however it was asked.
+    let new = new.min(old.saturating_add(step));
+    Some(match id {
+        RATING => new.clamp(RATING_RANGE.0, RATING_RANGE.1),
+        LEVEL => new.min(MAX_LEVEL),
+        _ if counts => new.min(MAX_COUNT),
+        _ => new.min(MAX_VALUE),
+    })
+}
 /// The most property changes one SetProperty may carry.
 const MAX_CHANGES: u32 = 64;
 /// The most squads or players one request may ask about.
@@ -335,19 +370,8 @@ impl Store {
                 .query_row("SELECT value FROM clan_properties WHERE clan = ?1 AND prop = ?2", params![clan, id], |r| r.get(0))
                 .optional()?
                 .unwrap_or(0);
-            // The game's own changes only: additions of what one match can bring, and the
-            // larger or smaller of two values; anything else is dropped.
-            let new = match how {
-                0 if value <= MAX_ADDED => old.saturating_add(value),
-                3 => old.max(value),
-                4 if old == 0 => value,
-                4 => old.min(value),
-                _ => continue,
-            };
-            let new = match id {
-                RATING => new.clamp(RATING_RANGE.0, RATING_RANGE.1),
-                LEVEL => new.min(MAX_LEVEL),
-                _ => new,
+            let Some(new) = changed_property(id, old, value, how) else {
+                continue;
             };
             tx.execute(
                 "INSERT INTO clan_properties (clan, prop, value) VALUES (?1, ?2, ?3)
@@ -964,6 +988,23 @@ impl<CI> Protocol<CI> for Clans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whatever a member sends, a squad's properties stay within what matches could bring.
+    #[test]
+    fn squad_properties_stay_within_bounds() {
+        assert_eq!(changed_property(1, 5, 1, 0), Some(6), "a win");
+        assert_eq!(changed_property(1, 5, 50, 0), None, "50 wins at once");
+        assert_eq!(changed_property(1, 5, u32::MAX, 3), Some(5 + MAX_COUNT_ADDED), "keeping the larger, a few at a time");
+        assert_eq!(changed_property(7, 0, u32::MAX, 4), Some(MAX_COUNT_ADDED), "the smaller of nothing");
+        assert_eq!(changed_property(1, MAX_COUNT, 1, 0), Some(MAX_COUNT));
+        assert_eq!(changed_property(4, 10, 2000, 0), Some(2010), "experience");
+        assert_eq!(changed_property(4, MAX_VALUE - 1, 2000, 0), Some(MAX_VALUE));
+        assert_eq!(changed_property(RATING, 0, 1500, 3), Some(1500));
+        assert_eq!(changed_property(RATING, 1500, u32::MAX, 3), Some(RATING_RANGE.1));
+        assert_eq!(changed_property(RATING, 1500, 0, 4), Some(RATING_RANGE.0));
+        assert_eq!(changed_property(LEVEL, 3, 99, 3), Some(MAX_LEVEL));
+        assert_eq!(changed_property(1, 5, 1, 1), None, "an unknown change");
+    }
 
     #[test]
     fn a_squad_keeps_its_numbers_and_tells_its_size() {

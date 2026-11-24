@@ -41,6 +41,31 @@ const RESEND_AFTER: Duration = Duration::from_millis(500);
 const RESEND_TRIES: u32 = 4;
 /// How many handled sequence numbers are remembered per client.
 const HANDLED_MEMORY: usize = 64;
+/// The most bytes of replies kept for answering retransmissions, per connection and in all. One
+/// statistics read can be answered with 256 KB, so 64 of them could otherwise hold 16 MB for
+/// each connection. Past these, a reply's packets aren't kept (its sequence number still is, so
+/// a retransmission is recognised and not handled twice; the reply's packets are still resent
+/// until acknowledged, as every reliable packet is).
+const MAX_KEPT_REPLIES: usize = 256 * 1024;
+const MAX_KEPT_REPLIES_IN_ALL: usize = 64 * 1024 * 1024;
+/// Connections one account may hold on a service at once: one game holds three to the secure
+/// server, so this leaves room for a game restarted before its last connections expired. A
+/// newer sign-in closes the account's quietest connections past it (see
+/// [`Server::limit_connections_of`]).
+const MAX_CONNECTIONS_PER_ACCOUNT: usize = 4;
+/// How far a data packet's sequence number may be from the highest one seen on its connection,
+/// either way (a game's packets come a few out of order at most, and its retransmissions are of
+/// recent ones), and how far while someone seems to be guessing the connection's signature (see
+/// [`MISSES_HIGH`]).
+const SEQUENCE_WINDOW: u16 = 256;
+const NARROW_SEQUENCE_WINDOW: u16 = 32;
+/// Data packets from a connection's own address with a signature none of its connections has,
+/// in [`MISS_PERIOD`], that make it look like someone is guessing the signature from that
+/// address (a forged source). Only 22 bits of a signature are secret and PRUDP packets carry no
+/// MAC, so a blind forger needs about two million tries; a game sends wrong ones only after it
+/// lost its connection. Past this, it's logged and the connection's sequence window narrows.
+const MISSES_HIGH: u32 = 64;
+const MISS_PERIOD: Duration = Duration::from_secs(60);
 /// Most unacknowledged packets kept per client.
 const UNACKED_MAX: usize = 256;
 /// Fragments of one message a client may send, and their total size.
@@ -127,6 +152,21 @@ pub fn set_ticket_address_proven(check: fn(u32, std::net::IpAddr) -> bool) {
     let _ = TICKET_ADDRESS_PROVEN.set(check);
 }
 
+/// The key an address is counted under for the per-address limits: an IPv4 address as itself,
+/// an IPv6 address by its /64 (which one subscriber usually has all of, so counting each address
+/// alone would give one connection billions of them).
+#[must_use]
+pub fn address_key(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip.to_canonical() {
+        ip @ std::net::IpAddr::V4(_) => ip,
+        std::net::IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            segments[4..].fill(0);
+            std::net::IpAddr::from(segments)
+        }
+    }
+}
+
 pub(crate) fn address_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     match ip.to_canonical() {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
@@ -153,7 +193,10 @@ enum Assembled {
 /// waits for them, and so does one whose message lost a fragment in the middle (that used to
 /// be put together without it, and a stats request of a dozen fragments failed). Fragments
 /// are matched by sequence number, so leftovers of an earlier message never get mixed in.
-fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
+///
+/// `trusted`: the connection signed in as someone (not a shared account, whose password is
+/// public): only then may it keep a large message in fragments.
+fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket, trusted: bool) -> Assembled {
     let seq = packet.sequence;
     // Leftovers far from it belong to messages that never completed (packets that came
     // early are a little ahead).
@@ -164,12 +207,12 @@ fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
     ci.packet_fragments.retain(|s, _| near(s));
     ci.held_last_fragments.retain(|s, _| near(s));
     // Before signing in, little is kept: no stranger can fill the memory with fragments.
-    let (max_held, max_bytes) = if ci.user_id.is_some() {
+    let (max_held, max_bytes) = if trusted {
         (MAX_HELD_MESSAGES, MAX_REASSEMBLED)
     } else {
         (1, MAX_ANONYMOUS_REASSEMBLED)
     };
-    if ci.user_id.is_none() {
+    if !trusted {
         let kept: usize = ci.packet_fragments.values().map(|(_, p)| p.len()).sum::<usize>() + ci.held_last_fragments.values().map(|p| p.payload.len()).sum::<usize>();
         if kept + packet.payload.len() > max_bytes {
             ci.packet_fragments.clear();
@@ -220,12 +263,85 @@ fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
     Assembled::Whole(packet, payload, usize::from(n) + 1)
 }
 
-/// Records that a client's packet with this sequence number is being handled.
-fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16) {
+/// Records that a client's packet with this sequence number is being handled. `kept` is the
+/// registry's count of reply bytes kept in all, less those of the entry that makes room.
+fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16, kept: &mut usize) {
     if ci.handled.len() >= HANDLED_MEMORY {
-        ci.handled.pop_front();
+        if let Some((_, replies)) = ci.handled.pop_front() {
+            let bytes = reply_bytes(&replies);
+            ci.handled_bytes -= bytes;
+            *kept = kept.saturating_sub(bytes);
+        }
     }
     ci.handled.push_back((sequence, vec![]));
+}
+
+fn reply_bytes(replies: &[Vec<u8>]) -> usize {
+    replies.iter().map(Vec::len).sum()
+}
+
+/// Keeps the packets sent in reply to the client's packet `sequence` (already remembered as
+/// handled), for answering a retransmission of it, within [`MAX_KEPT_REPLIES`] for the
+/// connection (its oldest replies make room) and [`MAX_KEPT_REPLIES_IN_ALL`] (`kept`, the
+/// registry's count). A reply that doesn't fit isn't kept; a retransmission of its request is
+/// still recognised as one and not handled again.
+fn keep_replies<T>(ci: &mut ClientInfo<T>, sequence: u16, replies: Vec<Vec<u8>>, kept: &mut usize) {
+    let bytes = reply_bytes(&replies);
+    if bytes > MAX_KEPT_REPLIES {
+        return;
+    }
+    let mut oldest = 0;
+    while ci.handled_bytes + bytes > MAX_KEPT_REPLIES && oldest < ci.handled.len() {
+        let dropped = reply_bytes(&std::mem::take(&mut ci.handled[oldest].1));
+        ci.handled_bytes -= dropped;
+        *kept = kept.saturating_sub(dropped);
+        oldest += 1;
+    }
+    if ci.handled_bytes + bytes > MAX_KEPT_REPLIES || *kept + bytes > MAX_KEPT_REPLIES_IN_ALL {
+        return;
+    }
+    if let Some(entry) = ci.handled.iter_mut().find(|(seq, _)| *seq == sequence) {
+        entry.1 = replies;
+        ci.handled_bytes += bytes;
+        *kept += bytes;
+    }
+}
+
+/// Whether a data packet with this sequence number may be from the connection's own client: not
+/// far from the highest one seen on it (narrower while its signature seems to be guessed, see
+/// [`MISSES_HIGH`]). A blind forger who guessed the signature must guess this too. The first
+/// data packet sets where it starts.
+fn sequence_expected<T>(ci: &ClientInfo<T>, sequence: u16) -> bool {
+    let Some(highest) = ci.highest_sequence else {
+        return true;
+    };
+    let window = if under_guessing(ci) { NARROW_SEQUENCE_WINDOW } else { SEQUENCE_WINDOW };
+    let ahead = sequence.wrapping_sub(highest);
+    ahead <= window || ahead >= window.wrapping_neg()
+}
+
+/// Notes a data packet the connection's client sent, for [`sequence_expected`].
+fn note_sequence<T>(ci: &mut ClientInfo<T>, sequence: u16) {
+    let ahead = ci.highest_sequence.map_or(1, |highest| sequence.wrapping_sub(highest));
+    if ahead != 0 && ahead < u16::MAX / 2 {
+        ci.highest_sequence = Some(sequence);
+    }
+}
+
+/// Whether the connection's address sent [`MISSES_HIGH`] or more data packets with a wrong
+/// signature in the last [`MISS_PERIOD`].
+fn under_guessing<T>(ci: &ClientInfo<T>) -> bool {
+    ci.misses.1 >= MISSES_HIGH && ci.misses.0.elapsed() < MISS_PERIOD
+}
+
+/// Counts a data packet from the connection's address with a signature that isn't its own;
+/// true when that makes it [`MISSES_HIGH`] in the period (to be logged once).
+fn note_miss<T>(ci: &mut ClientInfo<T>, now: Instant) -> bool {
+    if now.duration_since(ci.misses.0) >= MISS_PERIOD {
+        ci.misses = (now, 0);
+    }
+    ci.misses.1 = ci.misses.1.saturating_add(1);
+    ci.misses.1 == MISSES_HIGH
 }
 
 /// The secret behind handshake signatures (SYN cookies), new at every start.
@@ -325,35 +441,59 @@ impl Bucket {
 pub struct ClientRegistry<T> {
     clients: HashMap<u32, RefCell<ClientInfo<T>>>,
     connection_id_session_ids: HashMap<ConnectionID, Signature>,
-    /// Connections per address, kept with `clients` (counting them took a scan of every
-    /// connection for each SYN).
+    /// Connections per address (by [`address_key`]), kept with `clients` (counting them took a
+    /// scan of every connection for each SYN).
     per_ip: HashMap<std::net::IpAddr, usize>,
     /// Connections that haven't signed in, in all and per address (see
     /// [`ClientInfo::counted_anonymous`]).
     anonymous: usize,
     anonymous_per_ip: HashMap<std::net::IpAddr, usize>,
+    /// The signatures of the connections from each address and port, for counting packets
+    /// from there with a signature that isn't one of them ([`Self::missed_signature`]).
+    by_address: HashMap<SocketAddr, Vec<u32>>,
+    /// Bytes of replies kept for retransmissions, over every connection (see [`keep_replies`]).
+    kept_replies: usize,
 }
 
 impl<T> ClientRegistry<T> {
     /// Adds a new connection under its signature (not signed in yet).
     fn insert(&mut self, signature: u32, mut ci: ClientInfo<T>) {
-        *self.per_ip.entry(ci.address().ip()).or_default() += 1;
+        let key = address_key(ci.address().ip());
+        *self.per_ip.entry(key).or_default() += 1;
         if ci.user_id.is_none() {
             ci.counted_anonymous = true;
             self.anonymous += 1;
-            *self.anonymous_per_ip.entry(ci.address().ip()).or_default() += 1;
+            *self.anonymous_per_ip.entry(key).or_default() += 1;
         }
+        self.by_address.entry(*ci.address()).or_default().push(signature);
         self.clients.insert(signature, RefCell::new(ci));
     }
 
-    /// Connections from `ip`.
+    /// Connections from `ip` (its /64, for IPv6).
     fn connections_from(&self, ip: std::net::IpAddr) -> usize {
-        self.per_ip.get(&ip).copied().unwrap_or(0)
+        self.per_ip.get(&address_key(ip)).copied().unwrap_or(0)
     }
 
-    /// Connections from `ip` that haven't signed in, and in all.
+    /// Connections from `ip` (its /64, for IPv6) that haven't signed in, and in all.
     fn anonymous_from(&self, ip: std::net::IpAddr) -> (usize, usize) {
-        (self.anonymous_per_ip.get(&ip).copied().unwrap_or(0), self.anonymous)
+        (self.anonymous_per_ip.get(&address_key(ip)).copied().unwrap_or(0), self.anonymous)
+    }
+
+    /// A data packet from `from` with a signature that isn't the one of a connection from there:
+    /// counted on each connection from `from` (usually none: then it's nothing). True when that
+    /// makes one of them look like its signature is being guessed ([`MISSES_HIGH`]).
+    fn missed_signature(&self, from: SocketAddr) -> bool {
+        let Some(signatures) = self.by_address.get(&from) else {
+            return false;
+        };
+        let now = Instant::now();
+        let mut high = false;
+        for signature in signatures {
+            if let Some(Ok(mut ci)) = self.clients.get(signature).map(RefCell::try_borrow_mut) {
+                high |= note_miss(&mut ci, now);
+            }
+        }
+        high
     }
 
     /// Takes a connection that has signed in (on CONNECT with a ticket, or by a sign-in call)
@@ -373,7 +513,7 @@ impl<T> ClientRegistry<T> {
 
     fn uncount_anonymous(&mut self, ip: std::net::IpAddr) {
         self.anonymous = self.anonymous.saturating_sub(1);
-        if let std::collections::hash_map::Entry::Occupied(mut n) = self.anonymous_per_ip.entry(ip) {
+        if let std::collections::hash_map::Entry::Occupied(mut n) = self.anonymous_per_ip.entry(address_key(ip)) {
             *n.get_mut() -= 1;
             if *n.get() == 0 {
                 n.remove();
@@ -389,7 +529,7 @@ impl<T> ClientRegistry<T> {
         if let Some(conn_id) = ci.connection_id {
             self.connection_id_session_ids.remove(&conn_id);
         }
-        if let std::collections::hash_map::Entry::Occupied(mut n) = self.per_ip.entry(ci.address().ip()) {
+        if let std::collections::hash_map::Entry::Occupied(mut n) = self.per_ip.entry(address_key(ci.address().ip())) {
             *n.get_mut() -= 1;
             if *n.get() == 0 {
                 n.remove();
@@ -398,6 +538,15 @@ impl<T> ClientRegistry<T> {
         if ci.counted_anonymous {
             self.uncount_anonymous(ci.address().ip());
         }
+        // It's out of `clients` already: the address keeps only the signatures still there.
+        if let std::collections::hash_map::Entry::Occupied(mut sigs) = self.by_address.entry(*ci.address()) {
+            let clients = &self.clients;
+            sigs.get_mut().retain(|s| clients.contains_key(s));
+            if sigs.get().is_empty() {
+                sigs.remove();
+            }
+        }
+        self.kept_replies = self.kept_replies.saturating_sub(ci.handled_bytes);
         match ci.user_id {
             Some(uid) => !self.clients.values().any(|c| c.try_borrow().map_or(true, |c| c.user_id == Some(uid))),
             None => true,
@@ -491,6 +640,11 @@ where
     /// [`ANONYMOUS_CALLS_PER_SECOND`]), and when the table was last swept.
     anonymous_calls: HashMap<std::net::IpAddr, Bucket>,
     anonymous_sweep: Instant,
+    /// The addresses in `anonymous_calls`, oldest first (some may have been swept out since):
+    /// when the table is full, the oldest makes room.
+    anonymous_order: std::collections::VecDeque<std::net::IpAddr>,
+    /// Log lines for connections whose signature seems to be guessed.
+    guessing: Throttle,
 }
 
 impl<ECH, DH, T> Server<'_, ECH, DH, T>
@@ -514,6 +668,8 @@ where
             sign_in_required: false,
             anonymous_calls: HashMap::default(),
             anonymous_sweep: Instant::now(),
+            anonymous_order: std::collections::VecDeque::new(),
+            guessing: Throttle::default(),
             client_registry: ClientRegistry::default(),
             user_handler: None,
             expired_client_handler: None,
@@ -592,6 +748,18 @@ where
                         .get(&signature)
                         .is_some_and(|ci| ci.try_borrow().is_ok_and(|ci| *ci.address() == client));
                     if !ours {
+                        // A data packet from the address of a connection, with a signature none
+                        // of its connections has: someone may be guessing one, from a forged
+                        // source (see `MISSES_HIGH`).
+                        if data[2] & 0x7 == 2 && self.client_registry.missed_signature(client) {
+                            if let Some(skipped) = self.guessing.allow() {
+                                warn!(
+                                    logger,
+                                    "Many data packets from {client} with a signature that isn't its connection's: someone may be guessing it; its sequence window narrows";
+                                    "similar_skipped" => skipped
+                                );
+                            }
+                        }
                         continue 'outer;
                     }
                 }
@@ -719,6 +887,7 @@ where
     /// a pass over all [`MAX_ECHO_SOURCES`] for each forged source. While the table is full,
     /// new addresses wait for the next sweep.
     fn echo_allowed(&mut self, ip: std::net::IpAddr) -> bool {
+        let ip = address_key(ip);
         let now = Instant::now();
         if let Some((since, count)) = self.echoes.get_mut(&ip) {
             if now.duration_since(*since) >= Duration::from_secs(1) {
@@ -751,12 +920,16 @@ where
             }
             return;
         };
-        let signed_in = ci.borrow().user_id.is_some();
+        let user_id = ci.borrow().user_id;
+        let signed_in = user_id.is_some();
+        // Signed in as someone: not as a shared account, whose password is public (signing in
+        // as it costs nothing, so its connections keep the limits of those that haven't).
+        let trusted = user_id.is_some_and(|id| !(self.shared_account)(id));
         // Nothing from a connection without a ticket on the secure service, nor more than
         // the rate from an address's connections that haven't signed in: each call is
         // handled and logged, and a flood of them from one stranger stopped every sign-in.
         // Not acknowledged, and it doesn't keep the connection alive.
-        if !signed_in && (self.sign_in_required || !self.anonymous_call_allowed(client.ip())) {
+        if (!signed_in && self.sign_in_required) || (!trusted && !self.anonymous_call_allowed(client.ip())) {
             if let Some(skipped) = self.noise.allow() {
                 debug!(logger, "Data from a connection that hasn't signed in dropped"; "similar_skipped" => skipped);
             }
@@ -765,10 +938,19 @@ where
         let Some(ci) = self.client_registry.clients.get(&packet.signature) else {
             return;
         };
-        let logger = logger.new(o!("pid" => ci.borrow().user_id));
+        // Far from where the connection's packets are: not its client's (a blind forger's, who
+        // guessed the signature). Not acknowledged.
+        if !sequence_expected(&ci.borrow(), packet.sequence) {
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "Data packet {} far outside its connection's sequence window; dropped", packet.sequence; "similar_skipped" => skipped);
+            }
+            return;
+        }
+        let logger = logger.new(o!("pid" => user_id));
         let mut guard = ci.borrow_mut();
         let ci = &mut *guard;
         ci.seen();
+        note_sequence(ci, packet.sequence);
         if let Err(e) = self.send_ack(&logger, &client, &packet, &*ci, false) {
             error!(logger, "Error sending ack"; "error" => %e);
         } else {
@@ -789,9 +971,9 @@ where
             }
             return;
         }
-        remember_handled(ci, packet.sequence);
+        remember_handled(ci, packet.sequence, &mut self.client_registry.kept_replies);
         let (packet, payload) = if packet.fragment_id.is_some() {
-            match add_fragment(ci, packet) {
+            match add_fragment(ci, packet, trusted) {
                 Assembled::Whole(packet, payload, fragments) => {
                     if fragments > 1 {
                         info!(logger, "Reassembled {fragments} fragments");
@@ -849,9 +1031,7 @@ where
         }
         // Keep the replies for this sequence number, for a retransmission.
         let replies = ci.replying.take().unwrap_or_default();
-        if let Some(entry) = ci.handled.iter_mut().find(|(seq, _)| *seq == packet.sequence) {
-            entry.1 = replies;
-        }
+        keep_replies(ci, packet.sequence, replies, &mut self.client_registry.kept_replies);
         drop(guard);
         if !signed_in {
             self.client_registry.settle(packet.signature, self.shared_account);
@@ -864,6 +1044,7 @@ where
         if many_per_ip().is_some() {
             return true;
         }
+        let ip = address_key(ip);
         if let Some(bucket) = self.anonymous_calls.get_mut(&ip) {
             return bucket.take(ANONYMOUS_CALLS_PER_SECOND, ANONYMOUS_CALL_BURST);
         }
@@ -872,16 +1053,21 @@ where
             // Those that would be full again by now: forgetting them changes nothing.
             let refilled = Duration::from_secs_f32(ANONYMOUS_CALL_BURST / ANONYMOUS_CALLS_PER_SECOND);
             self.anonymous_calls.retain(|_, b| now.duration_since(b.at) < refilled);
+            let calls = &self.anonymous_calls;
+            self.anonymous_order.retain(|ip| calls.contains_key(ip));
             self.anonymous_sweep = now;
         }
-        // Still full: someone with thousands of addresses. Each is let through rather than
-        // every newcomer refused.
-        if self.anonymous_calls.len() >= MAX_ANONYMOUS_SOURCES {
-            return true;
+        // Still full: someone with thousands of addresses. The oldest address makes room, so
+        // every address stays within the rate (letting newcomers through unlimited, as before,
+        // let such a flood through too).
+        while self.anonymous_calls.len() >= MAX_ANONYMOUS_SOURCES {
+            let Some(oldest) = self.anonymous_order.pop_front() else { break };
+            self.anonymous_calls.remove(&oldest);
         }
         let mut bucket = Bucket::full(ANONYMOUS_CALL_BURST);
         let allowed = bucket.take(ANONYMOUS_CALLS_PER_SECOND, ANONYMOUS_CALL_BURST);
         self.anonymous_calls.insert(ip, bucket);
+        self.anonymous_order.push_back(ip);
         allowed
     }
 
@@ -1204,6 +1390,7 @@ where
         let answered = !packet.payload.is_empty();
         if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
+            self.limit_connections_of(logger, user_id, packet.signature);
         }
         if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
             handler(user_id, client);
@@ -1233,6 +1420,39 @@ where
     /// others' connections and clean up after them.
     fn sign_out_elsewhere(&mut self, logger: &Logger, user_id: u32, from: SocketAddr) {
         self.sign_out(logger, user_id, Some(from));
+    }
+
+    /// `user_id` just signed in on the connection `newest`: past [`MAX_CONNECTIONS_PER_ACCOUNT`],
+    /// their quietest other connections are closed. The newest wins, as with signing in from
+    /// another address: refusing it instead would leave a restarted game unable to sign in until
+    /// its old connections expired, while those it closes are the ones nobody is using. One game
+    /// holds three, so a game never closes its own.
+    fn limit_connections_of(&mut self, logger: &Logger, user_id: u32, newest: u32) {
+        let mut theirs: Vec<(Instant, u32)> = self
+            .client_registry
+            .clients
+            .iter()
+            .filter(|(sig, _)| **sig != newest)
+            .filter_map(|(sig, c)| c.try_borrow().ok().filter(|c| c.user_id == Some(user_id)).map(|c| (c.last_seen, *sig)))
+            .collect();
+        if theirs.len() < MAX_CONNECTIONS_PER_ACCOUNT {
+            return;
+        }
+        theirs.sort_unstable();
+        let excess = theirs.len() + 1 - MAX_CONNECTIONS_PER_ACCOUNT;
+        for (_, sig) in theirs.into_iter().take(excess) {
+            let Some(old) = self.client_registry.clients.remove(&sig) else { continue };
+            let old = old.into_inner();
+            info!(
+                logger,
+                "User {user_id} has more than {MAX_CONNECTIONS_PER_ACCOUNT} connections; closing their quietest, from {}",
+                old.address()
+            );
+            if let Err(e) = self.send_disconnect(logger, &old) {
+                debug!(logger, "Couldn't tell {} it was disconnected: {e}", old.address());
+            }
+            self.expire(old);
+        }
     }
 
     /// Closes `user_id`'s connections, except those from `keep`, and cleans up after them.
@@ -1491,7 +1711,7 @@ mod tests {
         assert_eq!(n, 11);
         let mut out = None;
         for (i, (fid, chunk)) in fragment_ids(n).zip(chunks).enumerate() {
-            out = whole(add_fragment(&mut ci, fragment(100 + i as u16, fid, chunk)));
+            out = whole(add_fragment(&mut ci, fragment(100 + i as u16, fid, chunk), true));
         }
         assert_eq!(out, Some((100 + n as u16 - 1, payload, n)));
     }
@@ -1502,16 +1722,16 @@ mod tests {
     fn fragments_are_put_together_in_order_whenever_they_come() {
         let mut ci = client(Some(1000), 3074);
         // In order.
-        assert!(whole(add_fragment(&mut ci, fragment(10, 1, b"a"))).is_none());
-        assert!(whole(add_fragment(&mut ci, fragment(11, 2, b"b"))).is_none());
-        assert_eq!(whole(add_fragment(&mut ci, fragment(12, 0, b"c"))), Some((12, b"abc".to_vec(), 3)));
+        assert!(whole(add_fragment(&mut ci, fragment(10, 1, b"a"), true)).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(11, 2, b"b"), true)).is_none());
+        assert_eq!(whole(add_fragment(&mut ci, fragment(12, 0, b"c"), true)), Some((12, b"abc".to_vec(), 3)));
         // One in the middle late: the last waits for it.
-        assert!(whole(add_fragment(&mut ci, fragment(13, 1, b"d"))).is_none());
-        assert!(whole(add_fragment(&mut ci, fragment(15, 3, b"f"))).is_none());
-        assert!(whole(add_fragment(&mut ci, fragment(16, 0, b"g"))).is_none(), "fragment 2 is missing");
-        assert_eq!(whole(add_fragment(&mut ci, fragment(14, 2, b"e"))), Some((16, b"defg".to_vec(), 4)));
+        assert!(whole(add_fragment(&mut ci, fragment(13, 1, b"d"), true)).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(15, 3, b"f"), true)).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(16, 0, b"g"), true)).is_none(), "fragment 2 is missing");
+        assert_eq!(whole(add_fragment(&mut ci, fragment(14, 2, b"e"), true)), Some((16, b"defg".to_vec(), 4)));
         // Unfragmented messages around it.
-        assert_eq!(whole(add_fragment(&mut ci, fragment(17, 0, b"h"))), Some((17, b"h".to_vec(), 1)));
+        assert_eq!(whole(add_fragment(&mut ci, fragment(17, 0, b"h"), true)), Some((17, b"h".to_vec(), 1)));
         assert!(ci.packet_fragments.is_empty() && ci.held_last_fragments.is_empty());
     }
 
@@ -1520,10 +1740,10 @@ mod tests {
     #[test]
     fn leftovers_never_get_into_another_message() {
         let mut ci = client(Some(1000), 3074);
-        assert!(whole(add_fragment(&mut ci, fragment(30000, 1, b"old"))).is_none());
-        assert!(whole(add_fragment(&mut ci, fragment(65534, 1, b"x"))).is_none());
-        assert!(whole(add_fragment(&mut ci, fragment(65535, 2, b"y"))).is_none());
-        assert_eq!(whole(add_fragment(&mut ci, fragment(0, 0, b"z"))), Some((0, b"xyz".to_vec(), 3)));
+        assert!(whole(add_fragment(&mut ci, fragment(30000, 1, b"old"), true)).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(65534, 1, b"x"), true)).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(65535, 2, b"y"), true)).is_none());
+        assert_eq!(whole(add_fragment(&mut ci, fragment(0, 0, b"z"), true)), Some((0, b"xyz".to_vec(), 3)));
         assert!(!ci.packet_fragments.contains_key(&30000), "far behind: given up on");
     }
 
@@ -1924,9 +2144,194 @@ mod tests {
         let mut too_much = false;
         for seq in 1..20u16 {
             let fid = u8::try_from(seq).unwrap();
-            too_much |= matches!(add_fragment(&mut anonymous, fragment(seq, fid, &part)), Assembled::TooMuch);
-            assert!(matches!(add_fragment(&mut signed_in, fragment(seq, fid, &part)), Assembled::Waiting));
+            too_much |= matches!(add_fragment(&mut anonymous, fragment(seq, fid, &part), false), Assembled::TooMuch);
+            assert!(matches!(add_fragment(&mut signed_in, fragment(seq, fid, &part), true), Assembled::Waiting));
         }
         assert!(too_much, "over 8 KiB before signing in");
+    }
+
+    fn data(signature: u32, sequence: u16) -> QPacket {
+        QPacket {
+            packet_type: PacketType::Data,
+            signature,
+            sequence,
+            fragment_id: Some(0),
+            payload: vec![1, 2, 3],
+            ..Default::default()
+        }
+    }
+
+    /// A connection made and signed in as `user` (none: not signed in), from `from`.
+    fn connected(server: &mut Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()>, from: SocketAddr, user: Option<u32>) -> u32 {
+        let logger = Logger::root(slog::Discard, o!());
+        let sig = server.cookies.signature(from, VPort::default(), 1, 0);
+        server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
+        server.client_registry.clients[&sig].borrow_mut().user_id = user;
+        server.client_registry.settle(sig, server.shared_account);
+        sig
+    }
+
+    /// Replies kept for retransmissions: within a budget per connection (the oldest make room,
+    /// one too big isn't kept) and in all; a request whose reply wasn't kept is still known.
+    #[test]
+    fn kept_replies_are_bounded_per_connection_and_in_all() {
+        let mut ci = client(Some(7), 3080);
+        let mut kept = 0;
+        let reply = |kb: usize| vec![vec![0u8; kb * 1024]];
+        for seq in 1..=3u16 {
+            remember_handled(&mut ci, seq, &mut kept);
+            keep_replies(&mut ci, seq, reply(100), &mut kept);
+        }
+        assert_eq!(ci.handled_bytes, 200 * 1024, "the oldest made room");
+        assert!(ci.handled[0].1.is_empty() && !ci.handled[2].1.is_empty());
+        assert_eq!(kept, ci.handled_bytes);
+        remember_handled(&mut ci, 4, &mut kept);
+        keep_replies(&mut ci, 4, reply(300), &mut kept);
+        assert!(ci.handled.iter().any(|(s, r)| *s == 4 && r.is_empty()), "too big: known, not kept");
+        assert_eq!(kept, 200 * 1024);
+        // Making room in the deque takes the bytes off too.
+        for seq in 5..5 + HANDLED_MEMORY as u16 {
+            remember_handled(&mut ci, seq, &mut kept);
+        }
+        assert_eq!((ci.handled_bytes, kept), (0, 0));
+        // In all: a reply doesn't fit past the total.
+        let mut full = MAX_KEPT_REPLIES_IN_ALL;
+        remember_handled(&mut ci, 1000, &mut full);
+        keep_replies(&mut ci, 1000, reply(1), &mut full);
+        assert_eq!((full, ci.handled_bytes), (MAX_KEPT_REPLIES_IN_ALL, 0));
+    }
+
+    /// The registry's total forgets a connection's kept replies when it goes.
+    #[test]
+    fn a_connection_going_takes_its_kept_replies_off_the_total() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let from = SocketAddr::from(([127, 0, 0, 1], 50020));
+        let sig = connected(&mut server, from, Some(0x10_0000));
+        {
+            let mut ci = server.client_registry.clients[&sig].borrow_mut();
+            remember_handled(&mut ci, 1, &mut server.client_registry.kept_replies);
+            keep_replies(&mut ci, 1, vec![vec![0; 1000]], &mut server.client_registry.kept_replies);
+        }
+        assert_eq!(server.client_registry.kept_replies, 1000);
+        let mut disconnect = handshake(PacketType::Disconnect, sig, 1);
+        disconnect.conn_signature = None;
+        server.handle_packet(&logger, disconnect, from);
+        assert!(server.client_registry.clients.is_empty());
+        assert_eq!(server.client_registry.kept_replies, 0);
+    }
+
+    /// An account's connections past the limit: the quietest go as a new one signs in.
+    #[test]
+    fn an_account_holds_only_so_many_connections() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let user = 0x10_0001;
+        let sigs: Vec<u32> = (0..=MAX_CONNECTIONS_PER_ACCOUNT as u16)
+            .map(|i| {
+                let sig = connected(&mut server, SocketAddr::from(([127, 0, 0, 1], 50100 + i)), Some(user));
+                server.client_registry.clients[&sig].borrow_mut().last_seen = Instant::now() - Duration::from_secs(30 - u64::from(i));
+                sig
+            })
+            .collect();
+        let other = connected(&mut server, SocketAddr::from(([127, 0, 0, 1], 50200)), Some(user + 1));
+        server.limit_connections_of(&logger, user, sigs[MAX_CONNECTIONS_PER_ACCOUNT]);
+        assert!(!server.client_registry.clients.contains_key(&sigs[0]), "the quietest went");
+        assert!(sigs[1..].iter().all(|s| server.client_registry.clients.contains_key(s)));
+        assert!(server.client_registry.clients.contains_key(&other), "another account's stay");
+        assert_eq!(server.client_registry.connections_from(Ipv4Addr::LOCALHOST.into()), MAX_CONNECTIONS_PER_ACCOUNT + 1);
+    }
+
+    /// A connection signed in only as a shared account (public password) is held to the calls of
+    /// one that hasn't signed in; a player's isn't.
+    #[test]
+    fn a_shared_accounts_calls_are_limited_like_anonymous_ones() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        server.shared_account = |id| id == 0x1111;
+        let tracking = SocketAddr::from(([10, 2, 0, 1], 40000));
+        let player = SocketAddr::from(([10, 2, 0, 2], 40000));
+        let (t, p) = (connected(&mut server, tracking, Some(0x1111)), connected(&mut server, player, Some(0x10_0000)));
+        server.handle_data(&logger, data(t, 1), tracking);
+        server.handle_data(&logger, data(p, 1), player);
+        assert!(server.anonymous_calls.contains_key(&tracking.ip()), "counted");
+        assert!(!server.anonymous_calls.contains_key(&player.ip()), "a player's aren't");
+        server.anonymous_calls.get_mut(&tracking.ip()).unwrap().tokens = 0.0;
+        server.handle_data(&logger, data(t, 2), tracking);
+        assert!(!server.client_registry.clients[&t].borrow().handled.iter().any(|(s, _)| *s == 2), "over the rate: dropped");
+    }
+
+    /// IPv6 addresses count by their /64 for the per-address limits.
+    #[test]
+    fn ipv6_addresses_count_by_their_64() {
+        let a: std::net::IpAddr = "2001:db8:1:2::10".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::1".parse().unwrap();
+        let c: std::net::IpAddr = "2001:db8:1:3::10".parse().unwrap();
+        assert_eq!(address_key(a), address_key(b));
+        assert_ne!(address_key(a), address_key(c));
+        assert_eq!(address_key("::ffff:10.0.0.1".parse().unwrap()), "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let mut registry = ClientRegistry::<()>::default();
+        registry.insert(1, ClientInfo::new(SocketAddr::new(a, 1)));
+        registry.insert(2, ClientInfo::new(SocketAddr::new(b, 1)));
+        registry.insert(3, ClientInfo::new(SocketAddr::new(c, 1)));
+        assert_eq!(registry.connections_from(a), 2);
+        assert_eq!(registry.anonymous_from(b), (2, 3));
+        let gone = registry.clients.remove(&2).unwrap().into_inner();
+        registry.forget(&gone);
+        assert_eq!((registry.connections_from(a), registry.anonymous_from(a).0), (1, 1));
+        let ctx = Context::splinter_cell_blacklist();
+        let mut server = test_server(&ctx);
+        let allowed = (0..1000).filter(|i| server.anonymous_call_allowed(if i % 2 == 0 { a } else { b })).count();
+        assert!(allowed < ANONYMOUS_CALL_BURST as usize + 5, "one bucket for the /64: {allowed}");
+    }
+
+    /// With the table of addresses full, a new address still gets only the rate: the oldest makes
+    /// room (everyone new used to be let through unlimited).
+    #[test]
+    fn anonymous_calls_stay_limited_when_the_table_is_full() {
+        let ctx = Context::splinter_cell_blacklist();
+        let mut server = test_server(&ctx);
+        let ip = |n: u32| std::net::IpAddr::from(Ipv4Addr::from(0x0a00_0000 + n));
+        for n in 0..MAX_ANONYMOUS_SOURCES as u32 {
+            server.anonymous_call_allowed(ip(n));
+        }
+        let newcomer = ip(MAX_ANONYMOUS_SOURCES as u32);
+        let allowed = (0..1000).filter(|_| server.anonymous_call_allowed(newcomer)).count();
+        assert!(allowed < ANONYMOUS_CALL_BURST as usize + 5, "{allowed}");
+        assert!(!server.anonymous_calls.contains_key(&ip(0)), "the oldest made room");
+        assert_eq!(server.anonymous_calls.len(), MAX_ANONYMOUS_SOURCES);
+        assert_eq!(server.anonymous_order.len(), MAX_ANONYMOUS_SOURCES);
+    }
+
+    /// A data packet far from its connection's sequence numbers is dropped; one near, or a
+    /// retransmission, is taken. While the connection's address sends many packets with wrong
+    /// signatures, the window narrows.
+    #[test]
+    fn sequence_numbers_far_outside_the_window_are_refused() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let from = SocketAddr::from(([10, 3, 0, 1], 40000));
+        let sig = connected(&mut server, from, Some(0x10_0000));
+        let handled = |server: &Server<'_, _, _, ()>, seq: u16| server.client_registry.clients[&sig].borrow().handled.iter().any(|(s, _)| *s == seq);
+        for seq in [1, 2, 3, 100, 50, 30000, 65000] {
+            server.handle_data(&logger, data(sig, seq), from);
+        }
+        assert!([1, 2, 3, 100, 50].iter().all(|s| handled(&server, *s)));
+        assert!(!handled(&server, 30000) && !handled(&server, 65000), "far off: dropped");
+        // Wrong signatures from its address: counted on it, and past the mark its window narrows.
+        assert!(
+            !server.client_registry.missed_signature(SocketAddr::from(([10, 3, 0, 1], 40001))),
+            "another port: none of its"
+        );
+        let high = (0..MISSES_HIGH).filter(|_| server.client_registry.missed_signature(from)).count();
+        assert_eq!(high, 1, "reported once");
+        server.handle_data(&logger, data(sig, 200), from);
+        assert!(!handled(&server, 200), "within the usual window, not the narrow one");
+        server.handle_data(&logger, data(sig, 110), from);
+        assert!(handled(&server, 110));
     }
 }

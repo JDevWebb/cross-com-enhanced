@@ -9,6 +9,12 @@
 //! The answer: `{"mode": "conflict", "modes": [...], "rows": [{"rank", "name", "wins", "losses",
 //! "kills", "deaths", "objectives", "seconds"}]}`, best first (most wins, then kills, then
 //! objectives), at most [`MAX_ROWS`]. `mode` is one of [`MODES`]; `all` adds the modes up.
+//!
+//! The game writes these numbers itself (setting them, op 2), so a modified game could write
+//! anything. They're kept sane as they're written ([`sane_write`]: never negative, and growing by
+//! at most a few matches' worth at once), and a player's numbers for a mode that couldn't be
+//! (more wins than matches, more kills or time than that many matches could bring) are left out
+//! of the ranking ([`plausible`]), not refused: the game expects its writes to succeed.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -44,6 +50,74 @@ const KILLS: u8 = 7;
 const DEATHS: u8 = 8;
 const OBJECTIVES: u8 = 9;
 
+/// The most one match could bring a player, generously: kills, deaths, objectives and seconds.
+/// A player's numbers for a mode beyond this many times the matches they played (and one more:
+/// time and kills in a match they left early count, the match doesn't) aren't ranked.
+const MAX_KILLS_PER_MATCH: u32 = 200;
+const MAX_DEATHS_PER_MATCH: u32 = 200;
+const MAX_OBJECTIVES_PER_MATCH: u32 = 100;
+const MAX_SECONDS_PER_MATCH: u32 = 3 * 3600;
+/// Matches one write may add, at most: the game saves after each match, so this is a game that
+/// couldn't save for a while catching up.
+const MAX_MATCHES_PER_WRITE: i32 = 20;
+
+/// Whether a stored number is one of the leaderboard's: on its board, keyed by a mode, in one of
+/// its columns.
+#[must_use]
+pub fn ranked(board: u8, keys: &[u32], column: u8) -> bool {
+    board == BOARD && matches!(keys, [key] if *key < FIRST_NOT_A_MODE) && [TIME, PLAYED, WON, KILLS, DEATHS, OBJECTIVES].contains(&column)
+}
+
+/// The most one write may add to a leaderboard column: [`MAX_MATCHES_PER_WRITE`] matches' worth.
+#[allow(clippy::cast_possible_wrap)] // the per-match limits are small
+fn max_growth(column: u8) -> i32 {
+    let per_match = match column {
+        KILLS => MAX_KILLS_PER_MATCH,
+        DEATHS => MAX_DEATHS_PER_MATCH,
+        OBJECTIVES => MAX_OBJECTIVES_PER_MATCH,
+        TIME => MAX_SECONDS_PER_MATCH,
+        _ => 1,
+    };
+    MAX_MATCHES_PER_WRITE.saturating_mul(per_match as i32)
+}
+
+/// A leaderboard number (see [`ranked`]) as it's kept when the game writes `new` (a little-endian
+/// i32) over `stored`: never negative, and at most [`max_growth`] more than what was stored. A
+/// first write is taken as it is (a player's numbers from before they were kept here).
+#[must_use]
+pub fn sane_write(column: u8, stored: Option<&[u8]>, new: &[u8]) -> Vec<u8> {
+    let Ok(bytes) = <[u8; 4]>::try_from(new) else {
+        return new.to_vec();
+    };
+    let mut value = i32::from_le_bytes(bytes).max(0);
+    if let Some(old) = stored.and_then(|s| <[u8; 4]>::try_from(s).ok()).map(i32::from_le_bytes) {
+        value = value.min(old.max(0).saturating_add(max_growth(column)));
+    }
+    value.to_le_bytes().to_vec()
+}
+
+/// A player's numbers for one mode.
+#[derive(Default)]
+struct Sums {
+    played: u32,
+    won: u32,
+    kills: u32,
+    deaths: u32,
+    objectives: u32,
+    seconds: u32,
+}
+
+/// Whether a player's numbers for a mode could be: no more wins than matches, and no more kills,
+/// deaths, objectives or time than their matches (and one left early) could bring.
+fn plausible(s: &Sums) -> bool {
+    let matches = s.played.saturating_add(1);
+    s.won <= s.played
+        && s.kills <= matches.saturating_mul(MAX_KILLS_PER_MATCH)
+        && s.deaths <= matches.saturating_mul(MAX_DEATHS_PER_MATCH)
+        && s.objectives <= matches.saturating_mul(MAX_OBJECTIVES_PER_MATCH)
+        && s.seconds <= matches.saturating_mul(MAX_SECONDS_PER_MATCH)
+}
+
 /// One stored number: player, keys, column, value (as stored: a little-endian i32).
 pub type Stored = (u32, Vec<u32>, u8, Vec<u8>);
 
@@ -74,18 +148,10 @@ pub fn mode_of(query: &str) -> Option<usize> {
 }
 
 /// The ranked table for `mode` (a key, or every mode) from the stored numbers, naming each
-/// player with `name` (players without a name are left out).
+/// player with `name` (players without a name are left out). A player's numbers for a mode that
+/// couldn't be (see [`plausible`]) aren't counted.
 pub fn table(stored: &[Stored], mode: Option<u32>, name: impl Fn(u32) -> Option<String>) -> Vec<Entry> {
-    #[derive(Default)]
-    struct Sums {
-        played: u32,
-        won: u32,
-        kills: u32,
-        deaths: u32,
-        objectives: u32,
-        seconds: u32,
-    }
-    let mut players: HashMap<u32, Sums> = HashMap::new();
+    let mut modes: HashMap<(u32, u32), Sums> = HashMap::new();
     for (pid, keys, column, value) in stored {
         let [key] = keys.as_slice() else { continue };
         if *key >= FIRST_NOT_A_MODE || mode.is_some_and(|m| m != *key) {
@@ -93,7 +159,7 @@ pub fn table(stored: &[Stored], mode: Option<u32>, name: impl Fn(u32) -> Option<
         }
         let Ok(bytes) = <[u8; 4]>::try_from(value.as_slice()) else { continue };
         let value = u32::try_from(i32::from_le_bytes(bytes)).unwrap_or(0);
-        let sums = players.entry(*pid).or_default();
+        let sums = modes.entry((*pid, *key)).or_default();
         let field = match *column {
             TIME => &mut sums.seconds,
             PLAYED => &mut sums.played,
@@ -104,6 +170,20 @@ pub fn table(stored: &[Stored], mode: Option<u32>, name: impl Fn(u32) -> Option<
             _ => continue,
         };
         *field = field.saturating_add(value);
+    }
+    let mut players: HashMap<u32, Sums> = HashMap::new();
+    for ((pid, _), mode) in modes.into_iter().filter(|(_, s)| plausible(s)) {
+        let sums = players.entry(pid).or_default();
+        for (into, from) in [
+            (&mut sums.played, mode.played),
+            (&mut sums.won, mode.won),
+            (&mut sums.kills, mode.kills),
+            (&mut sums.deaths, mode.deaths),
+            (&mut sums.objectives, mode.objectives),
+            (&mut sums.seconds, mode.seconds),
+        ] {
+            *into = into.saturating_add(from);
+        }
     }
     let mut rows: Vec<Entry> = players
         .into_iter()
@@ -200,6 +280,46 @@ mod tests {
         let all = table(&stored, None, name);
         assert_eq!((all[0].name.as_str(), all[0].wins, all[0].losses), ("p2", 5, 1));
         assert!(table(&stored, Some(6), name).is_empty());
+    }
+
+    /// A mode's numbers that couldn't be are left out of the ranking (that mode's only).
+    #[test]
+    fn implausible_numbers_are_not_ranked() {
+        let stored = vec![
+            n(1, 2, PLAYED, 2),
+            n(1, 2, WON, 5), // more wins than matches
+            n(1, 3, PLAYED, 1),
+            n(1, 3, WON, 1),
+            n(2, 2, PLAYED, 1),
+            n(2, 2, KILLS, 100_000), // more kills than a match could bring
+            n(3, 2, PLAYED, 10),
+            n(3, 2, WON, 4),
+            n(3, 2, KILLS, 150),
+            n(3, 2, TIME, 7200),
+            n(4, 2, TIME, 600), // a match left early: time, no match
+            n(5, 2, PLAYED, -3),
+            n(5, 2, WON, -1),
+        ];
+        let name = |pid: u32| Some(format!("p{pid}"));
+        let conflict = table(&stored, Some(2), name);
+        assert_eq!(conflict.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["p3", "p4"]);
+        let all = table(&stored, None, name);
+        let p1 = all.iter().find(|e| e.name == "p1").unwrap();
+        assert_eq!((p1.wins, p1.losses), (1, 0), "its other mode still counts");
+    }
+
+    /// As they're written: never negative, and growing by a few matches' worth at most.
+    #[test]
+    fn leaderboard_numbers_are_kept_sane_as_written() {
+        let v = |n: i32| n.to_le_bytes().to_vec();
+        assert_eq!(sane_write(PLAYED, None, &v(-5)), v(0));
+        assert_eq!(sane_write(PLAYED, None, &v(300)), v(300), "a first write as it is");
+        assert_eq!(sane_write(PLAYED, Some(&v(300)), &v(301)), v(301));
+        assert_eq!(sane_write(WON, Some(&v(10)), &v(1_000_000)), v(10 + MAX_MATCHES_PER_WRITE));
+        assert_eq!(sane_write(KILLS, Some(&v(10)), &v(40)), v(40));
+        assert_eq!(sane_write(PLAYED, Some(&v(10)), &v(3)), v(3), "lower: as written");
+        assert_eq!(sane_write(PLAYED, Some(&v(10)), &[1, 2]), vec![1, 2], "not a 32-bit value: as it is");
+        assert!(ranked(BOARD, &[2], WON) && !ranked(BOARD, &[12], WON) && !ranked(BOARD, &[2], 4) && !ranked(3, &[2], WON));
     }
 
     #[test]

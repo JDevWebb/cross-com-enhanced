@@ -95,6 +95,13 @@ fn offered_to_strict(host_open: Option<bool>) -> bool {
     host_open != Some(false)
 }
 
+/// Of the players a host just added to `session`, those joining it: who chose it from a search or
+/// accepted an invitation into it (they're `joined` now). Only their joins are recorded
+/// (`connections`): a host may add any PID, and those would be records of joins that never were.
+fn joining(session: &sessions::Session, added: impl Iterator<Item = u32>) -> Vec<u32> {
+    added.filter(|&p| p != session.host && session.joined(p)).collect()
+}
+
 fn key(k: &GameSessionKey) -> sessions::Key {
     (k.type_id, k.session_id)
 }
@@ -106,7 +113,7 @@ fn properties(list: &QList<Property>) -> Vec<(u32, u32)> {
 fn error(e: sessions::Error) -> Error {
     match e {
         sessions::Error::NotFound => Error::AccessDenied,
-        sessions::Error::NotHost => Error::AccessDenied,
+        sessions::Error::NotHost | sessions::Error::NotAllowed => Error::AccessDenied,
         sessions::Error::Full => Error::InternalError,
     }
 }
@@ -135,6 +142,15 @@ impl GameSessions {
             },
             station_urls: QList(if joined { self.sessions.urls_seen_from(pid, viewer) } else { vec![] }),
         }
+    }
+
+    /// `pid` leaves `k` on its own: its join's record ends only if it's in it (a player that never
+    /// joined, or already left, has nothing to end).
+    fn leave(&self, logger: &Logger, pid: u32, k: sessions::Key) -> Result<(), Error> {
+        if self.sessions.get(k).is_some_and(|s| s.has(pid)) {
+            connections::ended(logger, pid, k, connections::End::Left);
+        }
+        self.sessions.remove(k, &[pid]).map_err(error)
     }
 
     /// The session, if `pid` is in it: only members see who else is.
@@ -235,8 +251,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<LeaveSessionResponse, Error> {
         let pid = player(ci)?;
-        connections::ended(logger, pid, key(&request.game_session_key), connections::End::Left);
-        self.sessions.remove(key(&request.game_session_key), &[pid]).map_err(error)?;
+        self.leave(logger, pid, key(&request.game_session_key))?;
         Ok(LeaveSessionResponse)
     }
 
@@ -312,9 +327,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
                 info!(logger, "{pid:#x} can't invite {recipient:#x} into {k:?}: not a friend, or already in");
                 continue;
             }
-            self.invitations
-                .send(k, pid, recipient, &invitation.message, crate::fixed::server_time(), now)
-                .map_err(|_| Error::AccessDenied)?;
+            self.invitations.send(k, pid, recipient, &invitation.message, crate::fixed::server_time(), now);
             // The game reaches the members (a NAT probe) before it accepts.
             self.sessions.invite(k, pid, recipient);
             let told = notify::send(
@@ -494,8 +507,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             return Err(Error::AccessDenied);
         }
         self.sessions.add(k, &request.public_participant_ids.0, &request.private_participant_ids.0).map_err(error)?;
-        for &added in request.public_participant_ids.0.iter().chain(&request.private_participant_ids.0) {
-            connections::joined(logger, added, k, pid);
+        let added = request.public_participant_ids.0.iter().chain(&request.private_participant_ids.0).copied();
+        for joining in self.sessions.get(k).map(|s| joining(&s, added)).unwrap_or_default() {
+            connections::joined(logger, joining, k, pid);
         }
         Ok(AddParticipantsResponse)
     }
@@ -523,10 +537,17 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             return Err(Error::AccessDenied);
         }
         let how = if only_self { connections::End::Left } else { connections::End::Removed };
-        for &out in ids {
-            connections::ended(logger, out, k, how);
+        if let Some(session) = self.sessions.get(k) {
+            for &out in ids.iter().filter(|&&p| session.has(p)) {
+                connections::ended(logger, out, k, how);
+            }
         }
-        self.sessions.remove(k, &request.participant_ids.0).map_err(error)?;
+        // Players the host takes out may not join again on their own.
+        if only_self {
+            self.sessions.remove(k, ids).map_err(error)?;
+        } else {
+            self.sessions.remove_by_host(k, ids).map_err(error)?;
+        }
         Ok(RemoveParticipantsResponse)
     }
 
@@ -617,8 +638,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<AbandonSessionResponse, Error> {
         let pid = player(ci)?;
-        connections::ended(logger, pid, key(&request.game_session_key), connections::End::Left);
-        self.sessions.remove(key(&request.game_session_key), &[pid]).map_err(error)?;
+        self.leave(logger, pid, key(&request.game_session_key))?;
         Ok(AbandonSessionResponse)
     }
 
@@ -798,6 +818,19 @@ mod tests {
         let (found, held) = offered(&sessions, 1, &[], false, |_| true, open);
         assert_eq!((found.len(), held), (2, 0), "everyone else: as before");
         assert!(found.iter().any(|(k, _)| *k == a));
+    }
+
+    /// A host adding players: a join is recorded for one that chose the session, not for any PID
+    /// the host names.
+    #[test]
+    fn only_players_joining_have_their_join_recorded() {
+        let sessions = Sessions::default();
+        let k = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        sessions.offer(k, 11);
+        sessions.choose(11, 10);
+        sessions.add(k, &[11, 12], &[]).unwrap();
+        let session = sessions.get(k).unwrap();
+        assert_eq!(joining(&session, [10, 11, 12].into_iter()), vec![11]);
     }
 
     #[test]
