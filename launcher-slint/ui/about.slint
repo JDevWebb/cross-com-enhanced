@@ -88,6 +88,10 @@ component Rule inherits Rectangle {
 
 export component AboutScreen inherits Rectangle {
     in property <string> release;
+    // Check for updates: looking, and what it found ("" before it's asked).
+    in property <bool> checking;
+    in property <string> checked;
+    callback check();
     // Opens one of About's links, by its id (see `core::about_link`).
     callback link(string);
 
@@ -145,7 +149,9 @@ export component AboutScreen inherits Rectangle {
                             Btn { text: "Source on GitHub"; kind: "ghost"; clicked => { root.link("source"); } }
                             Btn { text: "Release notes"; kind: "ghost"; clicked => { root.link("releases"); } }
                             Btn { text: "Report a problem"; kind: "ghost"; clicked => { root.link("issues"); } }
+                            Btn { text: root.checking ? "Checking…" : "Check for updates"; kind: "ghost"; busy: root.checking; enabled: !root.checking; clicked => { root.check(); } }
                         }
+                        if root.checked != "": Text { text: root.checked; color: Theme.soft; wrap: word-wrap; }
                     }
                 }
             }

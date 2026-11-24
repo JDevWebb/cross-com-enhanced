@@ -136,7 +136,10 @@ A tag with a suffix (`v0.2.0-rc.1`) makes a pre-release, which isn't followed by
    scripts/sign-release.sh --keygen
    ```
    It goes in `~/.config/cross-com-release/release.key`, and its public half into
-   `scripts/verify-release.sh` and this page: commit those.
+   `scripts/verify-release.sh` and this page: commit those. The launcher is built with the key
+   from `verify-release.sh` (`launcher/build.rs`) and checks its own updates with it, so commit
+   the key **before the first release is tagged**: a launcher built without it never updates
+   itself, and its players have to fetch the next release by hand.
 2. On GitHub, in the repository's settings: add the `VT_API_KEY` secret (Secrets and variables ›
    Actions), turn on private vulnerability reporting (Security), and let Actions make releases
    and packages (Actions › General › Workflow permissions: read and write).
@@ -156,6 +159,24 @@ A tag with a suffix (`v0.2.0-rc.1`) makes a pre-release, which isn't followed by
 `.github/workflows/codeql.yml` runs CodeQL on the Rust code, the vendored C, the scripts and the
 workflows, each week and on every change; results in test code are dropped first
 (`scripts/codeql-drop-tests.py`).
+
+### How the launcher updates itself
+
+A release build of the launcher asks GitHub for the latest release when it starts and every 4
+hours, and offers a newer one in a bar under its title. When the player says Update, it downloads
+`SHA256SUMS` and `SHA256SUMS.sig` first and refuses the release unless the signature is the
+release key's for **that tag's version**, then downloads `crosscom-launcher.exe` and refuses it
+unless it matches its line in `SHA256SUMS`. Only a release newer than the running launcher is
+installed, and never while the game runs. The new exe takes the old one's name (the old one is
+kept as `crosscom-launcher.exe.old` until the next start) and starts; the client it carries is
+installed when the player next presses Play. So a release is offered to players only once it's
+signed: an unsigned draft, or files published again under a new tag, are refused. A development
+build (`0.2.0-dev`) doesn't update itself.
+
+A test build can point the launcher at another release and key: `CROSSCOM_UPDATE_FROM` (an
+HTTPS address answering as GitHub's latest release) and `CROSSCOM_RELEASE_KEY` (the key's
+public half, base64 DER, the middle line of its PEM) when it's built. `launcher/src/update.rs`
+has two ignored tests (`cargo test -p crosscom-launcher -- --ignored live_`) for such a release.
 
 ## After a release
 

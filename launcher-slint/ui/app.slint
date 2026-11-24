@@ -9,7 +9,7 @@ import "../../assets/fonts/IBMPlexMono-Regular.ttf";
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
 import { Spinner } from "widgets.slint";
-import { TitleBar, SideMenu, Toast, Notice } from "chrome.slint";
+import { TitleBar, SideMenu, Toast, Notice, UpdateBar } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
@@ -49,6 +49,15 @@ export component AppWindow inherits Window {
     in property <string> notice-title;
     in property <string> notice-body;
     in property <string> notice-for;
+    // A newer launcher ("" for none), and installing it: "offer", "updating" or "failed" (with
+    // why); `playing` while the game runs.
+    in property <string> update-version;
+    in property <string> update-state;
+    in property <string> update-said;
+    in property <bool> playing;
+    // About's Check for updates: looking, and what it found.
+    in property <bool> update-checking;
+    in property <string> update-checked;
 
     // Play.
     in property <string> server-state: "asking";
@@ -148,6 +157,11 @@ export component AppWindow inherits Window {
     callback notice-cancel(string);
     // About: one of its links, by id.
     callback open-link(string);
+    // The launcher's updates.
+    callback update-now();
+    callback update-notes();
+    callback update-later();
+    callback check-update();
 
     VerticalLayout {
         TitleBar {
@@ -157,6 +171,15 @@ export component AppWindow inherits Window {
             minimise => { root.minimise(); }
             maximise => { root.maximise(); }
             close => { root.close-window(); }
+        }
+        if root.update-version != "": UpdateBar {
+            version: root.update-version;
+            state: root.update-state;
+            said: root.update-said;
+            playing: root.playing;
+            update => { root.update-now(); }
+            notes => { root.update-notes(); }
+            later => { root.update-later(); }
         }
         HorizontalLayout {
             vertical-stretch: 1;
@@ -260,6 +283,9 @@ export component AppWindow inherits Window {
                 }
                 if root.loaded && root.shown == "about": AboutScreen {
                     release: root.release;
+                    checking: root.update-checking;
+                    checked: root.update-checked;
+                    check => { root.check-update(); }
                     link(id) => { root.open-link(id); }
                 }
                 if !root.loaded: VerticalLayout {
