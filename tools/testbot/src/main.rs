@@ -284,8 +284,8 @@ async fn main() -> Result<()> {
         Mode::Join => join(&mut conn, pid).await?,
         Mode::Friend(other, secs) => befriend(&mut conn, &other, secs).await?,
         Mode::Answer(secs) => answer(&mut conn, secs).await?,
-        Mode::Reach => reach(&mut conn, pid, &registered, &format!("{server}:{http_port}")).await?,
-        Mode::Keep(secs, host) => keep(&mut conn, pid, &registered, host, secs).await?,
+        Mode::Reach => reach(&mut conn, pid, &registered, &format!("{server}:{http_port}"), name).await?,
+        Mode::Keep(secs, host) => keep(&mut conn, pid, &registered, host, secs, name).await?,
     }
 
     conn.disconnect().await?;
@@ -369,7 +369,7 @@ impl log::Log for Printed {
 /// sees and on this machine's network, then runs the client's port forward (`keep`) against
 /// `host` for `secs` seconds. Two bots on two PCs behind one router show that each gets a forward
 /// of its own.
-async fn keep(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, host: String, secs: u64) -> Result<()> {
+async fn keep(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, host: String, secs: u64, name: &str) -> Result<()> {
     let public = registered.url_public.clone();
     let server_ip: std::net::Ipv4Addr = conn.peer_addr()?.ip().to_string().parse()?;
     let local = crosscom_client_net::portmap::local_ip_towards(server_ip).ok_or_else(|| eyre!("no local address"))?;
@@ -387,7 +387,8 @@ async fn keep(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse
     )
     .await?;
     let _ = log::set_logger(&Printed).map(|()| log::set_max_level(log::LevelFilter::Info));
-    std::thread::spawn(move || crosscom_client_net::keep::run(&host));
+    let account = name.to_owned();
+    std::thread::spawn(move || crosscom_client_net::keep::run(&host, &account));
     // Keeps the connection up meanwhile, as the game does.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < until {
@@ -408,7 +409,8 @@ async fn connection_test(server: String) -> Result<()> {
 }
 
 /// The client's side of reaching players, against the server at `http` (`host:port`).
-async fn reach(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, http: &str) -> Result<()> {
+async fn reach(conn: &mut Conn, pid: u32, registered: &secure::RegisterExResponse, http: &str, name: &str) -> Result<()> {
+    let account = name.to_owned();
     use crosscom_client_net::api;
     use crosscom_client_net::check;
     register_urls(conn, pid, registered).await?;
@@ -426,6 +428,7 @@ async fn reach(conn: &mut Conn, pid: u32, registered: &secure::RegisterExRespons
         }
         println!("ok   the address echo sees this PC at {seen}, the same on both ports");
         let report = |forward: Option<api::Forward>| api::ForwardReport {
+            account: account.clone(),
             local: local.to_string(),
             forward,
             nat: nat.as_str().into(),

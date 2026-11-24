@@ -247,7 +247,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     }
     let http = online_config::Http {
         content: online_config::content(public_ip, config.auth_port),
-        reach: reach::Reach::new(Arc::clone(&sessions), Arc::clone(&online)),
+        reach: reach::Reach::new(Arc::clone(&sessions), Arc::clone(&accounts)),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
         api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online))
             .with_stats(Arc::clone(&stats))

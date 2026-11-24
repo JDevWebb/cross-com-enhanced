@@ -47,6 +47,9 @@ const MAX_COUNTED: usize = 10_000;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForwardRequest {
+    /// Whose report it is (older clients don't say).
+    #[serde(default)]
+    account: String,
     local: String,
     forward: Option<Forward>,
     #[serde(default)]
@@ -77,9 +80,8 @@ pub struct Matched {
 
 pub struct Reach {
     sessions: Arc<Sessions>,
-    /// Who's signed in from where: a report is pinned on a player whose game announced another
-    /// adapter's address only when no one else is signed in from that address.
-    online: Arc<crate::online::Online>,
+    /// The accounts: a report is the named player's, when their game is seen where it came from.
+    accounts: Arc<crate::accounts::Accounts>,
     /// Calls per address in the current minute: (minute's start, forwards, reaches).
     counts: Mutex<HashMap<IpAddr, (Instant, u32, u32)>>,
 }
@@ -89,10 +91,10 @@ const NAT_KINDS: [&str; 3] = ["consistent", "symmetric", "unknown"];
 const HOW: [&str; 3] = ["UPnP", "PCP", "NAT-PMP"];
 
 impl Reach {
-    pub fn new(sessions: Arc<Sessions>, online: Arc<crate::online::Online>) -> Self {
+    pub fn new(sessions: Arc<Sessions>, accounts: Arc<crate::accounts::Accounts>) -> Self {
         Self {
             sessions,
-            online,
+            accounts,
             counts: Mutex::default(),
         }
     }
@@ -140,12 +142,19 @@ impl Reach {
             Some(f) => Some((f.port, f.how)),
             None => None,
         };
-        // The player whose game announced this socket; or, when its game announced another
-        // adapter's address, the only player at the caller's address (see `Reachability::local`).
-        let found = self.sessions.peer_at(client, local).map(|f| (f, true)).or_else(|| {
-            let (pid, port) = self.sessions.only_player_at(client)?;
-            (self.online.signed_in_from(client) == [pid]).then_some(((pid, port), false))
-        });
+        // The player the report names, when their game is seen where it came from (and whether
+        // their game announced the socket it names: else another adapter's address, see
+        // `Reachability::local`); from an older client that names no one, the player whose game
+        // announced that socket.
+        let found = if request.account.is_empty() {
+            self.sessions.peer_at(client, local).map(|f| (f, true))
+        } else {
+            self.accounts
+                .pid(request.account.trim())
+                .ok()
+                .flatten()
+                .and_then(|pid| self.sessions.socket_of(pid, client, local).map(|(port, announced)| ((pid, port), announced)))
+        };
         if let Some(((pid, _), _)) = found {
             self.sessions.set_reachability(
                 pid,
@@ -195,17 +204,20 @@ mod tests {
 
     use super::*;
 
-    fn reach() -> Reach {
+    /// A server with Kozak's game registered at 198.51.100.7 (public port 56877, 192.168.1.20 on
+    /// its network) and Housemate's account, whose game hasn't registered. Kozak's pid.
+    fn reach() -> (Reach, u32) {
         let sessions = Arc::new(Sessions::default());
+        let accounts = Arc::new(crate::accounts::Accounts::open(std::path::Path::new(":memory:")).unwrap());
+        let kozak = accounts.add("Kozak", "hunter22").unwrap();
+        accounts.add("Housemate", "hunter23").unwrap();
         let url = |a: &str, port: u16| format!("udp:/address={a};port={port};PID=1;RVCID=2").parse::<StationURL>().unwrap();
         sessions.set_urls(
-            7,
+            kozak,
             "prudp:/address=198.51.100.7;port=2347".parse().unwrap(),
             vec![url("198.51.100.7", 56877), url("192.168.1.20", 2346)],
         );
-        let online = Arc::new(crate::online::Online::default());
-        online.signed_in(7, "198.51.100.7".parse().unwrap());
-        Reach::new(sessions, online)
+        (Reach::new(sessions, accounts), kozak)
     }
 
     fn matched(pid: u32, announced: bool) -> Option<Matched> {
@@ -217,47 +229,57 @@ mod tests {
     }
 
     #[test]
-    fn a_report_is_matched_to_the_game_that_registered_its_socket() {
-        let r = reach();
+    fn a_report_is_the_named_players_where_their_game_is() {
+        let (r, k) = reach();
         let home: IpAddr = "198.51.100.7".parse().unwrap();
-        let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.20:2346","forward":null,"nat":"symmetric"}"#);
-        assert_eq!((answer.0, pid), ("200 OK", matched(7, true)));
+        let (answer, pid) = r.forward(home, br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":null,"nat":"symmetric"}"#);
+        assert_eq!((answer.0, pid), ("200 OK", matched(k, true)));
         assert_eq!(json_of(&answer)["port"], 56877);
-        assert_eq!(r.sessions.reachability(7).unwrap().nat, "symmetric");
-        let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#);
-        assert_eq!((answer.0, pid), ("200 OK", matched(7, true)));
-        assert_eq!(r.sessions.forward_of(7), Some(40000));
-        // Another player at that address, signed in but whose game hasn't registered: nothing is
-        // noted, as whose report it is can't be told.
-        r.online.signed_in(8, home);
-        let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.21:2346","forward":{"port":40001,"how":"UPnP"},"nat":"consistent"}"#);
+        assert_eq!(r.sessions.reachability(k).unwrap().nat, "symmetric");
+        let (answer, pid) = r.forward(
+            home,
+            br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
+        );
+        assert_eq!((answer.0, pid), ("200 OK", matched(k, true)));
+        assert_eq!(r.sessions.forward_of(k), Some(40000));
+        // A housemate's client, its game not registered yet: never taken for Kozak's.
+        let (answer, pid) = r.forward(
+            home,
+            br#"{"account":"Housemate","local":"192.168.1.21:2346","forward":{"port":40001,"how":"UPnP"},"nat":"consistent"}"#,
+        );
         assert_eq!((answer.0, pid), ("200 OK", None));
         assert_eq!(json_of(&answer)["port"], serde_json::Value::Null);
         assert_eq!(json_of(&answer)["address"], "198.51.100.7");
-        // From elsewhere, the same socket is no one's.
+        assert_eq!(r.sessions.forward_of(k), Some(40000), "Kozak's untouched");
+        // Kozak's name from elsewhere: not where Kozak's game is.
         let (_, pid) = r.forward(
             "203.0.113.9".parse().unwrap(),
-            br#"{"local":"192.168.1.20:2346","forward":{"port":1,"how":"UPnP"},"nat":"x"}"#,
+            br#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":1,"how":"UPnP"},"nat":"x"}"#,
         );
         assert_eq!(pid, None);
-        assert_eq!(r.sessions.forward_of(7), Some(40000));
+        assert_eq!(r.sessions.forward_of(k), Some(40000));
+        // An older client, naming no one: the game that announced the socket.
+        let (_, pid) = r.forward(home, br#"{"local":"192.168.1.20:2346","forward":null,"nat":"consistent"}"#);
+        assert_eq!(pid, matched(k, true));
+        let (_, pid) = r.forward(home, br#"{"local":"192.168.1.21:2346","forward":null,"nat":"consistent"}"#);
+        assert_eq!(pid, None);
     }
 
-    /// A game that announced another adapter's address (a VPN's) and is the only player signed in
-    /// from there: the report is its, and its socket on the network is the one the client found.
+    /// A game that announced another adapter's address (a VPN's): the report is still its
+    /// player's, and its socket on the network is the one the client found.
     #[test]
-    fn a_report_naming_a_socket_the_game_didnt_announce_is_its_players_when_alone() {
-        let r = reach();
+    fn a_report_naming_a_socket_the_game_didnt_announce_is_still_its_players() {
+        let (r, k) = reach();
         let home: IpAddr = "198.51.100.7".parse().unwrap();
-        let (answer, pid) = r.forward(home, br#"{"local":"10.8.0.5:2346","forward":null,"nat":"consistent"}"#);
-        assert_eq!((answer.0, pid), ("200 OK", matched(7, false)));
+        let (answer, pid) = r.forward(home, br#"{"account":"Kozak","local":"10.8.0.5:2346","forward":null,"nat":"consistent"}"#);
+        assert_eq!((answer.0, pid), ("200 OK", matched(k, false)));
         assert_eq!(json_of(&answer)["port"], 56877, "the client can forward the right port");
-        assert_eq!(r.sessions.reachability(7).unwrap().local, "10.8.0.5:2346".parse().unwrap());
+        assert_eq!(r.sessions.reachability(k).unwrap().local, "10.8.0.5:2346".parse().unwrap());
     }
 
     #[test]
     fn reports_that_dont_read_are_refused() {
-        let r = reach();
+        let (r, _) = reach();
         let home: IpAddr = "198.51.100.7".parse().unwrap();
         for body in [
             &b"{}"[..],
@@ -271,7 +293,7 @@ mod tests {
 
     #[test]
     fn the_reach_packet_goes_to_the_caller_only_and_not_too_often() {
-        let r = reach();
+        let (r, _) = reach();
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let port = socket.local_addr().unwrap().port();

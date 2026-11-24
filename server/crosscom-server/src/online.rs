@@ -76,16 +76,6 @@ impl Online {
             .is_some_and(|seen| seen.iter().any(|(a, at)| *a == key && now.duration_since(*at) < RECENT))
     }
 
-    /// The players signed in now whose latest sign-in came from `address`.
-    pub fn signed_in_from(&self, address: IpAddr) -> Vec<u32> {
-        let key = address_key(address);
-        let pids = self.pids().clone();
-        let recent = self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        pids.into_iter()
-            .filter(|pid| recent.get(pid).and_then(|seen| seen.last()).is_some_and(|(a, _)| *a == key))
-            .collect()
-    }
-
     /// The player's last connection is gone.
     pub fn gone(&self, pid: u32) {
         self.pids().remove(&pid);

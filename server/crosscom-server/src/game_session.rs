@@ -67,6 +67,34 @@ struct GameSessions {
     invitations: Invitations,
 }
 
+/// The lobbies a search offers (at most [`MAX_RESULTS`]), and how many were held back because the
+/// player can't punch through (`strict`) and their host can't be reached (`open`, by host).
+/// `open` is asked after the sessions are looked at, not while: it looks at them itself.
+fn offered(
+    sessions: &Sessions,
+    type_id: u32,
+    parameters: &[(u32, u32)],
+    strict: bool,
+    playable: impl Fn(&sessions::Session) -> bool,
+    open: impl Fn(u32) -> Option<bool>,
+) -> (Vec<(sessions::Key, sessions::Session)>, usize) {
+    let limit = if strict { MAX_RESULTS * 4 } else { MAX_RESULTS };
+    let candidates = sessions.find_where(type_id, parameters, limit, playable);
+    if !strict {
+        return (candidates, 0);
+    }
+    let (mut found, held): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|(_, s)| offered_to_strict(open(s.host)));
+    found.truncate(MAX_RESULTS);
+    (found, held.len())
+}
+
+/// Whether a lobby is offered to a player who can't punch through, by what its host's announced
+/// address answered: not when it was checked and didn't answer; when it did, or it wasn't
+/// checked (a server on a private network, a check under way), it is.
+fn offered_to_strict(host_open: Option<bool>) -> bool {
+    host_open != Some(false)
+}
+
 fn key(k: &GameSessionKey) -> sessions::Key {
     (k.type_id, k.session_id)
 }
@@ -231,7 +259,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
 
     fn search_sessions(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: SearchSessionsRequest,
@@ -242,7 +270,17 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let query = &request.game_session_query;
         // Only lobbies the player's game can load: their packs and their mode's (see `packs`).
         let playable = |s: &crate::sessions::Session| s.host != pid && heard_lately(s.host) && self.packs.offer(pid, s.host, s.attribute(crate::packs::MODE));
-        let found = self.sessions.find_where(query.type_id, &properties(&query.parameters), MAX_RESULTS, playable);
+        // A player who can't punch through (a symmetric NAT, no forward) only to hosts that can
+        // be reached from anywhere: a lobby whose host can't be would end in a failed join, and
+        // with none found the game hosts its own (see `announce`).
+        let strict = self.sessions.punches_poorly(pid);
+        let (found, held) = offered(&self.sessions, query.type_id, &properties(&query.parameters), strict, playable, crate::announce::open);
+        if held > 0 {
+            info!(
+                logger,
+                "{pid:#x} can't punch through (symmetric NAT, no forward): not offered {held} lobby(ies) whose host can't be reached from outside"
+            );
+        }
         // The game joins a session it found by reaching its host (a NAT probe), who then adds
         // it. Being offered a session gives nothing yet; reaching for its host is the choice
         // (see `Sessions::choose`).
@@ -736,4 +774,36 @@ pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, accounts: Arc<Accounts
         })),
         sessions,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A search by a player who can't punch through: lobbies whose host can't be reached are held
+    /// back. What's asked about hosts looks at the sessions itself, as `announce::open` does:
+    /// asked while the search held them, this would never end.
+    #[test]
+    fn a_strict_search_holds_back_unreachable_hosts_without_holding_the_sessions() {
+        let sessions = Sessions::default();
+        let a = sessions.create(10, 1, &[(3, 12)]).unwrap();
+        let b = sessions.create(11, 1, &[(3, 12)]).unwrap();
+        let open = |host: u32| {
+            let _ = sessions.seen(host);
+            Some(host == 11)
+        };
+        let (found, held) = offered(&sessions, 1, &[], true, |_| true, open);
+        assert_eq!(found.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![b]);
+        assert_eq!(held, 1);
+        let (found, held) = offered(&sessions, 1, &[], false, |_| true, open);
+        assert_eq!((found.len(), held), (2, 0), "everyone else: as before");
+        assert!(found.iter().any(|(k, _)| *k == a));
+    }
+
+    #[test]
+    fn a_player_who_cant_punch_through_isnt_sent_to_a_host_that_cant_be_reached() {
+        assert!(!offered_to_strict(Some(false)));
+        assert!(offered_to_strict(Some(true)));
+        assert!(offered_to_strict(None), "not checked: offered");
+    }
 }

@@ -42,15 +42,15 @@ const RETRY: Duration = Duration::from_secs(30 * 60);
 const DESCRIPTION: &str = "Cross-Com (Future Soldier)";
 
 /// Starts keeping the forward for the game's connection to `server`.
-pub fn spawn(server: String) {
-    let started = thread::Builder::new().name("port forward".into()).spawn(move || run(&server));
+pub fn spawn(server: String, account: String) {
+    let started = thread::Builder::new().name("port forward".into()).spawn(move || run(&server, &account));
     if let Err(e) = started {
         warn!("port forward: couldn't start: {e}");
     }
 }
 
 /// What [`spawn`]'s thread does, until the process ends (the test bot runs it too).
-pub fn run(server: &str) {
+pub fn run(server: &str, account: &str) {
     let ports = match check::server_udp(server) {
         Ok(p) => p,
         Err(e) => {
@@ -75,6 +75,7 @@ pub fn run(server: &str) {
     let (_, nat) = check::mapping(&ports);
     info!("port forward: the router maps ports {}", nat.as_str());
     let report = |forward: Option<api::Forward>| api::ForwardReport {
+        account: account.to_owned(),
         local: format!("{local}:{GAME_PEER_PORT}"),
         forward,
         nat: nat.as_str().into(),

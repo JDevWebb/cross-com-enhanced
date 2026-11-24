@@ -389,6 +389,14 @@ and the summary sums joins up by the host's (`By the host's announced address`).
 lets in anything from an address its player has already sent to, whatever the port, counts as
 reachable here, as the server's address is one it has.
 
+**Matchmaking around it.** A player whose router gives a port per destination (a symmetric NAT,
+as their client reports) and doesn't forward the game's port can't punch through to a host. Their
+Quick Match searches aren't offered lobbies whose host was checked and can't be reached from
+outside (logged: `... can't punch through ...: not offered 1 lobby(ies) ...`), so their game
+hosts a lobby of its own instead of trying a join that would fail. Hosts not checked are offered
+as before, and so is every lobby to everyone else; invitations and joining a friend aren't
+touched.
+
 **When a game announces the wrong adapter.** A PC with a VPN, Hyper-V or VirtualBox may have its
 game announce that adapter's address on its network instead of the one that reaches the server.
 The client's router report names the right one: the server then puts it first for players at the
@@ -399,10 +407,11 @@ peer-to-peer socket on the player's network to `POST /api/forward`, with the por
 forwards to it, if any:
 
 ```json
-{"local": "192.168.1.20:2346", "forward": {"port": 40000, "how": "UPnP"}, "nat": "consistent"}
+{"account": "Kozak", "local": "192.168.1.20:2346", "forward": {"port": 40000, "how": "UPnP"}, "nat": "consistent"}
 ```
 
-The server matches it to the player seen at that address whose game registered that socket
+The server takes it as the named player's when their game is seen at the address it came from
+(from a client that names no one, the player seen there whose game registered that socket)
 (`200 {"address": ..., "port": ..., "open": ...}`: where it sees the caller, the socket's public
 port once the game has registered it, and whether the server reached the game at its announced
 address, once checked). A forward is then given to the other players in that player's matches
