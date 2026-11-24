@@ -102,7 +102,11 @@ pub fn announced(sessions: &Sessions, pid: u32) -> Option<(SocketAddrV4, Option<
         return None;
     };
     let elsewhere = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let url = sessions.urls_seen_from(pid, elsewhere).into_iter().find(|u| u.address == seen.to_string())?;
+    // Its peer-to-peer address: not its connection to the server, registered at sign-in.
+    let url = sessions
+        .urls_seen_from(pid, elsewhere)
+        .into_iter()
+        .find(|u| u.scheme == "udp" && u.address == seen.to_string())?;
     let rvcid = url.params.get("RVCID").and_then(|c| c.parse().ok());
     Some((SocketAddrV4::new(seen, url.port), rvcid))
 }

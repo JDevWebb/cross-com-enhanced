@@ -400,8 +400,8 @@ mod tests {
             signup: signup.then(|| SignUp::new(Arc::clone(&accounts), None)),
             api,
             proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
-            logs: crate::logs::Logs::new(settings, accounts, online),
-            reach: crate::reach::Reach::new(Arc::default(), Arc::default()),
+            logs: crate::logs::Logs::new(settings, Arc::clone(&accounts), online),
+            reach: crate::reach::Reach::new(Arc::default(), Arc::clone(&accounts)),
         }
     }
 

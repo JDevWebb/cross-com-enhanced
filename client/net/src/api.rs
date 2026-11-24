@@ -31,6 +31,9 @@ pub struct Forward {
 /// `POST /api/forward`'s body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardReport {
+    /// The account the game signs in with: whose report it is (the server takes it only from
+    /// where that player's game is).
+    pub account: String,
     /// The game's peer-to-peer socket on this PC's network, `192.168.1.20:2346`.
     pub local: String,
     pub forward: Option<Forward>,
@@ -103,13 +106,14 @@ mod tests {
     #[test]
     fn the_report_reads_as_the_server_expects() {
         let report = ForwardReport {
+            account: "Kozak".into(),
             local: "192.168.1.20:2346".into(),
             forward: Some(Forward { port: 40000, how: "UPnP".into() }),
             nat: "consistent".into(),
         };
         assert_eq!(
             serde_json::to_string(&report).unwrap(),
-            r#"{"local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#
+            r#"{"account":"Kozak","local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#
         );
         let answer: ForwardAnswer = serde_json::from_str(r#"{"address":"203.0.113.7","port":null}"#).unwrap();
         assert_eq!(answer.address, Some(Ipv4Addr::new(203, 0, 113, 7)));
