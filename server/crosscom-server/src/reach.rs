@@ -67,8 +67,19 @@ struct ReachRequest {
     nonce: String,
 }
 
+/// The player a router report was matched to, and whether its game announced the socket the
+/// report names (else it announced another adapter's address).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Matched {
+    pub pid: u32,
+    pub announced: bool,
+}
+
 pub struct Reach {
     sessions: Arc<Sessions>,
+    /// Who's signed in from where: a report is pinned on a player whose game announced another
+    /// adapter's address only when no one else is signed in from that address.
+    online: Arc<crate::online::Online>,
     /// Calls per address in the current minute: (minute's start, forwards, reaches).
     counts: Mutex<HashMap<IpAddr, (Instant, u32, u32)>>,
 }
@@ -78,9 +89,10 @@ const NAT_KINDS: [&str; 3] = ["consistent", "symmetric", "unknown"];
 const HOW: [&str; 3] = ["UPnP", "PCP", "NAT-PMP"];
 
 impl Reach {
-    pub fn new(sessions: Arc<Sessions>) -> Self {
+    pub fn new(sessions: Arc<Sessions>, online: Arc<crate::online::Online>) -> Self {
         Self {
             sessions,
+            online,
             counts: Mutex::default(),
         }
     }
@@ -110,7 +122,7 @@ impl Reach {
 
     /// `POST /api/forward` from `client` with `body`. The player it was matched to, if any, for
     /// the log.
-    pub fn forward(&self, client: IpAddr, body: &[u8]) -> (Answer, Option<u32>) {
+    pub fn forward(&self, client: IpAddr, body: &[u8]) -> (Answer, Option<Matched>) {
         if !self.allow(client, false) {
             return (error("429 Too Many Requests", "too many reports from here; try again later"), None);
         }
@@ -128,20 +140,28 @@ impl Reach {
             Some(f) => Some((f.port, f.how)),
             None => None,
         };
-        let found = self.sessions.peer_at(client, local);
-        if let Some((pid, _)) = found {
+        // The player whose game announced this socket; or, when its game announced another
+        // adapter's address, the only player at the caller's address (see `Reachability::local`).
+        let found = self.sessions.peer_at(client, local).map(|f| (f, true)).or_else(|| {
+            let (pid, port) = self.sessions.only_player_at(client)?;
+            (self.online.signed_in_from(client) == [pid]).then_some(((pid, port), false))
+        });
+        if let Some(((pid, _), _)) = found {
             self.sessions.set_reachability(
                 pid,
                 Reachability {
                     forward,
                     nat,
                     seen: client,
+                    local,
                     at: Instant::now(),
                 },
             );
         }
-        let port = found.and_then(|(_, port)| port);
-        (("200 OK", json!({ "address": client.to_string(), "port": port }).to_string()), found.map(|(pid, _)| pid))
+        let port = found.and_then(|((_, port), _)| port);
+        let open = found.and_then(|((pid, _), _)| crate::announce::open(pid));
+        let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
+        (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced }))
     }
 
     /// `POST /api/reach` from `client` with `body`.
@@ -183,7 +203,13 @@ mod tests {
             "prudp:/address=198.51.100.7;port=2347".parse().unwrap(),
             vec![url("198.51.100.7", 56877), url("192.168.1.20", 2346)],
         );
-        Reach::new(sessions)
+        let online = Arc::new(crate::online::Online::default());
+        online.signed_in(7, "198.51.100.7".parse().unwrap());
+        Reach::new(sessions, online)
+    }
+
+    fn matched(pid: u32, announced: bool) -> Option<Matched> {
+        Some(Matched { pid, announced })
     }
 
     fn json_of(answer: &Answer) -> serde_json::Value {
@@ -195,13 +221,15 @@ mod tests {
         let r = reach();
         let home: IpAddr = "198.51.100.7".parse().unwrap();
         let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.20:2346","forward":null,"nat":"symmetric"}"#);
-        assert_eq!((answer.0, pid), ("200 OK", Some(7)));
+        assert_eq!((answer.0, pid), ("200 OK", matched(7, true)));
         assert_eq!(json_of(&answer)["port"], 56877);
         assert_eq!(r.sessions.reachability(7).unwrap().nat, "symmetric");
         let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.20:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#);
-        assert_eq!((answer.0, pid), ("200 OK", Some(7)));
+        assert_eq!((answer.0, pid), ("200 OK", matched(7, true)));
         assert_eq!(r.sessions.forward_of(7), Some(40000));
-        // Another player at that address, whose game hasn't registered: nothing is noted.
+        // Another player at that address, signed in but whose game hasn't registered: nothing is
+        // noted, as whose report it is can't be told.
+        r.online.signed_in(8, home);
         let (answer, pid) = r.forward(home, br#"{"local":"192.168.1.21:2346","forward":{"port":40001,"how":"UPnP"},"nat":"consistent"}"#);
         assert_eq!((answer.0, pid), ("200 OK", None));
         assert_eq!(json_of(&answer)["port"], serde_json::Value::Null);
@@ -213,6 +241,18 @@ mod tests {
         );
         assert_eq!(pid, None);
         assert_eq!(r.sessions.forward_of(7), Some(40000));
+    }
+
+    /// A game that announced another adapter's address (a VPN's) and is the only player signed in
+    /// from there: the report is its, and its socket on the network is the one the client found.
+    #[test]
+    fn a_report_naming_a_socket_the_game_didnt_announce_is_its_players_when_alone() {
+        let r = reach();
+        let home: IpAddr = "198.51.100.7".parse().unwrap();
+        let (answer, pid) = r.forward(home, br#"{"local":"10.8.0.5:2346","forward":null,"nat":"consistent"}"#);
+        assert_eq!((answer.0, pid), ("200 OK", matched(7, false)));
+        assert_eq!(json_of(&answer)["port"], 56877, "the client can forward the right port");
+        assert_eq!(r.sessions.reachability(7).unwrap().local, "10.8.0.5:2346".parse().unwrap());
     }
 
     #[test]

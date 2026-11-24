@@ -378,6 +378,22 @@ turn on UPnP, or to run the launcher's connection test (Settings › Connection)
 player behind a symmetric NAT couldn't get into a lobby whose host had no forward either
 (`unreached`), and got in as soon as the host's router forwarded.
 
+**Whether players can be reached where they announce themselves.** When a game registers its
+addresses, or its client reports a forward, the server checks the address other players will be
+given first: it sends a NAT probe there from a socket of its own, one the player's router has
+never seen, and waits a second and a half for the game to answer, as games answer each other's.
+An answer means the address takes packets from anyone, so any player can join that game's
+matches (`... answers at 203.0.113.7:2346 from anywhere`); none means only players whose games
+can punch through can (`... didn't answer ... from outside`). Records note it for both players,
+and the summary sums joins up by the host's (`By the host's announced address`). A router that
+lets in anything from an address its player has already sent to, whatever the port, counts as
+reachable here, as the server's address is one it has.
+
+**When a game announces the wrong adapter.** A PC with a VPN, Hyper-V or VirtualBox may have its
+game announce that adapter's address on its network instead of the one that reaches the server.
+The client's router report names the right one: the server then puts it first for players at the
+same house, and logs `... announced another adapter's address than the one reaching the server`.
+
 **Where the router details come from.** While the game runs, the client reports the game's
 peer-to-peer socket on the player's network to `POST /api/forward`, with the port the router
 forwards to it, if any:
@@ -387,8 +403,9 @@ forwards to it, if any:
 ```
 
 The server matches it to the player seen at that address whose game registered that socket
-(`200 {"address": ..., "port": ...}`: where it sees the caller, and the socket's public port once
-the game has registered it). A forward is then given to the other players in that player's matches
+(`200 {"address": ..., "port": ..., "open": ...}`: where it sees the caller, the socket's public
+port once the game has registered it, and whether the server reached the game at its announced
+address, once checked). A forward is then given to the other players in that player's matches
 first, on the address the server sees the player at, for 35 minutes from each report (the client
 renews it every 10). It isn't given to players on the same network: they get each other's
 private addresses first.

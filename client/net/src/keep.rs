@@ -93,6 +93,21 @@ pub fn run(server: &str) {
     };
     let mut ask = portmap::port_to_ask(GAME_PEER_PORT, Some(seen));
     let mut checked = false;
+    // What the server last said about reaching the game from outside, logged as it changes.
+    let mut open = None;
+    let mut said = |answer: Result<api::ForwardAnswer, String>| match answer {
+        Ok(a) => {
+            if a.open.is_some() && a.open != open {
+                open = a.open;
+                if a.open == Some(true) {
+                    info!("port forward: the server reached the game from outside: anyone can join its matches");
+                } else {
+                    info!("port forward: the server couldn't reach the game from outside: only players who can punch through can join its matches");
+                }
+            }
+        }
+        Err(e) => warn!("port forward: couldn't tell the server: {e}"),
+    };
     loop {
         match portmap::map_as(GAME_PEER_PORT, ask, Some(local), LEASE, DESCRIPTION) {
             Ok(mapping) => {
@@ -113,18 +128,14 @@ pub fn run(server: &str) {
                     port: mapping.public.port(),
                     how: mapping.how.into(),
                 };
-                if let Err(e) = api::forward(server, &report(Some(forward))) {
-                    warn!("port forward: couldn't tell the server: {e}");
-                }
+                said(api::forward(server, &report(Some(forward))));
                 // Kept until its lease ends: dropping it doesn't take it away.
                 drop(mapping);
                 thread::sleep(RENEW);
             }
             Err(e) => {
                 info!("port forward: the router didn't forward the game's port: {e}");
-                if let Err(e) = api::forward(server, &report(None)) {
-                    warn!("port forward: {e}");
-                }
+                said(api::forward(server, &report(None)));
                 thread::sleep(RETRY);
             }
         }
