@@ -34,6 +34,10 @@ pub struct ForwardReport {
     /// The account the game signs in with: whose report it is (the server takes it only from
     /// where that player's game is).
     pub account: String,
+    /// The game token the game signs in with (`crosscom_client_common::config::is_game_token`):
+    /// proof the report is the player's own. Never a password; left out when there's no token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// The game's peer-to-peer socket on this PC's network, `192.168.1.20:2346`.
     pub local: String,
     pub forward: Option<Forward>,
@@ -107,6 +111,7 @@ mod tests {
     fn the_report_reads_as_the_server_expects() {
         let report = ForwardReport {
             account: "Kozak".into(),
+            token: None,
             local: "192.168.1.20:2346".into(),
             forward: Some(Forward { port: 40000, how: "UPnP".into() }),
             nat: "consistent".into(),

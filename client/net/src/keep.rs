@@ -148,18 +148,19 @@ fn update(change: impl FnOnce(&mut Connection)) {
 
 /// Starts keeping the forward for the game's connection to `server`, as `account`, writing what
 /// it finds into `game_dir` (see [`STATUS_FILE`]).
-pub fn spawn(server: String, account: String, game_dir: Option<PathBuf>) {
+pub fn spawn(server: String, account: String, token: Option<String>, game_dir: Option<PathBuf>) {
     if let Some(dir) = game_dir {
         let _ = STATUS_PATH.set(dir.join(STATUS_FILE));
     }
-    let started = thread::Builder::new().name("port forward".into()).spawn(move || run(&server, &account));
+    let started = thread::Builder::new().name("port forward".into()).spawn(move || run(&server, &account, token.as_deref()));
     if let Err(e) = started {
         warn!("port forward: couldn't start: {e}");
     }
 }
 
 /// What [`spawn`]'s thread does, until the process ends (the test bot runs it too).
-pub fn run(server: &str, account: &str) {
+/// `token`: the game token, sent with each report as proof it's this player's (never a password).
+pub fn run(server: &str, account: &str, token: Option<&str>) {
     let ports = match check::server_udp(server) {
         Ok(p) => p,
         Err(e) => {
@@ -186,6 +187,7 @@ pub fn run(server: &str, account: &str) {
     update(|c| c.nat = nat.as_str().into());
     let report = |forward: Option<api::Forward>| api::ForwardReport {
         account: account.to_owned(),
+        token: token.filter(|t| crosscom_client_common::config::is_game_token(t)).map(str::to_owned),
         local: format!("{local}:{GAME_PEER_PORT}"),
         forward,
         nat: nat.as_str().into(),

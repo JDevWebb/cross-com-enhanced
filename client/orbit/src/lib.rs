@@ -182,7 +182,8 @@ fn start() {
     // The router's forward for the game's peer-to-peer port, on a thread of its own.
     if let Some(config) = CONFIG.get().filter(|c| c.port_forwarding) {
         if let Some(server) = config.server.clone().filter(|s| crosscom_client_net::keep::wanted(s)) {
-            crosscom_client_net::keep::spawn(server, config.username.clone(), game_dir());
+            let token = Some(config.password.clone()).filter(|p| crosscom_client_common::config::is_game_token(p));
+            crosscom_client_net::keep::spawn(server, config.username.clone(), token, game_dir());
         }
     }
 }
