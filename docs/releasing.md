@@ -52,7 +52,13 @@ An Ed25519 key. Its private half stays off GitHub, with the maintainer; this is 
 which `scripts/verify-release.sh` carries too:
 
 <!-- release-key -->
-Not made yet: `scripts/sign-release.sh --keygen` makes it and writes it here.
+```text
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAz8ux0mceIUIneqPhVCDoQaKcSWPIiUwa//3bdhjkYW4=
+-----END PUBLIC KEY-----
+```
+
+SHA-256 fingerprint of the key (DER): `771ca1615e3caea5f91eb62ee01ad5b6eeaeee30460fd4c85aba4778ec7315c2`
 <!-- /release-key -->
 
 What it signs, for checking by hand: a file of the purpose line `cross-com/release/v1` (or
