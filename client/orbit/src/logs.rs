@@ -59,11 +59,12 @@ pub(crate) fn start(dir: PathBuf, config: &Config) {
         let Some(server) = server.filter(|_| send) else {
             return;
         };
-        if runs::pending(&dir).is_empty() || rx.recv().is_err() {
+        if runs::pending_for(&dir, &server, &meta.account).is_empty() || rx.recv().is_err() {
             return;
         }
         std::thread::sleep(AFTER_SIGN_IN);
-        let (sent, refused) = runs::send_pending(&dir, &private, &meta, |body, headers| {
+        // Only the runs played on this server, as this account: the password hidden is theirs.
+        let (sent, refused) = runs::send_pending(&dir, &server, &private, &meta, |body, headers| {
             server_info::post(&server, runs::PATH, headers, body, TIMEOUT).map_err(|e| e.0)
         });
         for run in sent {

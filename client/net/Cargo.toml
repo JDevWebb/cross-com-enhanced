@@ -13,6 +13,10 @@ serde_json = { workspace = true }
 igd-next = "0.16"
 # Nonces (PCP, the echo and reach checks) from the system's random source.
 getrandom = "0.3"
+# Finding the router's UPnP service ourselves, so nothing is fetched but from the router
+# (portmap.rs): the HTTP client and XML reader igd-next uses.
+attohttpc = { version = "0.30", default-features = false }
+xmltree = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # The default gateway (GetBestRoute), as hudhook's version: one copy in the client DLL.

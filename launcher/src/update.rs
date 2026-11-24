@@ -10,7 +10,10 @@
 //!
 //! The launcher replaces itself by renaming: Windows lets a running exe be renamed, not
 //! overwritten, so the new one takes its name and starts, and the old one (kept as `<name>.old`)
-//! is deleted on the next start ([`clean_up`]).
+//! is deleted on the next start ([`clean_up`]). The new one is read back from the disk and
+//! checked again just before and after it takes the name, and held open so it can't be changed
+//! until it has started, so another user who can write to the launcher's folder can't swap in a
+//! file of their own after the download was checked.
 //!
 //! The release key's public half comes from `scripts/verify-release.sh` when the launcher is
 //! built (see `build.rs`); a launcher built before the key exists doesn't update itself, nor does
@@ -252,8 +255,8 @@ fn checksum_for(sums: &str, name: &str) -> Option<[u8; 32]> {
 }
 
 /// Whether `data` is release `version`'s `name`: `sums` signed as that version by `key`, and
-/// listing `data`'s checksum.
-fn checked(key: &str, version: &str, sums: &str, signature: &str, name: &str, data: &[u8]) -> Result<(), String> {
+/// listing `data`'s checksum, which is given back.
+fn checked(key: &str, version: &str, sums: &str, signature: &str, name: &str, data: &[u8]) -> Result<[u8; 32], String> {
     if Release::parse(version).is_none() || !signed(key, version, sums.as_bytes(), signature) {
         return Err(format!("release {version} isn't signed by the project's release key as {version}; not installed"));
     }
@@ -262,12 +265,40 @@ fn checked(key: &str, version: &str, sums: &str, signature: &str, name: &str, da
     if got.as_ref() != want {
         return Err(format!("{name} doesn't match its published checksum; not installed"));
     }
-    Ok(())
+    Ok(want)
+}
+
+/// Opens `path` for reading, and on Windows so that nothing else can write it, delete it or
+/// rename it while the file is open, and checks its SHA-256 is `want`. The open file is given
+/// back: holding it keeps the checked contents at that path.
+fn open_checked(path: &Path, want: &[u8; 32]) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ alone: others may read it (and Windows run it), not change it.
+        options.share_mode(0x1);
+    }
+    let mut file = options.open(path).map_err(|e| format!("couldn't read {} back: {e}", path.display()))?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| format!("couldn't read {} back: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        context.update(&buf[..n]);
+    }
+    if context.finish().as_ref() != want {
+        return Err(format!("{} changed after it was checked; not installed", path.display()));
+    }
+    Ok(file)
 }
 
 /// Downloads `name` from the release, checked, to `to` (through a temporary file beside it, so
-/// a failed download leaves nothing behind).
-fn download(latest: &Latest, name: &str, to: &Path) -> Result<(), String> {
+/// a failed download leaves nothing behind); its SHA-256, as the signed checksums list it.
+fn download(latest: &Latest, name: &str, to: &Path) -> Result<[u8; 32], String> {
     let sums = get(latest.url(SUMS_ASSET)?, Duration::from_secs(30), MAX_SMALL)?;
     let sums = String::from_utf8(sums).map_err(|_| format!("{SUMS_ASSET} isn't text"))?;
     let sig = latest.url(SIG_ASSET).map_err(|_| format!("release {} isn't signed yet; try again later", latest.version))?;
@@ -280,8 +311,9 @@ fn download(latest: &Latest, name: &str, to: &Path) -> Result<(), String> {
         ));
     }
     let data = get(latest.url(name)?, Duration::from_secs(300), MAX_DOWNLOAD)?;
-    checked(RELEASE_KEY, &latest.version, &sums, &sig, name, &data)?;
-    install(&data, to).map_err(|e| format!("couldn't write {}: {e}", to.display()))
+    let want = checked(RELEASE_KEY, &latest.version, &sums, &sig, name, &data)?;
+    install(&data, to).map_err(|e| format!("couldn't write {}: {e}", to.display()))?;
+    Ok(want)
 }
 
 /// Writes `data` to `to` through a temporary file beside it.
@@ -308,12 +340,36 @@ pub fn update_self(latest: &Latest, current: &str) -> Result<(), String> {
     }
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this launcher: {e}"))?;
     let new = with_suffix(&me, ".new");
-    download(latest, LAUNCHER_ASSET, &new)?;
-    swap_in(&me, &new).map_err(|e| format!("couldn't put the new launcher in place of {}: {e}", me.display()))?;
+    let want = download(latest, LAUNCHER_ASSET, &new)?;
+    // Held open until it has started: nothing can change it in between (see `swap_in_checked`).
+    let _held = swap_in_checked(&me, &new, &want)?;
     std::process::Command::new(&me)
         .spawn()
         .map_err(|e| format!("the new launcher is in place, but didn't start ({e}): start it again"))?;
     Ok(())
+}
+
+/// Puts `new` in `exe`'s place as [`swap_in`] does, only if it's still what was checked (SHA-256
+/// `want`): the folder may be one others can write to, so the file is read back from the disk
+/// both before the swap and after it. The second time it's opened so that, on Windows, nothing
+/// else can write, delete or rename it while it's held, and given back: the caller starts it
+/// before letting go, so what starts is what was checked. A file that changed is deleted and
+/// `exe` is left (or put back) as it was.
+fn swap_in_checked(exe: &Path, new: &Path, want: &[u8; 32]) -> Result<std::fs::File, String> {
+    if let Err(e) = open_checked(new, want) {
+        let _ = std::fs::remove_file(new);
+        return Err(e);
+    }
+    swap_in(exe, new).map_err(|e| format!("couldn't put the new launcher in place of {}: {e}", exe.display()))?;
+    match open_checked(exe, want) {
+        Ok(held) => Ok(held),
+        Err(e) => {
+            // Not the release's: out, and the running launcher back in its place.
+            let _ = std::fs::remove_file(exe);
+            let _ = std::fs::rename(with_suffix(exe, ".old"), exe);
+            Err(e)
+        }
+    }
 }
 
 /// Puts `new` in `exe`'s place, keeping `exe` as `<exe>.old`; if that fails, `exe` is put back.
@@ -421,8 +477,9 @@ mod tests {
         let data = b"the new launcher";
         let sums = format!("{}  {LAUNCHER_ASSET}\n", hex(ring::digest::digest(&ring::digest::SHA256, data).as_ref()));
         let sig = sign(&pair, "1.2.0", &sums);
-        assert_eq!(checked(&public, "1.2.0", &sums, &sig, LAUNCHER_ASSET, data), Ok(()));
-        let refused = |r: Result<(), String>, why: &str| {
+        let digest = ring::digest::digest(&ring::digest::SHA256, data);
+        assert_eq!(checked(&public, "1.2.0", &sums, &sig, LAUNCHER_ASSET, data).as_ref().map(|h| &h[..]), Ok(digest.as_ref()));
+        let refused = |r: Result<[u8; 32], String>, why: &str| {
             let e = r.expect_err(why);
             assert!(e.contains("not installed"), "{why}: {e}");
         };
@@ -487,5 +544,30 @@ mod tests {
         assert_eq!(std::fs::read_to_string(with_suffix(&exe, ".old")).unwrap(), "old", "kept, for clean_up");
         assert!(swap_in(&exe, &dir.path().join("missing")).is_err());
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new", "put back as it was");
+    }
+
+    #[test]
+    fn a_new_launcher_changed_after_its_check_isnt_put_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exe, new) = (dir.path().join("crosscom-launcher.exe"), dir.path().join("crosscom-launcher.exe.new"));
+        let sha = |data: &[u8]| -> [u8; 32] { ring::digest::digest(&ring::digest::SHA256, data).as_ref().try_into().unwrap() };
+        let want = sha(b"the release's launcher");
+        std::fs::write(&exe, "old").unwrap();
+
+        // Someone else put another file there after the download was checked.
+        install(b"something else", &new).unwrap();
+        let e = swap_in_checked(&exe, &new, &want).unwrap_err();
+        assert!(e.contains("changed after it was checked"), "{e}");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old", "the running launcher stays");
+        assert!(!new.exists(), "the other file is deleted");
+        assert!(!with_suffix(&exe, ".old").exists());
+
+        // As checked: in place, held open.
+        install(b"the release's launcher", &new).unwrap();
+        let held = swap_in_checked(&exe, &new, &want).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "the release's launcher");
+        assert_eq!(std::fs::read_to_string(with_suffix(&exe, ".old")).unwrap(), "old");
+        drop(held);
+        assert!(open_checked(&exe, &sha(b"old")).is_err());
     }
 }

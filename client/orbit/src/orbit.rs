@@ -32,7 +32,8 @@ pub struct LoginDetailsListener {
 #[repr(C)]
 struct LoginDetailsListenerVtable {
     /// `(request id, username, password, CD key)`. The game copies each string into a buffer of
-    /// 80 bytes; the settings are checked against that when they're read.
+    /// 80 bytes (the password converted to narrow characters on the way); `Login` keeps each to
+    /// 79.
     on_login_details: unsafe extern "thiscall" fn(*mut LoginDetailsListener, u32, *const c_char, *const u16, *const c_char),
 }
 
@@ -232,7 +233,8 @@ pub extern "thiscall" fn SavegameWriter_SetName(_this: *mut c_void, _name: *mut 
     true
 }
 
-/// Takes `size` bytes for the save and tells the listener it took them all.
+/// Takes `size` bytes for the save and tells the listener it took them all; none, when the save
+/// would grow past the largest kept (see `save_fits`).
 #[unsafe(no_mangle)]
 pub unsafe extern "thiscall" fn SavegameWriter_Write(this: *mut c_void, request_id: u32, listener: *mut c_void, buffer: *mut c_void, size: u32) {
     let Some(on_write) = (unsafe { first_method::<OnBytes>(listener) }) else {
@@ -242,7 +244,7 @@ pub unsafe extern "thiscall" fn SavegameWriter_Write(this: *mut c_void, request_
     let mut n = 0;
     if !this.is_null() && !buffer.is_null() {
         let writer = unsafe { &mut *this.cast::<Writer>() };
-        if writer.data.len() + size as usize <= crosscom_client_common::saves::MAX_SIZE {
+        if crate::save_fits(writer.data.len(), size) {
             writer.data.extend_from_slice(unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), size as usize) });
             n = size;
         }

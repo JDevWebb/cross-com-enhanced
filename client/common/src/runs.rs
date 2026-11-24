@@ -10,9 +10,15 @@
 //! `crosscom-<...>.sent.log`, so it isn't sent again and the player still has it.
 //!
 //! What's sent is a copy with the private parts hidden (see [`redact`]): the Windows user name
-//! (wherever it appears, and the name in any home folder) and the account's password. The account
-//! name stays: the server knows it. A long log is cut to [`MAX_UPLOAD`] (see [`cap`]). The files
-//! on disk are never changed.
+//! (wherever it appears, and the name in any home folder) and the account's password (in any
+//! case, and escaped as JSON or a URL would have it). The account name stays: the server knows
+//! it. A long log is cut to [`MAX_UPLOAD`] (see [`cap`]), only ever between lines, so no password
+//! is left in part at a cut. The files on disk are never changed.
+//!
+//! Each run's log starts with the server and account it played with ([`begin`]), and a run is
+//! only sent to that server, with that account set up (so the password hidden is the one it
+//! signed in with): one played on another server, or with another account, or by a client from
+//! before runs said so, waits (and is in time deleted, as all runs are).
 //!
 //! `POST /api/logs` takes the log as its body (`text/plain`), with what's known about it in
 //! `X-Crosscom-*` headers (see [`headers`]). The server answers `201 {"id": "<report id>"}`.
@@ -208,6 +214,76 @@ pub fn pending(game_dir: &Path) -> Vec<Run> {
     runs(game_dir).into_iter().filter(|r| !r.sent).take(MAX_PER_PASS).collect()
 }
 
+/// The runs not sent yet that were played on `server` as `account` (see [`begin`]), newest
+/// first, at most [`MAX_PER_PASS`].
+#[must_use]
+pub fn pending_for(game_dir: &Path, server: &str, account: &str) -> Vec<Run> {
+    runs(game_dir)
+        .into_iter()
+        .filter(|r| !r.sent && played_in(&r.path).is_some_and(|p| p.is(server, account)))
+        .take(MAX_PER_PASS)
+        .collect()
+}
+
+/// What a run says at its start it was played with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Played {
+    /// The server's host (as [`host`] gives it).
+    pub server: String,
+    pub account: String,
+}
+
+impl Played {
+    /// Whether this is `server` (as typed or as a host) and `account`.
+    #[must_use]
+    pub fn is(&self, server: &str, account: &str) -> bool {
+        !self.server.is_empty() && self.server == host(server) && self.account.trim().eq_ignore_ascii_case(account.trim())
+    }
+}
+
+/// What a run's log starts with to say what it played with: `<time> INFO  orbit Run: {...}`.
+const PLAYED: &str = " Run: ";
+/// How far into a log [`begin`]'s line is looked for.
+const PLAYED_WITHIN: usize = 16 * 1024;
+
+/// A server as typed, as a host: no `http(s)://`, no trailing `/`, lower case.
+fn host(server: &str) -> String {
+    let s = server.trim();
+    let s = s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")).unwrap_or(s);
+    s.trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Starts this run's `crosscom.log` in `game_dir` (or adds to it, for a run that carries on in
+/// it) with the server and account it plays with, so its log is only sent there. Written to the
+/// file itself, whatever the log level.
+pub fn begin(game_dir: &Path, server: &str, account: &str) -> io::Result<()> {
+    use std::io::Write;
+    let record = serde_json::json!({ "server": host(server), "account": account.trim() });
+    let line = format!("{}.000 INFO  orbit{PLAYED}{record}\n", now());
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(game_dir.join(logging::FILE_NAME))?
+        .write_all(line.as_bytes())
+}
+
+/// What `text` (a log's start) says it played with: the first line [`begin`] wrote.
+fn played(text: &str) -> Option<Played> {
+    let line = text.lines().take(50).find(|l| l.contains(" INFO  orbit Run: {"))?;
+    let json: serde_json::Value = serde_json::from_str(line.split_once(PLAYED)?.1).ok()?;
+    Some(Played {
+        server: json["server"].as_str()?.to_owned(),
+        account: json["account"].as_str()?.to_owned(),
+    })
+}
+
+/// What the run at `path` says it played with.
+fn played_in(path: &Path) -> Option<Played> {
+    let mut start = Vec::new();
+    fs::File::open(path).ok()?.take(PLAYED_WITHIN as u64).read_to_end(&mut start).ok()?;
+    played(&String::from_utf8_lossy(&start))
+}
+
 /// Marks a run as sent (renames it `*.sent.log`).
 pub fn mark_sent(run: &Run) -> io::Result<PathBuf> {
     let stem = run.name.strip_suffix(PENDING).unwrap_or(&run.name);
@@ -249,7 +325,8 @@ impl Private {
 }
 
 /// `text` with the private parts hidden:
-/// - the password, wherever it appears, as `<password>`;
+/// - the password, wherever it appears, in any (ASCII) case and escaped in any of the usual ways
+///   (see [`secret_at`]), as `<password>`;
 /// - the Windows user names, wherever they appear (in any case, inside longer words too), as
 ///   `<user>`, except where the account's name appears whole;
 /// - the user's folder name in home folders (`C:\Users\<name>`, `/home/<name>`, also with doubled
@@ -261,7 +338,7 @@ pub fn redact(text: &str, private: &Private) -> String {
     // The password first, on its own: nothing kept (such as the account name inside it) can
     // leave part of it.
     let text = if private.password.chars().count() >= MIN_HIDDEN {
-        hide(text, &[(private.password.clone(), false, "<password>")], &[])
+        hide_secret(text, &private.password, "<password>")
     } else {
         text.to_owned()
     };
@@ -275,6 +352,107 @@ pub fn redact(text: &str, private: &Private) -> String {
     let account = private.account.trim();
     let keep: Vec<String> = (!account.is_empty()).then(|| account.to_ascii_lowercase()).into_iter().collect();
     hide_homes(&hide(text, &needles, &keep))
+}
+
+/// `text` with `secret` replaced by `with` wherever [`secret_at`] finds it.
+fn hide_secret(text: &str, secret: &str, with: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(c) = text[i..].chars().next() {
+        if let Some(len) = secret_at(text.as_bytes(), i, secret) {
+            out.push_str(with);
+            i += len;
+        } else {
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// How long `secret` is at byte `i` of `text`, if it's there, each of its characters as it is
+/// (ASCII letters in either case) or written as:
+/// - URL encoding: `%xx` for each of its UTF-8 bytes (either case), or `+` for a space;
+/// - JSON's or Rust's escapes: `\"`, `\\`, `\/`, `\'`, `\n`, `\r`, `\t`, `\u` and four hex digits
+///   (UTF-16, a pair for a character past U+FFFF) or `\u{41}`;
+///
+/// in any mix, as a log line built from a request might have it. The match ends where `secret`
+/// does, always on a character boundary.
+fn secret_at(text: &[u8], i: usize, secret: &str) -> Option<usize> {
+    let mut chars = secret.chars();
+    let Some(c) = chars.next() else { return Some(0) };
+    // A `\`, `%` or `+` may be itself or start an escape: each way is tried.
+    [raw_at(text, i, c), escaped_at(text, i, c)]
+        .into_iter()
+        .flatten()
+        .find_map(|len| secret_at(text, i + len, chars.as_str()).map(|rest| len + rest))
+}
+
+/// How long `c` is at byte `at` of `text` as itself (an ASCII letter in either case).
+fn raw_at(text: &[u8], at: usize, c: char) -> Option<usize> {
+    let rest = text.get(at..)?;
+    let mut utf8 = [0u8; 4];
+    let raw = c.encode_utf8(&mut utf8).as_bytes();
+    (rest.len() >= raw.len() && rest[..raw.len()].eq_ignore_ascii_case(raw)).then_some(raw.len())
+}
+
+/// How long `c` is at byte `at` of `text`, escaped in any of the ways [`secret_at`] takes.
+fn escaped_at(text: &[u8], at: usize, c: char) -> Option<usize> {
+    let rest = text.get(at..)?;
+    let mut utf8 = [0u8; 4];
+    let raw = c.encode_utf8(&mut utf8).as_bytes();
+    let hex = |digits: &[u8]| -> Option<u32> {
+        let digits = std::str::from_utf8(digits).ok().filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_hexdigit()))?;
+        u32::from_str_radix(digits, 16).ok()
+    };
+    match rest.first()? {
+        b'+' if c == ' ' => Some(1),
+        b'%' => {
+            // One %xx per UTF-8 byte.
+            let mut n = 0;
+            for byte in raw {
+                let digits = rest.get(n..n + 3).filter(|d| d[0] == b'%')?;
+                if hex(&digits[1..])? != u32::from(*byte) {
+                    return None;
+                }
+                n += 3;
+            }
+            Some(n)
+        }
+        b'\\' => {
+            let escaped = *rest.get(1)?;
+            let simple = match escaped {
+                b'n' => Some('\n'),
+                b'r' => Some('\r'),
+                b't' => Some('\t'),
+                b'"' | b'\\' | b'/' | b'\'' => Some(char::from(escaped)),
+                _ => None,
+            };
+            if simple == Some(c) {
+                return Some(2);
+            }
+            if escaped != b'u' {
+                return None;
+            }
+            if rest.get(2) == Some(&b'{') {
+                // Rust's \u{41}.
+                let end = rest.iter().take(12).position(|b| *b == b'}')?;
+                return (hex(&rest[3..end])? == u32::from(c)).then_some(end + 1);
+            }
+            // JSON's \u and four hex digits, a surrogate pair past U+FFFF.
+            let mut units = [0u16; 2];
+            let mut n = 0;
+            for unit in c.encode_utf16(&mut units).iter() {
+                let digits = rest.get(n..n + 6).filter(|d| d.starts_with(b"\\u"))?;
+                if hex(&digits[2..])? != u32::from(*unit) {
+                    return None;
+                }
+                n += 6;
+            }
+            Some(n)
+        }
+        _ => None,
+    }
 }
 
 /// `text` with each needle (`(text, ignoring ASCII case, replacement)`) replaced wherever it
@@ -377,7 +555,8 @@ pub fn cap(text: String) -> String {
 }
 
 /// A log's text, as much of it as could be sent: a file far over [`MAX_UPLOAD`] is read only at
-/// its start and its end, so a huge log isn't read whole.
+/// its start and its end, so a huge log isn't read whole. Those are cut between lines (a line cut
+/// across goes whole), so what's read is whole lines, and a password in one is hidden whole.
 fn read_capped(path: &Path) -> io::Result<String> {
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
@@ -389,11 +568,15 @@ fn read_capped(path: &Path) -> io::Result<String> {
     }
     let mut head = vec![0u8; HEAD_KEPT];
     file.read_exact(&mut head)?;
+    // Up to the end of the head's last whole line.
+    head.truncate(head.iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1));
     let mut tail = Vec::new();
     file.seek(SeekFrom::End(-(MAX_UPLOAD as i64)))?;
     file.read_to_end(&mut tail)?;
-    let cut = len - HEAD_KEPT as u64 - tail.len() as u64;
-    Ok(format!("{}\n[... {cut} bytes cut ...]\n{}", String::from_utf8_lossy(&head), String::from_utf8_lossy(&tail)))
+    // From the start of the tail's first whole line.
+    tail.drain(..tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |n| n + 1));
+    let cut = len - head.len() as u64 - tail.len() as u64;
+    Ok(format!("{}[... {cut} bytes cut ...]\n{}", String::from_utf8_lossy(&head), String::from_utf8_lossy(&tail)))
 }
 
 /// A run, ready to send.
@@ -525,17 +708,20 @@ pub struct Sent {
     pub id: String,
 }
 
-/// Sends the pending runs in `game_dir`, newest first, each with `send` (which posts the body
-/// and headers to [`PATH`] and gives the answer's status and body, or why it couldn't). Each run
-/// taken is marked sent. Stops at the first that isn't; the rest stay pending.
+/// Sends the pending runs in `game_dir` played on `server` as `meta.account` (see
+/// [`pending_for`]), newest first, each with `send` (which posts the body and headers to
+/// `server`'s [`PATH`] and gives the answer's status and body, or why it couldn't); `private` is
+/// that account's. Each run taken is marked sent. Stops at the first that isn't; the rest stay
+/// pending, as do runs played elsewhere.
 pub fn send_pending(
     game_dir: &Path,
+    server: &str,
     private: &Private,
     meta: &Meta,
     mut send: impl FnMut(&[u8], &[(&'static str, String)]) -> Result<(u16, Vec<u8>), String>,
 ) -> (Vec<Sent>, Option<Refused>) {
     let mut sent = Vec::new();
-    for run in pending(game_dir) {
+    for run in pending_for(game_dir, server, &meta.account) {
         let upload = match prepare(&run, private) {
             Ok(upload) => upload,
             Err(e) => return (sent, Some(Refused::Other(format!("couldn't read {}: {e}", run.name)))),
@@ -631,12 +817,95 @@ mod tests {
     }
 
     #[test]
-    fn the_password_matches_exactly() {
+    fn the_password_is_hidden_in_any_case() {
         let p = Private {
             password: "Secret".into(),
             ..Private::default()
         };
-        assert_eq!(redact("Secret secret xSecretx", &p), "<password> secret x<password>x");
+        assert_eq!(redact("Secret secret xSECRETx Secre", &p), "<password> <password> x<password>x Secre");
+    }
+
+    #[test]
+    fn the_password_is_hidden_escaped_too() {
+        let p = Private {
+            password: "p@ss w\"d/\\é😀".into(),
+            ..Private::default()
+        };
+        let bs = '\\';
+        let hidden = |text: &str| {
+            assert_eq!(redact(&format!("[{text}]"), &p), "[<password>]", "{text}");
+        };
+        hidden("p@ss w\"d/\\é😀");
+        hidden("P@SS W\"D/\\é😀");
+        // JSON, as serde_json writes it, and with every character past ASCII as \u escapes.
+        hidden(serde_json::to_string("p@ss w\"d/\\é😀").unwrap().trim_matches('"'));
+        hidden(&format!("p@ss w{bs}\"d{bs}/{bs}{bs}{bs}u00e9{bs}ud83d{bs}ude00"));
+        // Rust's Debug.
+        hidden(format!("{:?}", "p@ss w\"d/\\é😀").trim_matches('"'));
+        hidden(&format!("p@ss w\"d/\\{bs}u{{e9}}{bs}u{{1f600}}"));
+        // URL-encoded, either case, a space as + or %20.
+        hidden("p%40ss+w%22d%2F%5C%C3%A9%F0%9F%98%80");
+        hidden("p%40ss%20w%22d%2f%5c%c3%a9%f0%9f%98%80");
+        // Not the password: left alone.
+        assert_eq!(redact("p%40ss w%22d/", &p), "p%40ss w%22d/");
+        assert_eq!(redact("%4", &p), "%4");
+        assert_eq!(redact(&format!("x{bs}u{{"), &p), format!("x{bs}u{{"));
+    }
+
+    #[test]
+    fn a_password_across_the_cut_of_a_huge_log_isnt_left_in_part() {
+        let dir = tempdir();
+        let path = dir.join("big.log");
+        let p = Private {
+            password: "hunter2!".into(),
+            ..Private::default()
+        };
+        // A line holding the password, across where the head is cut and where the tail starts.
+        let filler = |n: usize| "x".repeat(n);
+        let tail_starts = 5 * MAX_UPLOAD - MAX_UPLOAD;
+        let text = format!(
+            "{}\nsigned in with hunter2! here\n{}\nagain hunter2! there\n{}\n",
+            filler(HEAD_KEPT - 20),
+            filler(tail_starts - HEAD_KEPT - 21),
+            filler(MAX_UPLOAD - 12)
+        );
+        assert_eq!(text.len(), 5 * MAX_UPLOAD);
+        assert_eq!(&text[HEAD_KEPT - 4..HEAD_KEPT], "hunt", "across the head's end");
+        assert_eq!(&text[tail_starts..tail_starts + 4], "er2!", "across the tail's start");
+        fs::write(&path, &text).unwrap();
+        let read = read_capped(&path).unwrap();
+        let out = redact(&read, &p);
+        for part in ["hunt", "er2!"] {
+            assert!(!out.contains(part), "{part}");
+        }
+        assert!(out.contains("[... "), "cut");
+        let cut: usize = out.split("[... ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+        assert_eq!(
+            read.len() - read.lines().find(|l| l.starts_with("[... ")).unwrap().len() - 1 + cut,
+            text.len(),
+            "it says how much went"
+        );
+    }
+
+    #[test]
+    fn a_run_says_where_it_was_played() {
+        let game = tempdir();
+        begin(&game, "https://Play.Example.org/", " Kozak ").unwrap();
+        let log = fs::read_to_string(game.join(logging::FILE_NAME)).unwrap();
+        assert!(first_line_time(&game.join(logging::FILE_NAME)).is_some(), "it starts with the time: {log}");
+        let played = played(&log).unwrap();
+        assert_eq!(
+            played,
+            Played {
+                server: "play.example.org".into(),
+                account: "Kozak".into()
+            }
+        );
+        assert!(played.is("play.example.org", "kozak"));
+        assert!(played.is("http://PLAY.example.org", "Kozak"));
+        assert!(!played.is("other.example.org", "Kozak"));
+        assert!(!played.is("play.example.org", "Someone"));
+        assert_eq!(super::played("1700000000.000 INFO  orbit Cross-Com 0.1.0 loaded\n"), None, "a client from before");
     }
 
     #[test]
@@ -718,16 +987,26 @@ mod tests {
     #[test]
     fn sends_pending_runs_once() {
         let game = tempdir();
+        let run = |time: u64, server: &str, account: &str, rest: &str| {
+            let played = serde_json::json!({ "server": server, "account": account });
+            fs::write(game.join(logging::FILE_NAME), format!("{time}.000 INFO  orbit Run: {played}\n{rest}")).unwrap();
+            rotate(&game).unwrap().unwrap()
+        };
+        // Played elsewhere, as someone else, or by a client from before runs said where: not sent.
+        let elsewhere = run(1_799_999_000, "other.example.org", "Kozak", "hunter2!\n");
+        let someone_else = run(1_799_999_100, "play.example.org", "Someone", "hunter2!\n");
+        fs::write(game.join(logging::FILE_NAME), "1799999200 INFO  orbit Cross-Com 0.1.0 loaded\nhunter2!\n").unwrap();
+        let unknown = rotate(&game).unwrap().unwrap();
         for i in 0..3 {
-            fs::write(
-                game.join(logging::FILE_NAME),
-                format!(
+            run(
+                1_800_000_000 + i * 60,
+                "play.example.org",
+                "kozak",
+                &format!(
                     "{} INFO  orbit Cross-Com 0.2.0 loaded in Future Soldier DX9.exe from C:\\Users\\jsmith\\GRFS\nhunter2! {i}\n",
                     1_800_000_000 + i * 60
                 ),
-            )
-            .unwrap();
-            rotate(&game).unwrap();
+            );
         }
         let meta = Meta {
             account: "Kozak".into(),
@@ -737,7 +1016,7 @@ mod tests {
             exit: Some((runs(&game)[0].name.clone(), -1_073_741_819)),
         };
         let mut seen = Vec::new();
-        let (sent, refused) = send_pending(&game, &private(), &meta, |body, headers| {
+        let (sent, refused) = send_pending(&game, "https://play.example.org/", &private(), &meta, |body, headers| {
             seen.push((String::from_utf8(body.to_vec()).unwrap(), headers.to_vec()));
             Ok((201, format!(r#"{{"id":"20261115-123456-ab12c{}"}}"#, seen.len()).into_bytes()))
         });
@@ -752,20 +1031,20 @@ mod tests {
         assert_eq!(header("X-Crosscom-Os"), Some("Windows 11 ProX-Evil: 1"), "on one line");
         assert_eq!(header("X-Crosscom-Exit"), Some("-1073741819"));
         assert_eq!(seen[1].1.iter().find(|(n, _)| *n == "X-Crosscom-Exit"), None, "only for its own run");
-        assert!(runs(&game).iter().all(|r| r.sent));
-        assert!(pending(&game).is_empty());
+        assert!(pending_for(&game, "play.example.org", "Kozak").is_empty());
+        let still: Vec<PathBuf> = pending(&game).into_iter().map(|r| r.path).collect();
+        assert_eq!(still, [unknown, someone_else, elsewhere], "only the runs played there, as this account");
 
         // Refused: stays pending.
-        fs::write(game.join(logging::FILE_NAME), "1800009999 INFO  orbit x\n").unwrap();
-        rotate(&game).unwrap();
-        let (sent, refused) = send_pending(&game, &private(), &meta, |_, _| {
+        run(1_800_009_999, "play.example.org", "Kozak", "x\n");
+        let (sent, refused) = send_pending(&game, "play.example.org", &private(), &meta, |_, _| {
             Ok((
                 403,
                 br#"{"error":"sign in to the game first; logs are taken from players who have played from this address recently"}"#.to_vec(),
             ))
         });
         assert_eq!((sent.len(), refused), (0, Some(Refused::NotSignedIn)));
-        assert_eq!(pending(&game).len(), 1);
+        assert_eq!(pending_for(&game, "play.example.org", "Kozak").len(), 1);
     }
 
     #[test]

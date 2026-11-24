@@ -81,8 +81,9 @@ pub fn finish_run(game_dir: &Path) -> Option<String> {
     moved.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
-/// Sends the pending runs in `game_dir` to its server; `exit` is the game's exit code for the
-/// run it belongs to. `launcher` is this launcher's version.
+/// Sends the pending runs in `game_dir` that were played on its server, as its account, to that
+/// server; `exit` is the game's exit code for the run it belongs to. `launcher` is this
+/// launcher's version.
 #[must_use]
 pub fn send(game_dir: &Path, launcher: &str, exit: Option<(String, i32)>) -> Outcome {
     let config = settings::client(game_dir);
@@ -100,7 +101,8 @@ pub fn send(game_dir: &Path, launcher: &str, exit: Option<(String, i32)>) -> Out
         os: system::os_version(),
         exit,
     };
-    let (sent, refused) = runs::send_pending(game_dir, &private, &meta, |body, headers| post(&host, headers, body));
+    // Only the runs played on this server, as this account: the password hidden is theirs.
+    let (sent, refused) = runs::send_pending(game_dir, &host, &private, &meta, |body, headers| post(&host, headers, body));
     Outcome { sent, refused, off: false }
 }
 
