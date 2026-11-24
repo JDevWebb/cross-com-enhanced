@@ -14,7 +14,7 @@ import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
 import { AboutScreen } from "about.slint";
-import { InfoView, NewsRow, DlcRow } from "types.slint";
+import { InfoView, NewsRow, DlcRow, CheckRow } from "types.slint";
 
 export { Theme, InfoView, NewsRow, DlcRow }
 
@@ -56,6 +56,7 @@ export component AppWindow inherits Window {
     in property <[NewsRow]> news;
     in property <string> news-note;
     in property <bool> news-loading;
+    in property <[CheckRow]> checks;
     in property <bool> starting;
     in property <string> play-said;
     in property <bool> play-failed;
@@ -174,6 +175,7 @@ export component AppWindow inherits Window {
                     news: root.news;
                     news-note: root.news-note;
                     news-loading: root.news-loading;
+                    checks: root.checks;
                     starting: root.starting;
                     said: root.play-said;
                     failed: root.play-failed;

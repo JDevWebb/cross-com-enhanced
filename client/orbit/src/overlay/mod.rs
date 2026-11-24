@@ -31,6 +31,8 @@ use crosscom_client_common::server_info::Reply;
 use crosscom_client_common::server_info::ServerInfo;
 use crosscom_client_common::server_info::Watch;
 use crosscom_client_common::Config;
+use crosscom_client_net::keep::Connection;
+use crosscom_client_net::keep::Reachable;
 use log::error;
 use log::info;
 use log::warn;
@@ -41,6 +43,8 @@ use windows::Win32::System::LibraryLoader::LoadLibraryA;
 const START_DELAY: Duration = Duration::from_secs(10);
 /// How often the server is asked for its info.
 const POLL_EVERY: Duration = Duration::from_secs(60);
+/// How often the port forward's findings are looked at.
+const CONNECTION_EVERY: Duration = Duration::from_secs(3);
 /// How long one request may take, at each step.
 const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -94,6 +98,8 @@ pub(crate) struct Status {
     /// The address reaches another game's server (by its name), not this game's.
     pub other_game: Option<String>,
     pub checked: Option<Instant>,
+    /// Whether other players can reach this PC's game (see `crosscom_client_net::keep`).
+    pub connection: Option<Connection>,
 }
 
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
@@ -250,6 +256,12 @@ pub(crate) fn start(config: &Config) {
         if let Err(e) = spawned {
             error!("Overlay: couldn't start asking the server for its info: {e}");
         }
+        if config.port_forwarding && crosscom_client_net::keep::wanted(&server) {
+            let spawned = std::thread::Builder::new().name("crosscom-connection".into()).spawn(watch_connection);
+            if let Err(e) = spawned {
+                error!("Overlay: couldn't start watching the connection: {e}");
+            }
+        }
         let (tx, rx) = mpsc::channel();
         let _ = BOARD_ASK.set(Mutex::new(tx));
         let spawned = std::thread::Builder::new().name("crosscom-leaderboard".into()).spawn(move || leaderboards(&server, &rx));
@@ -384,9 +396,53 @@ fn poll(server: &str, username: &str, wake: &mpsc::Receiver<()>) {
     }
 }
 
+/// Shows what the port forward finds, and says so when how reachable the game is changes.
+fn watch_connection() {
+    let mut shown = None;
+    loop {
+        if let Some(now) = crosscom_client_net::keep::connection() {
+            let reachable = now.reachable();
+            if let Some((text, bad)) = connection_toast(shown, reachable) {
+                toast(text, bad);
+            }
+            if reachable != Reachable::Checking {
+                shown = Some(reachable);
+            }
+            set_status(|s| {
+                if s.connection.as_ref() != Some(&now) {
+                    s.connection = Some(now);
+                }
+            });
+        }
+        std::thread::sleep(CONNECTION_EVERY);
+    }
+}
+
+/// The toast for the game's reachability becoming `now`, having last been `shown`.
+fn connection_toast(shown: Option<Reachable>, now: Reachable) -> Option<(String, bool)> {
+    if now == Reachable::Checking || shown == Some(now) {
+        return None;
+    }
+    Some(match now {
+        Reachable::Open => ("Connection: Open. Anyone can join your matches".into(), false),
+        Reachable::Moderate => ("Connection: Moderate. Some players can't join your matches (overlay > Server)".into(), true),
+        Reachable::Strict | Reachable::Checking => ("Connection: Strict. Few players can join your matches (overlay > Server)".into(), true),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_when_the_connection_changes() {
+        assert_eq!(connection_toast(None, Reachable::Checking), None);
+        assert!(connection_toast(None, Reachable::Open).is_some_and(|(_, bad)| !bad));
+        assert!(connection_toast(None, Reachable::Strict).is_some_and(|(_, bad)| bad));
+        assert_eq!(connection_toast(Some(Reachable::Open), Reachable::Open), None, "said once");
+        assert!(connection_toast(Some(Reachable::Open), Reachable::Moderate).is_some(), "the forward went");
+        assert_eq!(connection_toast(Some(Reachable::Open), Reachable::Checking), None);
+    }
 
     #[test]
     fn knows_the_engine_by_the_exe() {

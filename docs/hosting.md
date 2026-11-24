@@ -401,6 +401,9 @@ touched.
 game announce that adapter's address on its network instead of the one that reaches the server.
 The client's router report names the right one: the server then puts it first for players at the
 same house, and logs `... announced another adapter's address than the one reaching the server`.
+In testing, the game picked its peer-to-peer address well: on a PC whose VPN adapter (Tailscale)
+had a lower interface metric than its Wi-Fi, it announced the Wi-Fi address for peer-to-peer and
+listed the VPN's only for its connection to the server, which isn't given to other players.
 
 **Where the router details come from.** While the game runs, the client reports the game's
 peer-to-peer socket on the player's network to `POST /api/forward`, with the port the router

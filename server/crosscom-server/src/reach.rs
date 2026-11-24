@@ -173,7 +173,13 @@ impl Reach {
             );
         }
         let port = found.and_then(|((_, port), _)| port);
-        let open = found.and_then(|((pid, _), _)| crate::announce::open(pid));
+        // A new forward is checked afresh once this is answered: what was found before it isn't
+        // what's in front of the game now.
+        let open = if new_forward {
+            None
+        } else {
+            found.and_then(|((pid, _), _)| crate::announce::open(pid))
+        };
         let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
         (("200 OK", answer), found.map(|((pid, _), announced)| Matched { pid, announced, new_forward }))
     }
@@ -254,6 +260,7 @@ mod tests {
             ..matched(k, true).unwrap()
         };
         assert_eq!((answer.0, pid), ("200 OK", Some(new)), "a new forward: its player's address is checked afresh");
+        assert_eq!(json_of(&answer)["open"], serde_json::Value::Null, "nothing said about it before the check");
         assert_eq!(r.sessions.forward_of(k), Some(40000));
         let (_, pid) = r.forward(
             home,

@@ -227,10 +227,14 @@ impl Announce {
         self.state().results.remove(&pid);
     }
 
-    /// What the last check of `pid` found.
+    /// What the last check of `pid` found (none while it's being checked again).
     #[must_use]
     pub fn checked(&self, pid: u32) -> Option<Checked> {
-        self.state().results.get(&pid).copied()
+        let state = self.state();
+        if state.pending.values().any(|p| p.pid == pid) {
+            return None;
+        }
+        state.results.get(&pid).copied()
     }
 }
 
@@ -375,8 +379,10 @@ mod tests {
         run_until_settled(&a, 1);
         a.check(&logger(), &sessions, 1, false);
         assert!(a.state().pending.is_empty(), "checked a moment ago");
+        assert!(a.checked(1).is_some());
         a.check(&logger(), &sessions, 1, true);
         assert_eq!(a.state().pending.len(), 1, "a forward was just made: checked again");
+        assert_eq!(a.checked(1), None, "nothing said while it's checked again");
         run_until_settled(&a, 1);
         a.forget(1);
         assert_eq!(a.checked(1), None, "signed in afresh");

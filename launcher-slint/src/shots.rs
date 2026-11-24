@@ -115,6 +115,20 @@ fn play_with(w: &AppWindow, info: core::Info) {
     w.set_server_state(s("up"));
     w.set_server_detail(s(ui::server_detail(Some(&info))));
     w.set_news(ModelRc::new(VecModel::from(info.news.iter().map(ui::news_row).collect::<Vec<_>>())));
+    let check = |label, value: &str, tone, detail: &str| core::Check {
+        label,
+        value: value.into(),
+        tone,
+        detail: detail.into(),
+    };
+    ui::show_checks(
+        w,
+        &[
+            check("Firewall", "Game allowed", "good", "Windows lets other players reach your game."),
+            check("Port forwarding", "On", "good", "Asked of your router (UPnP, PCP or NAT-PMP) while the game runs."),
+            check("Last game", "Open · 2 h ago", "good", "Any player can join the matches you host."),
+        ],
+    );
 }
 
 /// A first start: the game found, the community test network answering, an account being made.
@@ -196,8 +210,8 @@ pub fn run(dir: &Path) -> Result<(), String> {
     w.show().map_err(|e| e.to_string())?;
 
     let shots: [Shot; 5] = [
-        ("launcher-play", play, HEIGHT),
-        ("launcher-play-missing-dlc", play_missing_dlc, HEIGHT),
+        ("launcher-play", play, TALL),
+        ("launcher-play-missing-dlc", play_missing_dlc, TALL),
         ("launcher-setup", setup, TALL),
         ("launcher-settings", settings, TALL),
         ("launcher-about", about, ABOUT_HEIGHT),

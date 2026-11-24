@@ -23,6 +23,8 @@ crosscom-launcher = { path = "../launcher" }
 crosscom-client-common = { path = "../client/common" }
 # The connection test in Settings.
 crosscom-client-net = { path = "../client/net" }
+# The last game's connection, written by the client.
+serde_json = "1.0"
 # The README's screenshots (--shots) as PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
 

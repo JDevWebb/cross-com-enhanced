@@ -43,3 +43,12 @@ export struct NewsRow {
     // The Ghost Feed view it's shown in ("Multiplayer"), or "".
     tag: string,
 }
+
+// A line of Play's checklist: what's checked, how it stands, and what it means. `tone` is "good",
+// "warn", "bad" or "muted".
+export struct CheckRow {
+    label: string,
+    value: string,
+    tone: string,
+    detail: string,
+}

@@ -976,6 +976,7 @@ dependencies = [
  "crosscom-launcher",
  "image",
  "rfd",
+ "serde_json",
  "slint",
  "slint-build",
  "winres",

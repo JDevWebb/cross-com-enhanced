@@ -130,6 +130,8 @@ Matches are hosted by the players, so other players' games connect to yours. The
 - **Strict:** your router gives each connection a different port, so many players won't be able to reach you. Turn on **UPnP** in your router's settings (often under *Advanced* or *NAT*), then test again.
 - **Blocked:** the game's traffic didn't reach the server: a firewall or the network you're on may block it.
 
+While you play, the overlay's **Server** tab shows the same for the game itself (**Your connection**): whether the server could reach your game from outside, the forward your router made, and what to do if others can't reach you. A note pops up when that changes. The launcher's **Play** screen keeps what the last game found, next to whether Windows Firewall lets the game in and whether port forwarding is on.
+
 If the test says another router or your internet provider is in front of yours (a *carrier-grade NAT*, common on mobile and some fibre and satellite connections), port forwarding can't help; your provider may give you a public address if you ask. The test's details say what it found; include them when you [report a problem](#reporting-a-problem) joining or hosting.
 
 ### Antivirus warnings
