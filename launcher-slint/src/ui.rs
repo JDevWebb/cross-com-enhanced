@@ -648,6 +648,7 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
                     // "The game is starting." no longer holds once it has ended.
                     w.set_play_said(s(""));
                     w.set_play_failed(false);
+                    w.set_playing(false);
                     // What the game found about its connection, on the checklist.
                     load_checks(&w, &after);
                     send_logs(&w, &after, exit);
@@ -658,7 +659,10 @@ fn play(w: &AppWindow, l: &Arc<Launcher>) {
         move |w, started| {
             w.set_starting(false);
             match started {
-                Ok(said) => w.set_play_said(s(said)),
+                Ok(said) => {
+                    w.set_play_said(s(said));
+                    w.set_playing(true);
+                }
                 Err(e) => {
                     w.set_play_said(s(e));
                     w.set_play_failed(true);
@@ -706,6 +710,10 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         });
     }
     w.on_play(on(play));
+    w.on_update_now(on(|w, _| crate::update::now(w)));
+    w.on_update_notes(on(|_, _| crate::update::notes()));
+    w.on_update_later(on(|w, _| crate::update::later(w)));
+    w.on_check_update(on(|w, _| crate::update::check(w)));
     w.on_refresh_news(on(load_news));
     w.on_setup_choose_game(on(|w, _| choose_game(w)));
     w.on_setup_check_server(on(|w, _| check_server(w)));
@@ -792,6 +800,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     wire(&w, &l);
     open(&w, &l, "play");
     w.set_loaded(true);
+    crate::update::start(&w);
     // Logs left from earlier games (one that crashed, or was started without the launcher) go
     // as the launcher starts.
     send_logs(&w, &l, None);

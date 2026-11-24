@@ -3,7 +3,7 @@
 
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
-import { Btn } from "widgets.slint";
+import { Btn, Spinner } from "widgets.slint";
 
 // The menu's icons (24 by 24, stroked).
 export global Icons {
@@ -252,5 +252,48 @@ export component Notice inherits Rectangle {
                 Btn { text: root.go; kind: "primary"; clicked => { root.proceed(); } }
             }
         }
+    }
+}
+
+// Under the title bar, on every screen: a newer launcher, and installing it. `state` is "offer",
+// "updating" or "failed" (`said` says why).
+export component UpdateBar inherits Rectangle {
+    in property <string> version;
+    in property <string> state;
+    in property <string> said;
+    // The game is running: the launcher waits for it (to send its log) before replacing itself.
+    in property <bool> playing;
+    callback update();
+    callback notes();
+    callback later();
+    background: root.state == "failed" ? Theme.bad.with-alpha(0.12) : Theme.accent-glow;
+    border-width: 1px;
+    border-color: root.state == "failed" ? Theme.bad.with-alpha(0.4) : Theme.accent-dim;
+    min-height: lay.preferred-height;
+    lay := HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 12px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 10px;
+        if root.state == "updating": VerticalLayout { alignment: center; Spinner { size: 14px; } }
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            color: root.state == "failed" ? Theme.bad : Theme.fg;
+            text: root.state == "updating" ? "Downloading launcher " + root.version + ": it restarts when it's ready."
+                : root.state == "failed" ? "Couldn't update the launcher: " + root.said
+                : root.playing ? "Launcher " + root.version + " is available: update once the game has closed."
+                : "Launcher " + root.version + " is available, with the client to match.";
+        }
+        if root.state != "updating": Btn { text: "What's new"; kind: "ghost"; clicked => { root.notes(); } }
+        if root.state != "updating": Btn {
+            text: root.state == "failed" ? "Try again" : "Update";
+            kind: "primary";
+            enabled: !root.playing;
+            clicked => { root.update(); }
+        }
+        if root.state != "updating": Btn { text: "Later"; kind: "ghost"; clicked => { root.later(); } }
     }
 }

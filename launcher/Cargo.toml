@@ -19,6 +19,10 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 # HTTPS for passwords: rustls with ring and the Mozilla roots built in, nothing from the system.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# The launcher's updates: the release key's Ed25519 signature and SHA-256 (ring, which rustls
+# brings anyway), and the signature's base64.
+ring = "0.17"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

@@ -142,6 +142,8 @@ Some antivirus programs, Microsoft Defender included, may flag `crosscom-launche
 
 After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time.
 
+The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. Nothing about you goes with that question, and an update installs only when you press **Update**: the launcher checks the release's signature first.
+
 **Settings › Send game logs** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
 
 While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Connection** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.

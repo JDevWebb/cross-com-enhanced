@@ -7,6 +7,7 @@ slint::include_modules!();
 mod core;
 mod shots;
 mod ui;
+mod update;
 
 fn main() {
     // The README's screenshots, on made-up data (scripts/launcher-shots.sh).
