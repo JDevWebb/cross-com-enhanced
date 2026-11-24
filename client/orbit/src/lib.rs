@@ -12,6 +12,8 @@ mod crash;
 #[cfg(windows)]
 mod dll;
 #[cfg(any(test, windows))]
+mod host_header;
+#[cfg(any(test, windows))]
 mod late_signin;
 #[cfg(any(test, windows))]
 mod lobby;
@@ -122,6 +124,10 @@ fn start() {
     #[cfg(target_arch = "x86")]
     crash::install();
     net::install();
+    #[cfg(target_arch = "x86")]
+    if let Some(server) = CONFIG.get().and_then(|c| c.server.as_deref()).filter(|s| !s.trim().is_empty()) {
+        host_header::install(server);
+    }
     #[cfg(target_arch = "x86")]
     late_signin::install();
     lobby::keep_sizes();

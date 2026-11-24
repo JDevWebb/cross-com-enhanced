@@ -379,7 +379,7 @@ player behind a symmetric NAT couldn't get into a lobby whose host had no forwar
 (`unreached`), and got in as soon as the host's router forwarded.
 
 **Whether players can be reached where they announce themselves.** When a game registers its
-addresses, or its client reports a forward, the server checks the address other players will be
+addresses, or its client reports a new forward (not the same one renewed), the server checks the address other players will be
 given first: it sends a NAT probe there from a socket of its own, one the player's router has
 never seen, and waits a second and a half for the game to answer, as games answer each other's.
 An answer means the address takes packets from anyone, so any player can join that game's

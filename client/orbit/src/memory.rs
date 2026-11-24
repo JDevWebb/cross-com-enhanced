@@ -58,6 +58,26 @@ pub(crate) fn layout(base: usize) -> Option<(Vec<(usize, usize)>, usize)> {
     Some((code, image_size))
 }
 
+/// The sections of the game's exe as loaded: (address, size in memory, whether it holds code).
+pub(crate) fn exe_sections() -> Option<Vec<(usize, usize, bool)>> {
+    let base = unsafe { GetModuleHandleA(std::ptr::null()) } as usize;
+    if base == 0 {
+        return None;
+    }
+    let nt = read_u32(base + 0x3c)? as usize;
+    let header = read(base + nt, 24)?;
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
+    let sections = u16_at(6).min(96);
+    let table = read(base + nt + 24 + u16_at(20), sections * 40)?;
+    Some(
+        table
+            .chunks_exact(40)
+            .map(|h| move |at: usize| u32::from_le_bytes([h[at], h[at + 1], h[at + 2], h[at + 3]]) as usize)
+            .map(|field| (base + field(12), field(8), field(36) as u32 & IMAGE_SCN_MEM_EXECUTE != 0))
+            .collect(),
+    )
+}
+
 /// The code sections of the module at `base`: (offset from its base, size).
 pub(crate) fn code_sections(base: usize) -> Option<Vec<(usize, usize)>> {
     layout(base).map(|(code, _)| code)
