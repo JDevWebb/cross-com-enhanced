@@ -35,13 +35,9 @@ What that means for you:
 
 ## The community test network
 
-> [!NOTE]
-> **Launching soon.** The community test network isn't open yet; until it is, play on [your own server](#run-your-own-server) or a friend's.
-
 **There is a community test network that anyone can play on, for free: `grfs-test.jdevwebb.net`.** It's the launcher's default, so there's nothing to type: everyone testing signs in to the same server, so every Quick Match search finds the other testers. It runs this test build, and it may be reset between builds.
 
 <table>
-<tr><td><b>Status</b></td><td>Launching soon</td></tr>
 <tr><td><b>Address</b></td><td><code>grfs-test.jdevwebb.net</code>: the launcher's default</td></tr>
 <tr><td><b>Modes</b></td><td>Every adversarial mode, ranked and player matches, the campaign and Guerrilla in co-op</td></tr>
 <tr><td><b>Your account</b></td><td>Made in the launcher, the first time you play; your password goes over HTTPS</td></tr>
@@ -54,14 +50,14 @@ To play on another server (your group's own, or one on your LAN), see [Play](#pl
 
 You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Windows 10 or 11.
 
-1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file; put it anywhere.
+1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file: keep it in a folder of your own, such as your Desktop or Documents (not Program Files), so it can update itself.
 2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose), and the [community test network](#the-community-test-network) is already picked.
 3. **Make an account** (choose the name other players will see), or sign in to the one you have.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
 To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Change server** switches later, and **Use the community test network** goes back to it.
 
-The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime.
+The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime. When a new release is out, the launcher offers it in a bar under its title; **Update** installs it, with the client to match, and restarts the launcher.
 
 ### The DLC packs
 
@@ -88,13 +84,13 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 > **We don't provide the game or its DLC, and can't help you get them.** Cross-Com only brings back the online services: you need your own copy of the game, and of any pack you want to play. Please don't ask for game files in issues or discussions.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the community test network online (7 players, server 0.1.0), the account signed in, the client installed, the Play button, and the server's news">
+  <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the community test network online (7 players, server 0.1.0), the account signed in, the client installed, the Play button, the checklist (firewall, port forwarding, the last game's connection), and the server's news">
 </p>
 
 <table>
 <tr>
 <td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup: the game folder found, the community test network chosen and answering, making an account, and the game options"></td>
-<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, and the server and account"></td>
+<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, the server and account, and the connection test"></td>
 </tr>
 <tr>
 <td align="center"><sub>Setup, a step at a time: the last step, before it sets everything up</sub></td>
@@ -142,7 +138,7 @@ Some antivirus programs, Microsoft Defender included, may flag `crosscom-launche
 
 After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time.
 
-The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. Nothing about you goes with that question, and an update installs only when you press **Update**: the launcher checks the release's signature first.
+The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. That question carries only the launcher's version (GitHub sees your internet address, as with any download), and an update installs only when you press **Update**: the launcher checks the release's signature first.
 
 **Settings › Send game logs** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
 
@@ -155,7 +151,7 @@ All of it goes over HTTPS, as your password does; only a server on your own netw
 Tested end to end on real copies of the game, on Windows 11 and under Wine on Linux, with up to four players, on one network and between home networks over the internet.
 
 <table>
-<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Quick Match starts with two players, and every map is offered.</td></tr>
+<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Every map is offered. A Quick Match starts at the game's own 8 players (6 in the smaller modes); on a quieter server, its host lowers that in the overlay's **Lobby** tab.</td></tr>
 <tr><td><b>Co-op</b></td><td>The campaign and Guerrilla with friends, invited from the lobby.</td></tr>
 <tr><td><b>Friends and parties</b></td><td>Friends lists, requests, invites into a lobby, the party following its host, and lobby chat.</td></tr>
 <tr><td><b>Progression</b></td><td>XP, levels, unlocks, Gunsmith loadouts and stats, kept on the server; a friend's stats from View Player Stats.</td></tr>

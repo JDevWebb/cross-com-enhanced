@@ -24,7 +24,7 @@ pub const COMMUNITY: &str = "grfs-test.jdevwebb.net";
 /// What the launcher calls it.
 pub const COMMUNITY_NAME: &str = "Community test network";
 /// A note shown beside its name while it isn't open yet; "" once it is.
-pub const COMMUNITY_STATUS: &str = "Launching soon";
+pub const COMMUNITY_STATUS: &str = "";
 /// Where a server's host learns to set up HTTPS.
 pub use crosscom_client_common::http::HTTPS_HELP;
 
