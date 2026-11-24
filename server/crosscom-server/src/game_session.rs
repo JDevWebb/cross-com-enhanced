@@ -754,7 +754,7 @@ impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
             .map_err(|_| Error::InternalError)?;
         self.sessions.set_urls(pid, observed, urls);
         // Whether other players can reach it where it announces itself.
-        crate::announce::check(logger, pid);
+        crate::announce::check(logger, pid, false);
         Ok(Vec::new())
     }
 

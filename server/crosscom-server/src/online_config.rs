@@ -290,7 +290,7 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
                         );
                     }
                     // A forward changes the address other players get first: checked again.
-                    crate::announce::check(logger, m.pid);
+                    crate::announce::check(logger, m.pid, m.new_forward);
                 }
                 answer
             }
