@@ -442,7 +442,7 @@ mod tests {
         assert!(json["news"].is_array());
 
         let (status, json) = ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"hunter2"}"#)).unwrap();
-        assert_eq!((status, json.as_str()), ("200 OK", r#"{"pid":1048576}"#));
+        assert_eq!((status, json.starts_with(r#"{"pid":1048576,"token":"cct_"#)), ("200 OK", true), "{json}");
         assert_eq!(ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"nope"}"#)).unwrap().0, "401 Unauthorized");
         let big = format!(r#"{{"name":"Kozak","password":"{}"}}"#, "x".repeat(2000));
         assert_eq!(ask(&http, &post("/api/login", &big)).unwrap().0, "413 Content Too Large");

@@ -193,16 +193,33 @@ fn api_get(server: &str, path: &str) -> Result<crosscom_client_common::http::Res
     crosscom_client_common::http::request(&host(server), "GET", path, &[("Accept", "application/json".into())], &[], TIMEOUT).map_err(|e| e.0)
 }
 
-/// Checks a name and password with the server: the account's ID, `None` when the server is
-/// older than this check (the game's own sign-in will tell), or why it refused; and how the
-/// password went.
-pub fn sign_in(server: &str, name: &str, password: &str) -> Result<(Option<u32>, Sent), String> {
+/// What a sign-in found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    /// The account's ID; `None` when the server is older than this check (the game's own sign-in
+    /// will tell).
+    pub pid: Option<u32>,
+    /// The game token the game signs in with in place of the password; `None` from a server
+    /// older than game tokens, which takes the password from the game.
+    pub token: Option<String>,
+    /// How the password went.
+    pub sent: Sent,
+}
+
+/// Checks a name and password with the server, and gets a game token for the game; or why it
+/// refused.
+pub fn sign_in(server: &str, name: &str, password: &str) -> Result<SignedIn, String> {
     let body = json!({ "name": name.trim(), "password": password }).to_string();
     let (status, text, sent) = post_password(server, "/api/login", &body)?;
     if status == 404 {
-        return Ok((None, sent));
+        return Ok(SignedIn { pid: None, token: None, sent });
     }
-    answer(status, &text).map(|pid| (Some(pid), sent))
+    let pid = answer(status, &text)?;
+    let token = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|j| j["token"].as_str().map(str::to_owned))
+        .filter(|t| crosscom_client_common::config::is_game_token(t));
+    Ok(SignedIn { pid: Some(pid), token, sent })
 }
 
 /// Makes an account; its ID and how the password went, or the server's reason for refusing.

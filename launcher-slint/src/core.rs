@@ -326,7 +326,11 @@ impl Launcher {
             ..old
         };
         server::check(&host)?;
-        let (checked, sent) = account(&host, &config.username, &config.password, setup.new_account, &setup.code)?;
+        let (checked, sent, token) = account(&host, &config.username, &config.password, setup.new_account, &setup.code)?;
+        let config = Config {
+            password: game_secret(config.password, token),
+            ..config
+        };
         game::install(&dir, &files)?;
         settings::save_client(&dir, &config, &overlay)?;
         // Before the game first hosts: Windows' own prompt takes the focus from the fullscreen game.
@@ -359,7 +363,11 @@ impl Launcher {
             ..config
         };
         let new = account.new_account;
-        let (checked, sent) = self::account(&host, &config.username, &config.password, new, &account.code)?;
+        let (checked, sent, token) = self::account(&host, &config.username, &config.password, new, &account.code)?;
+        let config = Config {
+            password: game_secret(config.password, token),
+            ..config
+        };
         settings::save_client(&dir, &config, &overlay)?;
         let said = match (new, checked) {
             (true, _) => format!("Account {name} made. The game signs in with it."),
@@ -395,6 +403,7 @@ impl Launcher {
         let prefs = self.prefs();
         let dir = prefs.game_dir.clone().filter(|d| game::is_game_dir(d)).ok_or("Set the game up first.")?;
         let exe = dir.join(if prefs.dx9 { game::EXE_DX9 } else { game::EXE_DX11 });
+        swap_password_for_token(&dir);
         let mut updated = false;
         if let Some(files) = client::files() {
             if game::installed(&dir, &files) != Installed::Yes {
@@ -466,14 +475,42 @@ pub fn check_game(dir: &Path) -> Result<(), String> {
 
 /// Signs in to an account (`new` false) or makes one. Whether the server checked it (an older
 /// one can't), and how the password went.
-fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<(bool, server::Sent), String> {
+/// Makes the account or checks it, and gets the game token the game signs in with: whether the
+/// server checked it, how the password went, and the token (`None` from a server older than
+/// game tokens: the game then gets the password).
+fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<(bool, server::Sent, Option<String>), String> {
     if new {
         let (_, sent) = server::sign_up(host, name, password, code)?;
-        Ok((true, sent))
+        // The token comes with a sign-in; one that fails right after the account was made only
+        // leaves the game with the password, as before.
+        let token = server::sign_in(host, name, password).ok().and_then(|s| s.token);
+        Ok((true, sent, token))
     } else {
-        let (pid, sent) = server::sign_in(host, name, password)?;
-        Ok((pid.is_some(), sent))
+        let signed = server::sign_in(host, name, password)?;
+        Ok((signed.pid.is_some(), signed.sent, signed.token))
     }
+}
+
+/// A setup from before game tokens has the player's password in the game's settings, which the
+/// game sends with only the protocol's shared-key encryption: it's swapped for a token, signing in
+/// over HTTPS. Left as it is if the server is older or can't be reached (the game still signs in
+/// with the password), or the password no longer matches (the game will say).
+fn swap_password_for_token(dir: &Path) {
+    let config = settings::client(dir);
+    let Some(host) = config.server.clone().filter(|s| !s.is_empty()) else { return };
+    if config.username.is_empty() || config.password.is_empty() || crosscom_client_common::config::is_game_token(&config.password) {
+        return;
+    }
+    let Ok(server::SignedIn { token: Some(token), .. }) = server::sign_in(&host, &config.username, &config.password) else {
+        return;
+    };
+    let overlay = settings::overlay(dir);
+    let _ = settings::save_client(dir, &Config { password: token, ..config }, &overlay);
+}
+
+/// The game's sign-in secret: the token when the server gave one, else the password.
+fn game_secret(password: String, token: Option<String>) -> String {
+    token.unwrap_or(password)
 }
 
 /// One line of Play's checklist: what's checked, how it stands ("good", "warn", "bad" or
@@ -690,5 +727,34 @@ mod checklist_tests {
         assert_eq!(connection_check(Some(&strict), 3 * 86400).tone, "bad");
         let unchecked = Connection { open: None, ..strict };
         assert_eq!(connection_check(Some(&unchecked), 10).value, "Not checked yet");
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn the_game_gets_the_token_when_there_is_one() {
+        assert_eq!(game_secret("hunter2".into(), Some("cct_abc".into())), "cct_abc");
+        assert_eq!(game_secret("hunter2".into(), None), "hunter2", "an older server: the password, as before");
+    }
+
+    #[test]
+    fn a_token_is_left_alone() {
+        let game = std::env::temp_dir().join(format!("cc-token-test-{}", std::process::id()));
+        std::fs::create_dir_all(&game).unwrap();
+        let token = format!("cct_{}", "a".repeat(28));
+        let config = Config {
+            server: Some("203.0.113.10".into()),
+            username: "Kozak".into(),
+            password: token.clone(),
+            ..Config::default()
+        };
+        settings::save_client(&game, &config, &settings::overlay(&game)).unwrap();
+        // A token: nothing is asked of the server (none answers at that address).
+        swap_password_for_token(&game);
+        assert_eq!(settings::client(&game).password, token);
+        std::fs::remove_dir_all(&game).unwrap();
     }
 }
