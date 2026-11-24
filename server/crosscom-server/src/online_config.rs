@@ -289,8 +289,15 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
                             "{peer}: {:#x}'s game announced another adapter's address than the one reaching the server; its housemates get the client's first", m.pid
                         );
                     }
-                    // A forward changes the address other players get first: checked again.
-                    crate::announce::check(logger, m.pid, m.new_forward);
+                    // A new forward changes the address other players get first: checked afresh.
+                    // A report renewing the same forward isn't a reason to look again: it comes
+                    // every 10 minutes, also once the game has left Multiplayer and closed its
+                    // peer-to-peer socket, where it would be found unreachable (and the player
+                    // told so) after every match. The game's own registrations, made only in
+                    // Multiplayer, check it again.
+                    if m.new_forward {
+                        crate::announce::check(logger, m.pid, true);
+                    }
                 }
                 answer
             }
