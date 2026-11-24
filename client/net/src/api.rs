@@ -46,6 +46,9 @@ pub struct ForwardAnswer {
     pub address: Option<Ipv4Addr>,
     /// The public port of the game's peer-to-peer socket, once the game has registered it.
     pub port: Option<u16>,
+    /// Whether the server reached the game, from a socket of its own, at the address other
+    /// players get first: anyone can join its matches (none until it has checked).
+    pub open: Option<bool>,
 }
 
 fn post_json<T: Serialize>(server: &str, path: &str, body: &T) -> Result<Vec<u8>, String> {

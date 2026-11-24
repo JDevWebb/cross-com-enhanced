@@ -280,9 +280,17 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
         Route::Forward => match body(crate::reach::MAX_BODY) {
             None => too_big(),
             Some(body) => {
-                let (answer, pid) = http.reach.forward(peer, body);
-                if let Some(pid) = pid {
-                    info!(logger, "{peer}: {pid:#x}'s client reported its router: {}", String::from_utf8_lossy(body));
+                let (answer, matched) = http.reach.forward(peer, body);
+                if let Some(m) = matched {
+                    info!(logger, "{peer}: {:#x}'s client reported its router: {}", m.pid, String::from_utf8_lossy(body));
+                    if !m.announced {
+                        warn!(
+                            logger,
+                            "{peer}: {:#x}'s game announced another adapter's address than the one reaching the server; its housemates get the client's first", m.pid
+                        );
+                    }
+                    // A forward changes the address other players get first: checked again.
+                    crate::announce::check(logger, m.pid);
                 }
                 answer
             }
@@ -393,7 +401,7 @@ mod tests {
             api,
             proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
             logs: crate::logs::Logs::new(settings, accounts, online),
-            reach: crate::reach::Reach::new(Arc::default()),
+            reach: crate::reach::Reach::new(Arc::default(), Arc::default()),
         }
     }
 

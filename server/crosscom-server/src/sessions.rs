@@ -175,6 +175,10 @@ pub struct Reachability {
     pub nat: String,
     /// The address the report came from: a forward holds only there.
     pub seen: IpAddr,
+    /// The game's socket on the player's network, as the client found it: the address of the
+    /// adapter that reaches the server, which the game may not have announced (a VPN's or a
+    /// virtual machine's adapter in its place).
+    pub local: SocketAddrV4,
     pub at: Instant,
 }
 
@@ -252,6 +256,16 @@ impl Sessions {
         if seen == Some(viewer) {
             let private = |u: &StationURL| u.address.parse::<IpAddr>().is_ok_and(|ip| ip != viewer && claimable(u, ip));
             urls.sort_by_key(|u| !private(u));
+            // The address on its network the client found, when the game announced another
+            // adapter's: first, as the one housemates reach.
+            if let Some(local) = self.unannounced_local(pid, seen) {
+                if let Some(mut url) = urls.first().cloned() {
+                    url.address = local.ip().to_string();
+                    url.port = local.port();
+                    urls.insert(0, url);
+                    urls.truncate(MAX_URLS);
+                }
+            }
         } else if let (Some(seen), Some(port)) = (seen, self.forward_of(pid)) {
             let address = seen.to_string();
             let public = urls.iter().find(|u| u.address == address).or(urls.first()).cloned();
@@ -283,6 +297,30 @@ impl Sessions {
     /// The address the server sees `pid`'s game at, once it registered its URLs.
     pub fn seen(&self, pid: u32) -> Option<IpAddr> {
         self.lock().urls.get(&pid)?.0.address.parse().ok()
+    }
+
+    /// The game's socket on `pid`'s network as its client reported it, when the game didn't
+    /// announce that address (and its report holds there).
+    fn unannounced_local(&self, pid: u32, seen: Option<IpAddr>) -> Option<SocketAddrV4> {
+        let reachability = self.reachability(pid).filter(|r| Some(r.seen) == seen)?;
+        let local = reachability.local;
+        let inner = self.lock();
+        let (_, kept) = inner.urls.get(&pid)?;
+        let announced = kept.iter().any(|u| u.address == local.ip().to_string() && u.port == local.port());
+        (!announced).then_some(local)
+    }
+
+    /// The one player seen at `seen` that registered its URLs, if there's only one, and the public
+    /// port it registered: whose report one is that names a socket its game didn't announce.
+    pub fn only_player_at(&self, seen: IpAddr) -> Option<(u32, Option<u16>)> {
+        let inner = self.lock();
+        let seen_text = seen.to_string();
+        let mut at = inner.urls.iter().filter(|(_, (observed, _))| observed.address == seen_text);
+        let (pid, (_, kept)) = at.next()?;
+        if at.next().is_some() {
+            return None;
+        }
+        Some((*pid, kept.iter().find(|u| u.address == seen_text).map(|u| u.port)))
     }
 
     /// Notes what `pid`'s client said about its router.
@@ -782,6 +820,7 @@ mod tests {
             forward: forward.map(|p| (p, "UPnP".to_owned())),
             nat: "consistent".into(),
             seen: seen.parse().unwrap(),
+            local: "192.168.1.20:2346".parse().unwrap(),
             at: Instant::now(),
         };
         sessions.set_reachability(1, report(Some(40000), "198.51.100.7"));
@@ -795,6 +834,39 @@ mod tests {
         assert_eq!(shown("203.0.113.9"), ["198.51.100.7:56877", "192.168.1.20:2346"], "made on another network");
         sessions.set_reachability(1, report(None, "198.51.100.7"));
         assert_eq!(sessions.forward_of(1), None);
+    }
+
+    /// A game that announced another adapter's address (a VPN's, a virtual machine's): the one
+    /// its client found reaching the server comes first for housemates.
+    #[test]
+    fn housemates_get_the_address_the_client_found_when_the_game_announced_another() {
+        let sessions = Sessions::default();
+        let url = |a: &str, port: u16| format!("udp:/address={a};port={port};PID=1;RVCID=2").parse::<StationURL>().unwrap();
+        let observed: StationURL = "prudp:/address=198.51.100.7;port=2347".parse().unwrap();
+        sessions.set_urls(1, observed, vec![url("198.51.100.7", 2346), url("172.24.16.1", 2346)]);
+        assert_eq!(sessions.only_player_at("198.51.100.7".parse().unwrap()), Some((1, Some(2346))));
+        let report = Reachability {
+            forward: None,
+            nat: "consistent".into(),
+            seen: "198.51.100.7".parse().unwrap(),
+            local: "192.168.1.20:2346".parse().unwrap(),
+            at: Instant::now(),
+        };
+        sessions.set_reachability(1, report);
+        let shown = |v: &str| {
+            sessions
+                .urls_seen_from(1, v.parse().unwrap())
+                .iter()
+                .map(|u| format!("{}:{}", u.address, u.port))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown("198.51.100.7"), ["192.168.1.20:2346", "172.24.16.1:2346", "198.51.100.7:2346"], "housemates");
+        assert_eq!(shown("203.0.113.9"), ["198.51.100.7:2346", "172.24.16.1:2346"], "elsewhere: as registered");
+        let first = &sessions.urls_seen_from(1, "198.51.100.7".parse().unwrap())[0];
+        assert_eq!(first.params.get("RVCID").map(String::as_str), Some("2"), "the game's parameters kept");
+        // A second player at that address: whose report it is can't be told.
+        sessions.set_urls(2, "prudp:/address=198.51.100.7;port=2350".parse().unwrap(), vec![url("198.51.100.7", 2350)]);
+        assert_eq!(sessions.only_player_at("198.51.100.7".parse().unwrap()), None);
     }
 
     #[test]

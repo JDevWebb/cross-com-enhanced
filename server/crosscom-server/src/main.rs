@@ -14,6 +14,7 @@
 //! ```
 
 mod accounts;
+mod announce;
 mod api;
 mod clans;
 mod config;
@@ -237,13 +238,16 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     };
     // The game sessions (secure server); the auth server takes out a restarted host's lobbies.
     let sessions = Arc::new(sessions::Sessions::default());
+    if let Err(e) = announce::start(&logger, Arc::clone(&sessions)) {
+        error!(logger, "couldn't start checking players' announced addresses: {e}");
+    }
     match connections::Connections::open(&config.database) {
         Ok(records) => connections::start(&logger, records, Arc::clone(&sessions)),
         Err(e) => error!(logger, "couldn't open the connection records in {}: {e}; joins aren't recorded", config.database.display()),
     }
     let http = online_config::Http {
         content: online_config::content(public_ip, config.auth_port),
-        reach: reach::Reach::new(Arc::clone(&sessions)),
+        reach: reach::Reach::new(Arc::clone(&sessions), Arc::clone(&online)),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
         api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online))
             .with_stats(Arc::clone(&stats))

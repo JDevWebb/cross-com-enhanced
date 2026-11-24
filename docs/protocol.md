@@ -88,6 +88,8 @@ A game that wants to reach other players calls `RequestProbeInitiation` (3.1, wi
 
 The game's peer-to-peer socket is UDP 2346; its station URLs don't say whether the router forwards it (no UPnP or NAT fields). Cross-Com's client asks the router itself and reports the forward over HTTPS (`POST /api/forward`, see [hosting.md](hosting.md#connection-records)); the server then gives other players that player's public URL at the forwarded port first, with the game's own parameters (`PID`, `RVCID`), which the game reaches as it reaches any other of the player's URLs.
 
+Players' games first reach each other with NAT probes on their peer-to-peer sockets, before any PRUDP connection: 14 bytes, `a5`, then `00` for a probe or `01` for its answer, the sender's connection ID (u32, little-endian: the `RVCID` of its station URLs), a 4-byte token and four zero bytes. A game answers a probe from anyone, with its own connection ID and the probe's token, once it's in Multiplayer (at the main menu its peer-to-peer socket isn't open yet). The Cross-Com server uses this to check that the address a game announces takes packets from anyone (see [hosting.md](hosting.md#connection-records)).
+
 The address echo (PRUDP user packets, virtual port 1 to 1, on either sign-in port) answers anyone: its payload, then `udp:/address=IP;port=PORT` and a NUL. Asked from one socket at both ports, it shows whether a router keeps one public port per socket or gives each destination its own (a symmetric NAT), which Cross-Com's connection test does.
 
 ## 8. Friends, events and invitations (*not yet seen in a game*)

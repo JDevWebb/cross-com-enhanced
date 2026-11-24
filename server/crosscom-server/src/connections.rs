@@ -98,6 +98,10 @@ pub struct Record {
     /// What each client said about how its router maps ports, or `none` with no report.
     pub nat: String,
     pub host_nat: String,
+    /// Whether each game answered at the address it announced (`announce`): any player can reach
+    /// it there. None when it wasn't checked.
+    pub open: Option<bool>,
+    pub host_open: Option<bool>,
 }
 
 impl Record {
@@ -127,6 +131,16 @@ impl Connections {
             );
             CREATE INDEX IF NOT EXISTS connection_joins_at ON connection_joins (at);",
         )?;
+        // Columns added since the table was first made.
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('connection_joins')")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for column in ["open", "host_open"] {
+            if !columns.iter().any(|c| c == column) {
+                db.execute_batch(&format!("ALTER TABLE connection_joins ADD COLUMN {column} INTEGER"))?;
+            }
+        }
         Ok(Self {
             db: Mutex::new(db),
             open: Mutex::default(),
@@ -268,6 +282,8 @@ impl Connections {
             host_forwarded: sessions.forward_of(o.host).is_some(),
             nat: nat_of(pid),
             host_nat: nat_of(o.host),
+            open: crate::announce::open(pid),
+            host_open: crate::announce::open(o.host),
         };
         if record.early() {
             info!(
@@ -287,8 +303,8 @@ impl Connections {
         let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         db.execute("DELETE FROM connection_joins WHERE at < ?1", params![r.at.saturating_sub(KEPT_FOR)])?;
         db.execute(
-            "INSERT INTO connection_joins (at, player, host, seconds, probes, outcome, same_network, forwarded, host_forwarded, nat, host_nat)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO connection_joins (at, player, host, seconds, probes, outcome, same_network, forwarded, host_forwarded, nat, host_nat, open, host_open)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 r.at,
                 r.player,
@@ -300,7 +316,9 @@ impl Connections {
                 r.forwarded,
                 r.host_forwarded,
                 r.nat,
-                r.host_nat
+                r.host_nat,
+                r.open,
+                r.host_open
             ],
         )?;
         Ok(())
@@ -310,7 +328,7 @@ impl Connections {
     pub fn since(&self, since: u64) -> rusqlite::Result<Vec<Record>> {
         let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut statement = db.prepare(
-            "SELECT at, player, host, seconds, probes, outcome, same_network, forwarded, host_forwarded, nat, host_nat
+            "SELECT at, player, host, seconds, probes, outcome, same_network, forwarded, host_forwarded, nat, host_nat, open, host_open
              FROM connection_joins WHERE at >= ?1 ORDER BY at",
         )?;
         let rows = statement.query_map(params![since], |row| {
@@ -330,6 +348,8 @@ impl Connections {
                 host_forwarded: row.get(8)?,
                 nat: row.get(9)?,
                 host_nat: row.get(10)?,
+                open: row.get(11)?,
+                host_open: row.get(12)?,
             })
         })?;
         rows.collect()
@@ -460,6 +480,11 @@ pub fn summary(records: &[Record], days: u64, name: impl Fn(u32) -> String) -> S
     };
     table(&mut out, "By the joining player's router", &|r| router(r.forwarded, &r.nat));
     table(&mut out, "By both players' routers", &pair);
+    table(&mut out, "By the host's announced address", &|r| match r.host_open {
+        Some(true) => "reachable from anywhere",
+        Some(false) => "reachable only by punching through",
+        None => "not checked",
+    });
     let mut by_player: HashMap<u32, (usize, usize)> = HashMap::new();
     for r in &counted {
         let entry = by_player.entry(r.player).or_default();
@@ -587,6 +612,8 @@ mod tests {
             host_forwarded: false,
             nat: nat.into(),
             host_nat: host_nat.into(),
+            open: None,
+            host_open: Some(true),
         };
         let records = [
             record("left", false, "symmetric", "symmetric"),
@@ -600,5 +627,6 @@ mod tests {
         assert!(text.contains("(and 1 ended because the host had gone"), "{text}");
         assert!(text.contains("both symmetric"), "{text}");
         assert!(text.contains("player2"), "{text}");
+        assert!(text.contains("reachable from anywhere"), "{text}");
     }
 }
