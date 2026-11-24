@@ -59,14 +59,13 @@ pub fn answer(reply: &[u8], nonce: &[u8; 8]) -> Option<SocketAddrV4> {
     Some(SocketAddrV4::new(ip?, port?))
 }
 
-/// A nonce for one question. Not secret: it only tells this answer from others.
+/// A fresh nonce, from the system's random source: another host on the path can't guess it to
+/// answer in the server's place.
 #[must_use]
 pub fn nonce() -> [u8; 8] {
-    use std::hash::BuildHasher;
-    use std::hash::Hasher;
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
-    h.finish().to_le_bytes()
+    let mut out = [0u8; 8];
+    getrandom::fill(&mut out).expect("the system's random source");
+    out
 }
 
 /// Where the server at `to` sees `socket`: asked up to three times within `wait`.

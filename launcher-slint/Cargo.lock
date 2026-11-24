@@ -947,6 +947,7 @@ name = "crosscom-client-net"
 version = "0.1.0"
 dependencies = [
  "crosscom-client-common",
+ "getrandom 0.3.4",
  "igd-next",
  "log",
  "serde",

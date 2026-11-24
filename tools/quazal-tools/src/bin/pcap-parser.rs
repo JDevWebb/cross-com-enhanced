@@ -4,8 +4,8 @@ use std::fs::File;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 
-use clap::App;
 use clap::Arg;
+use clap::Command;
 use etherparse::InternetSlice;
 use pcap_parser::traits::PcapNGPacketBlock;
 use pcap_parser::traits::PcapReaderIterator;
@@ -20,23 +20,18 @@ use quazal::rmc::Packet;
 use quazal::Context;
 
 fn main() {
-    let matches = App::new("pcap-parser")
-        .arg(Arg::with_name("input").required(true))
-        .arg(Arg::with_name("port").short("p").long("port").takes_value(true).default_value("3074").validator(|v| {
-            if v.parse::<u16>().is_ok() {
-                return Ok(());
-            }
-            Err(format!("{} isn't a positive number", &*v))
-        }))
-        .arg(Arg::with_name("crypto-key").short("ck").long("crypto-key").takes_value(true).default_value("CD&ML"))
-        .arg(Arg::with_name("access-key").short("ak").long("access-key").takes_value(true).required(true))
+    let matches = Command::new("pcap-parser")
+        .arg(Arg::new("input").required(true))
+        .arg(Arg::new("port").short('p').long("port").default_value("3074").value_parser(clap::value_parser!(u16)))
+        .arg(Arg::new("crypto-key").short('c').long("crypto-key").default_value("CD&ML"))
+        .arg(Arg::new("access-key").short('a').long("access-key").required(true))
         .get_matches();
 
-    let file = File::open(matches.value_of("input").unwrap()).expect("Can't open file");
+    let file = File::open(matches.get_one::<String>("input").expect("input is required")).expect("Can't open file");
 
-    let port: u16 = matches.value_of("port").unwrap().parse().unwrap();
-    let crypto_key: &str = matches.value_of("crypto-key").unwrap();
-    let access_key: &str = matches.value_of("access-key").unwrap();
+    let port: u16 = *matches.get_one::<u16>("port").expect("port has a default");
+    let crypto_key: &str = matches.get_one::<String>("crypto-key").expect("crypto-key has a default");
+    let access_key: &str = matches.get_one::<String>("access-key").expect("access-key is required");
 
     let mut reader = PcapNGReader::new(65536, file).expect("PcapNGReader");
     loop {

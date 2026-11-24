@@ -290,23 +290,10 @@ fn pcp_map_request(local: Ipv4Addr, nonce: [u8; 12], port: u16, external: u16, l
 }
 
 /// A fresh PCP mapping nonce (RFC 6887 11.1: random, so another host can't take over or remove
-/// the mapping). The standard library's hasher keys come from the system's random source; the
-/// time and a counter make each call's differ.
+/// the mapping), from the system's random source.
 fn pcp_nonce() -> [u8; 12] {
-    use std::hash::BuildHasher;
-    use std::hash::Hasher;
-    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let mut out = [0u8; 12];
-    for (i, chunk) in out.chunks_mut(8).enumerate() {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(call);
-        h.write_usize(i);
-        h.write_u128(now);
-        h.write_u32(std::process::id());
-        chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
-    }
+    getrandom::fill(&mut out).expect("the system's random source");
     out
 }
 
