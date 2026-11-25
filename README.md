@@ -31,7 +31,7 @@ What that means for you:
 
 - **Logs are sent to the server after each game you play online**, so problems can be found without you having to describe them. What's sent and how to turn it off: [What's sent, and when](#whats-sent-and-when).
 - **Accounts and stats may be reset** before a later build. Don't get attached to your leaderboard rank yet.
-- **The files aren't code-signed yet,** so Windows and antivirus programs may warn about them: see [Antivirus warnings](#antivirus-warnings).
+- **Microsoft Defender removes the launcher** as soon as it's downloaded, calling it `Trojan:Win32/Bearfoos.B!ml`. That's a false positive: the files aren't code-signed yet. [Antivirus warnings](#antivirus-warnings) says how to check the download and get it back.
 
 ## The community test network
 
@@ -138,7 +138,16 @@ If the test says another router or your internet provider is in front of yours (
 
 ### Antivirus warnings
 
-Some antivirus programs, Microsoft Defender included, may flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases), where each file's VirusTotal results are listed, and check the release key's signature before you first run it: in Git Bash (it comes with Git for Windows), `scripts/verify-release.sh` from the release's tag checks the signature and every file at once ([Checking a download](docs/releasing.md#checking-a-download) says how, and where the key's fingerprint is published outside this repository). A matching hash alone isn't proof: `SHA256SUMS` sits on the same page as the files. After that, the launcher checks each update's signature itself. If it was quarantined, restore it and exclude its folder and the game's folder.
+> [!WARNING]
+> **Microsoft Defender removes `crosscom-launcher.exe` as soon as it's downloaded**, as `Trojan:Win32/Bearfoos.B!ml` (the `!ml` means a machine-learning guess, not a match with known malware). Put it back, then check it as below before you run it:
+>
+> 1. Open **Windows Security** › **Virus & threat protection** › **Protection history**.
+> 2. Open the entry for `crosscom-launcher.exe`, choose **Actions** › **Restore**. Defender then leaves that file alone.
+> 3. So updates and the game's files aren't removed later, go back to **Virus & threat protection** › **Manage settings** › **Exclusions** › **Add an exclusion** › **Folder**, and add the launcher's folder and the game's folder (the client DLLs it installs can be flagged too).
+>
+> Other antivirus programs may do the same; their quarantine has a restore too.
+
+Antivirus programs, Microsoft Defender included, flag `crosscom-launcher.exe` or the client DLLs it installs. **These are false positives:** the client replaces two of the game's libraries and hooks the game so it can reach community servers, as cheats do, and the files aren't code-signed yet. Get the launcher only from this repository's [releases](https://github.com/JDevWebb/cross-com-enhanced/releases), where each file's VirusTotal results are listed, and check the release key's signature before you first run it: in Git Bash (it comes with Git for Windows), `scripts/verify-release.sh` from the release's tag checks the signature and every file at once ([Checking a download](docs/releasing.md#checking-a-download) says how, and where the key's fingerprint is published outside this repository). A matching hash alone isn't proof: `SHA256SUMS` sits on the same page as the files. After that, the launcher checks each update's signature itself.
 
 ### What's sent, and when
 
