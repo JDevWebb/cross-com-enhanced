@@ -33,6 +33,8 @@ const ABOUT_HEIGHT: u32 = 1480;
 /// Where the made-up game is.
 const GAME: &str = r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Tom Clancy's Ghost Recon Future Soldier";
 const NAME: &str = "Kozak";
+/// The player's identity, as Settings shows it.
+const IDENTITY: &str = "K7QX-M2RA";
 
 fn s(text: impl AsRef<str>) -> SharedString {
     SharedString::from(text.as_ref())
@@ -132,7 +134,8 @@ fn play_with(w: &AppWindow, info: core::Info) {
     );
 }
 
-/// A first start: the game found, the community test network answering, an account being made.
+/// A first start: the game found, the community test network answering, and the account step: no
+/// account for this identity there yet, so a name for a new one.
 fn setup(w: &AppWindow) {
     let fresh = core::Info {
         server: None,
@@ -145,18 +148,14 @@ fn setup(w: &AppWindow) {
     w.set_setup_game_dir(s(GAME));
     w.set_setup_community(true);
     w.set_setup_server_ok(s("203.0.113.10:21030"));
-    w.set_setup_new_account(true);
+    w.set_setup_account(s(""));
     w.set_setup_name(s(NAME));
-    w.set_setup_password(s("correct horse"));
-    w.set_setup_again(s("correct horse"));
     w.set_setup_skip_intro(true);
     w.set_setup_account_done(true);
     w.set_setup_missing(s(""));
     w.set_setup_dlc(ui::dlc_rows(&packs(&[])));
     w.set_setup_dlc_note(s(""));
-    // The last step: what's chosen, and why Windows will ask.
-    w.set_setup_step(4);
-    w.set_setup_firewall_note(s(ui::SETUP_FIREWALL));
+    w.set_setup_step(2);
 }
 
 fn settings(w: &AppWindow) {
@@ -189,6 +188,11 @@ fn settings(w: &AppWindow) {
     };
     w.set_logs_last(s(ui::logs_last(&status)));
     w.set_logs_said(s("Logs sent: report 20261115-123456-ab12cd."));
+    // A made-up identity, just copied.
+    w.set_id_short(s(IDENTITY));
+    w.set_id_error(s(""));
+    w.set_id_said(s(ui::IDENTITY_COPIED));
+    w.set_id_failed(false);
 }
 
 fn about(w: &AppWindow) {

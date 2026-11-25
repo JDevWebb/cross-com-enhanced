@@ -82,10 +82,10 @@ export component AppWindow inherits Window {
     in property <string> setup-server-ok;
     in property <bool> setup-server-checking;
     in property <string> setup-server-error;
-    in-out property <bool> setup-new-account: true;
+    // The account the player's identity has on the server checked ("" for none), or a new one's
+    // name and sign-up code.
+    in property <string> setup-account;
     in-out property <string> setup-name;
-    in-out property <string> setup-password;
-    in-out property <string> setup-again;
     in-out property <string> setup-code;
     in-out property <bool> setup-skip-intro: true;
     in-out property <bool> setup-dx9;
@@ -112,15 +112,14 @@ export component AppWindow inherits Window {
     in property <[string]> conn-details;
     in property <string> options-said;
     in property <bool> options-failed;
-    in-out property <bool> acc-new;
-    in-out property <string> acc-name;
-    in-out property <string> acc-password;
-    in-out property <string> acc-again;
-    in-out property <string> acc-code;
-    in property <bool> acc-ready;
-    in property <bool> acc-busy;
-    in property <string> acc-said;
-    in property <bool> acc-failed;
+    // The player's identity (see SettingsScreen).
+    in property <string> id-short;
+    in property <string> id-error;
+    in-out property <string> id-paste;
+    in-out property <string> id-confirm;
+    in property <bool> id-busy;
+    in property <string> id-said;
+    in property <bool> id-failed;
     in property <string> logs-last;
     in property <string> logs-said;
     in property <bool> logs-sending;
@@ -146,8 +145,8 @@ export component AppWindow inherits Window {
     callback setup-step-entered(int);
     // Settings.
     callback options-changed();
-    callback account-changed();
-    callback account-run();
+    callback identity-export() -> string;
+    callback identity-use(bool);
     callback change-server(bool);
     callback send-logs-now();
     callback open-logs();
@@ -222,10 +221,8 @@ export component AppWindow inherits Window {
                     server-ok: root.setup-server-ok;
                     server-checking: root.setup-server-checking;
                     server-error: root.setup-server-error;
-                    new-account <=> root.setup-new-account;
+                    account: root.setup-account;
                     name <=> root.setup-name;
-                    password <=> root.setup-password;
-                    again <=> root.setup-again;
                     code <=> root.setup-code;
                     skip-intro <=> root.setup-skip-intro;
                     dx9 <=> root.setup-dx9;
@@ -259,15 +256,13 @@ export component AppWindow inherits Window {
                     connection-details: root.conn-details;
                     options-said: root.options-said;
                     options-failed: root.options-failed;
-                    new-account <=> root.acc-new;
-                    name <=> root.acc-name;
-                    password <=> root.acc-password;
-                    again <=> root.acc-again;
-                    code <=> root.acc-code;
-                    account-ready: root.acc-ready;
-                    account-busy: root.acc-busy;
-                    account-said: root.acc-said;
-                    account-failed: root.acc-failed;
+                    identity: root.id-short;
+                    identity-error: root.id-error;
+                    identity-paste <=> root.id-paste;
+                    identity-confirm <=> root.id-confirm;
+                    identity-busy: root.id-busy;
+                    identity-said: root.id-said;
+                    identity-failed: root.id-failed;
                     logs-last: root.logs-last;
                     logs-said: root.logs-said;
                     logs-sending: root.logs-sending;
@@ -275,8 +270,8 @@ export component AppWindow inherits Window {
                     restore-said: root.restore-said;
                     restore-failed: root.restore-failed;
                     options-changed => { root.options-changed(); }
-                    account-changed => { root.account-changed(); }
-                    account-run => { root.account-run(); }
+                    identity-export => { return root.identity-export(); }
+                    identity-use(confirmed) => { root.identity-use(confirmed); }
                     change-server(c) => { root.change-server(c); }
                     send-logs-now => { root.send-logs-now(); }
                     open-logs => { root.open-logs(); }

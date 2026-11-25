@@ -40,7 +40,7 @@ What that means for you:
 <table>
 <tr><td><b>Address</b></td><td><code>grfs-test.jdevwebb.net</code>: the launcher's default</td></tr>
 <tr><td><b>Modes</b></td><td>Every adversarial mode, ranked and player matches, the campaign and Guerrilla in co-op</td></tr>
-<tr><td><b>Your account</b></td><td>Made in the launcher, the first time you play; your password goes over HTTPS</td></tr>
+<tr><td><b>Your account</b></td><td>Made in the launcher, the first time you play: you choose a name, and there's no password (see <a href="#your-identity">Your identity</a>)</td></tr>
 <tr><td><b>Logs</b></td><td>Each online game's log goes to the network, so problems can be found (see <a href="#whats-sent-and-when">What's sent, and when</a>)</td></tr>
 </table>
 
@@ -52,7 +52,7 @@ You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Win
 
 1. **Download** `crosscom-launcher.exe` from the [latest release](https://github.com/JDevWebb/cross-com-enhanced/releases). It's one file: keep it in a folder of your own, such as your Desktop or Documents (not Program Files), so it can update itself.
 2. **Run it.** It finds the game by itself (Ubisoft Connect and Steam installs, or a folder you choose), and the [community test network](#the-community-test-network) is already picked.
-3. **Make an account** (choose the name other players will see), or sign in to the one you have.
+3. **Make an account**: choose the name other players will see. There's no password: your [identity](#your-identity) signs you in, and if it already has an account on the server, the launcher signs you in to it with nothing to type.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
 To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Change server** switches later, and **Use the community test network** goes back to it.
@@ -89,14 +89,20 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 
 <table>
 <tr>
-<td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup: the game folder found, the community test network chosen and answering, making an account, and the game options"></td>
-<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, the server and account, and the connection test"></td>
+<td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup, at its account step: the game folder found and the community test network answering, then a name for a new account and the server's sign-up code, with no password"></td>
+<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, the server and account with the player's identity (copy it to another PC, or use another PC's), and the connection test"></td>
 </tr>
 <tr>
-<td align="center"><sub>Setup, a step at a time: the last step, before it sets everything up</sub></td>
-<td align="center"><sub>Settings: the overlay, the logs, your server and account, your connection</sub></td>
+<td align="center"><sub>Setup, a step at a time: your account, a name and no password</sub></td>
+<td align="center"><sub>Settings: the overlay, the logs, your server, account and identity, your connection</sub></td>
 </tr>
 </table>
+
+### Your identity
+
+Players have no password. The first time it runs, the launcher makes your **identity**: a key it keeps on your PC (in `%APPDATA%\Cross-Com`, encrypted for your Windows user). Your accounts belong to it: making one signs your chosen name with it, and signing in signs a message for that one server, which answers with a sign-in token for the game. So there's nothing to remember or type, and what a server is sent is no use for signing in as you anywhere else.
+
+**Whoever has your identity can sign in as you**, so keep it to yourself. To play from another PC, open **Settings › Server and account** on this one and press **Copy to move it to another PC**, then on the other PC paste it into **Use an identity from another PC** and press **Use**. If that PC had an identity of its own, the launcher asks first, and keeps the one it replaces in its folder so it can be put back. A copy kept somewhere safe also keeps your accounts if this PC is lost.
 
 <sub>The launcher screenshots show sample data.</sub>
 
@@ -136,7 +142,7 @@ Some antivirus programs, Microsoft Defender included, may flag `crosscom-launche
 
 ### What's sent, and when
 
-After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and your password are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time.
+After each game you play online, the game's log from that run (`crosscom.log`, next to the game) is sent to the server you played on, so its host can see what went wrong. Before it's sent, your Windows user name and the game's sign-in token are taken out. The server takes logs only from players who have signed in to it from that PC, and keeps them for a limited time.
 
 The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. That question carries only the launcher's version (GitHub sees your internet address, as with any download), and an update installs only when you press **Update**: the launcher checks the release's signature first.
 
@@ -144,7 +150,7 @@ The launcher asks GitHub for the latest release when it starts and every few hou
 
 While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Connection** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
 
-All of it goes over HTTPS, as your password does; only a server on your own network or VPN without HTTPS is sent it unencrypted. Nothing else is collected.
+All of it goes over HTTPS, as signing in does; only a server on your own network or VPN without HTTPS is sent it unencrypted. Your identity itself never leaves your PC: servers get only your global id (its public half) and what it signs. Nothing else is collected.
 
 ## What works
 

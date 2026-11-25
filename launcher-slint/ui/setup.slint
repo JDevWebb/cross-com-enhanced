@@ -1,87 +1,14 @@
 // The guided setup, a step at a time: the game's folder (found on its own when it can be), the
 // server (the community test network unless the player chooses another, checked before going on),
-// the account (made here, or an existing one), the game options, and a last step that says what
-// setting up will do (and that Windows will ask for permission, when it will) before one press
-// does it all.
+// the account (the one the player's identity has on the server, or a name for a new one: there's
+// no password), the game options, and a last step that says what setting up will do (and that
+// Windows will ask for permission, when it will) before one press does it all.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
-import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Check, Tabs, Option, Spinner } from "widgets.slint";
+import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Check, Option, Spinner } from "widgets.slint";
 import { DlcList, DlcNotice } from "dlc.slint";
 import { DlcRow } from "types.slint";
-
-// The account's fields and notes, as Setup and Settings both have them.
-export component AccountForm inherits VerticalLayout {
-    // Make an account (true) or sign in to one.
-    in-out property <bool> new-account;
-    in-out property <string> name;
-    in-out property <string> password;
-    in-out property <string> again;
-    in-out property <string> code;
-    in property <bool> enabled: true;
-    // "Make one" first (Setup) or "Sign in" first (Settings).
-    in property <bool> make-first: true;
-    callback changed();
-    callback accepted();
-    spacing: 12px;
-    alignment: start;
-    Tabs {
-        model: root.make-first ? ["Make one", "Sign in"] : ["Sign in", "Make an account"];
-        current: root.make-first == root.new-account ? 0 : 1;
-        chosen(i) => {
-            root.new-account = root.make-first == (i == 0);
-            root.changed();
-        }
-    }
-    HorizontalLayout {
-        spacing: 12px;
-        LabelledField {
-            label: "Name";
-            text <=> root.name;
-            enabled: root.enabled;
-            edited => { root.changed(); }
-        }
-        LabelledField {
-            label: "Password";
-            secret: true;
-            text <=> root.password;
-            enabled: root.enabled;
-            edited => { root.changed(); }
-            accepted => { if !root.new-account { root.accepted(); } }
-        }
-    }
-    if root.new-account: HorizontalLayout {
-        spacing: 12px;
-        LabelledField {
-            label: "Password again";
-            secret: true;
-            text <=> root.again;
-            enabled: root.enabled;
-            edited => { root.changed(); }
-        }
-        LabelledField {
-            label: "Sign-up code";
-            hint: "(if the server has one)";
-            text <=> root.code;
-            enabled: root.enabled;
-            edited => { root.changed(); }
-        }
-    }
-    Text {
-        text: root.new-account
-            ? "Letters, digits, \"-\", \"_\" and \".\" for your name, which other players see. Use a password you use nowhere else."
-            : "The server checks your name and password before the game uses them.";
-        color: Theme.muted;
-        font-size: Type.small;
-        wrap: word-wrap;
-    }
-    Text {
-        text: "Your password goes to the server over HTTPS. Only a server set up by its IP address on your own network or VPN, with no HTTPS at all, gets it unencrypted.";
-        color: Theme.muted;
-        font-size: Type.small;
-        wrap: word-wrap;
-    }
-}
 
 // The steps, as the bar over Setup names them.
 component StepBar inherits HorizontalLayout {
@@ -177,11 +104,10 @@ export component SetupScreen inherits Rectangle {
     in property <string> server-ok;
     in property <bool> server-checking;
     in property <string> server-error;
-    // The account.
-    in-out property <bool> new-account: true;
+    // The account: the one the player's identity has on the server ("" for none), or the name
+    // (and the server's sign-up code) for a new one.
+    in property <string> account;
     in-out property <string> name;
-    in-out property <string> password;
-    in-out property <string> again;
     in-out property <string> code;
     // The options.
     in-out property <bool> skip-intro: true;
@@ -373,17 +299,44 @@ export component SetupScreen inherits Rectangle {
                         al := VerticalLayout {
                             padding: 20px;
                             spacing: 12px;
-                            CardHead { number: "03"; title: "Your account"; }
-                            Para { text: "Your name is what other players see. New here? Make one; the server's host may have given you a sign-up code."; }
-                            AccountForm {
-                                new-account <=> root.new-account;
-                                name <=> root.name;
-                                password <=> root.password;
-                                again <=> root.again;
-                                code <=> root.code;
-                                enabled: !root.busy;
-                                changed => { root.changed(); }
-                                accepted => { if root.can-go { root.go-to(3); } }
+                            CardHead { number: "03"; title: "Your account"; note: root.account != "" ? "Found" : ""; }
+                            if root.account != "": Text {
+                                text: "Signed in as " + root.account;
+                                color: Theme.good;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                            if root.account != "": Para { text: "Your identity already has this account on the server, so there's nothing to type."; }
+                            if root.account == "": Para { text: "You have no account on this server yet. Choose the name other players see; the server's host may have given you a sign-up code."; }
+                            if root.account == "": HorizontalLayout {
+                                spacing: 12px;
+                                LabelledField {
+                                    label: "Name";
+                                    text <=> root.name;
+                                    enabled: !root.busy;
+                                    edited => { root.changed(); }
+                                    accepted => { if root.can-go { root.go-to(3); } }
+                                }
+                                LabelledField {
+                                    label: "Sign-up code";
+                                    hint: "(if the server has one)";
+                                    text <=> root.code;
+                                    enabled: !root.busy;
+                                    edited => { root.changed(); }
+                                    accepted => { if root.can-go { root.go-to(3); } }
+                                }
+                            }
+                            if root.account == "": Text {
+                                text: "Letters, digits, \"-\", \"_\" and \".\".";
+                                color: Theme.muted;
+                                font-size: Type.small;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "There's no password: your identity, which the launcher keeps on this PC, signs you in. Settings › Server and account moves it to another PC.";
+                                color: Theme.muted;
+                                font-size: Type.small;
+                                wrap: word-wrap;
                             }
                         }
                     }
@@ -410,7 +363,7 @@ export component SetupScreen inherits Rectangle {
                             CardHead { number: "05"; title: "Set up"; }
                             Summary { label: "The game"; value: root.game-dir; mono: true; }
                             Summary { label: "The server"; value: root.community ? root.community-name + " (" + root.community-host + ")" : root.server-typed; }
-                            Summary { label: "Your account"; value: (root.new-account ? "A new account, " : "Signing in as ") + root.name; }
+                            Summary { label: "Your account"; value: root.account != "" ? "Signed in as " + root.account : "A new account, " + root.name; }
                             Summary {
                                 label: "Options";
                                 value: (root.skip-intro ? "Intro videos skipped" : "Intro videos played") + " · " + (root.dx9 ? "DirectX 9" : "DirectX 11");
@@ -418,7 +371,7 @@ export component SetupScreen inherits Rectangle {
                             VerticalLayout {
                                 padding-top: 6px;
                                 Para {
-                                    text: "Set up installs Cross-Com's client into the game (keeping the game's own files: Settings can put them back), " + (root.new-account ? "makes your account on the server" : "checks your name and password with the server") + " and saves your settings.";
+                                    text: "Set up installs Cross-Com's client into the game (keeping the game's own files: Settings can put them back), " + (root.account != "" ? "signs you in to your account with your identity" : "makes your account on the server, owned by your identity") + " and saves your settings.";
                                 }
                             }
                             if root.firewall-note != "": Rectangle {

@@ -15,6 +15,7 @@ use crosscom_launcher::client;
 use crosscom_launcher::dlc;
 use crosscom_launcher::game;
 use crosscom_launcher::game::Installed;
+use crosscom_launcher::identity;
 use crosscom_launcher::logs;
 use crosscom_launcher::server;
 use crosscom_launcher::settings;
@@ -119,23 +120,21 @@ impl Info {
 pub struct Setup {
     pub game_dir: PathBuf,
     pub server: String,
+    /// The name for a new account (with the server's sign-up code, if it has one), when the
+    /// player's identity has none on the server yet.
     pub name: String,
-    pub password: String,
-    /// Make the account first (with the server's sign-up code, if it has one).
-    pub new_account: bool,
     pub code: String,
     pub skip_intro: bool,
     pub dx9: bool,
 }
 
-/// Another account on the server set up.
-#[derive(Debug, Clone, Default)]
-pub struct Account {
-    pub name: String,
-    pub password: String,
-    /// Make the account (with the server's sign-up code, if it has one) rather than sign in.
-    pub new_account: bool,
-    pub code: String,
+/// What using an identity from another PC came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Imported {
+    /// It would replace this PC's own, a different one: the two (short), to ask first.
+    Confirm { current: String, new: String },
+    /// It's in use: what to tell the player.
+    Done(String),
 }
 
 /// The game options, from Settings.
@@ -165,18 +164,10 @@ pub fn name_ok(name: &str) -> bool {
     (1..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-/// What's still missing from an account form, or `None` when it can go.
+/// What's wrong with a new account's name, or `None` when the server will take it.
 #[must_use]
-pub fn account_missing(name: &str, password: &str, again: &str, new: bool) -> Option<&'static str> {
-    if !name_ok(name.trim()) {
-        Some("Enter a name: letters, digits, \"-\", \"_\" or \".\".")
-    } else if password.is_empty() {
-        Some("Enter your password.")
-    } else if new && password != again {
-        Some("The two passwords differ.")
-    } else {
-        None
-    }
+pub fn name_missing(name: &str) -> Option<&'static str> {
+    (!name_ok(name.trim())).then_some("Enter a name: letters, digits, \"-\", \"_\" or \".\".")
 }
 
 impl Launcher {
@@ -213,6 +204,73 @@ impl Launcher {
 
     fn logs(&self) -> MutexGuard<'_, (Option<String>, bool)> {
         self.logs.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The launcher's own folder: its settings, and the player's identity.
+    fn dir(&self) -> PathBuf {
+        self.prefs_path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    }
+
+    /// The player's identity, made the first time it's needed.
+    pub fn identity(&self) -> Result<identity::Identity, String> {
+        identity::load_or_create(&self.dir())
+    }
+
+    /// The identity as Settings shows it (`ABCD-EFGH`), or why it can't be read.
+    pub fn identity_short(&self) -> Result<String, String> {
+        self.identity().map(|id| identity::short(&id))
+    }
+
+    /// The identity as text, to move it to another PC.
+    pub fn identity_export(&self) -> Result<String, String> {
+        self.identity().map(|id| identity::export(&id))
+    }
+
+    /// The name of the identity's account on `host`, if it has one there (Setup's account step).
+    pub fn find_account(&self, host: &str) -> Result<Option<String>, String> {
+        let identity = self.identity()?;
+        Ok(server::key_login(host, &identity)?.map(|a| a.name))
+    }
+
+    /// Uses the identity pasted from another PC (`text`, as copied there). Replacing a different
+    /// one asks first, unless `confirmed`. The one replaced is kept beside it; the account on the
+    /// server set up is then the new identity's.
+    pub fn use_identity(&self, text: &str, confirmed: bool) -> Result<Imported, String> {
+        let new = identity::import(text)?;
+        let dir = self.dir();
+        let current = identity::load(&dir).ok().flatten().filter(|c| c.global_id() != new.global_id());
+        if let (Some(current), false) = (&current, confirmed) {
+            return Ok(Imported::Confirm {
+                current: identity::short(current),
+                new: identity::short(&new),
+            });
+        }
+        let kept = identity::replace(&dir, &new)?;
+        let mut said = format!("This PC uses the identity {} now.", identity::short(&new));
+        if let Some(kept) = kept {
+            said += &format!(" The one it replaced is kept in {}.", kept.display());
+        }
+        Ok(Imported::Done(said + &self.sign_in_again(&new)))
+    }
+
+    /// After the identity changed: the game's account on the server set up becomes the new
+    /// identity's (none when it has none there). What to add to what the player is told.
+    fn sign_in_again(&self, identity: &identity::Identity) -> String {
+        let Some(dir) = self.game_dir() else { return String::new() };
+        let config = settings::client(&dir);
+        let Some(host) = config.server.clone().filter(|s| !s.is_empty()) else {
+            return String::new();
+        };
+        let (account, said) = match server::key_login(&host, identity) {
+            Ok(Some(account)) => (Some((account.name.clone(), account.token)), format!(" Signed in to {host} as {}.", account.name)),
+            Ok(None) => (None, format!(" It has no account on {host} yet: Setup makes one.")),
+            Err(e) => return format!(" Couldn't sign in to {host} with it ({e}); Setup tries again."),
+        };
+        let (username, password) = account.unwrap_or_default();
+        match settings::save_client(&dir, &Config { username, password, ..config }, &settings::overlay(&dir)) {
+            Ok(()) => said,
+            Err(e) => format!(" {e}"),
+        }
     }
 
     /// The game's folder, while it still holds the game.
@@ -300,8 +358,9 @@ impl Launcher {
         server::info(&host)
     }
 
-    /// Sets everything up in one go: checks the game and the server, makes the account if asked,
-    /// installs the client and writes its settings. What to tell the player.
+    /// Sets everything up in one go: checks the game and the server, signs in to the identity's
+    /// account there (or makes it), installs the client and writes its settings. What to tell the
+    /// player.
     pub fn setup(&self, setup: Setup) -> Result<String, String> {
         let Some(files) = client::files() else {
             return Err("This launcher was built without the client; download a release.".into());
@@ -310,29 +369,24 @@ impl Launcher {
         if !game::is_game_dir(&dir) {
             return Err("That folder doesn't hold the game.".into());
         }
-        let name = setup.name.trim().to_owned();
-        if name.is_empty() || setup.password.is_empty() {
-            return Err("Fill in your name and password.".into());
-        }
         let host = server::host(&setup.server);
         if host.is_empty() {
             return Err("Enter the server's address.".into());
         }
+        server::check(&host)?;
+        let identity = self.identity()?;
+        let (account, made) = account(&host, &identity, &setup.name, &setup.code)?;
+        let name = account.name.clone();
         let old = settings::client(&dir);
         let overlay = settings::overlay(&dir);
         let config = Config {
-            server: Some(host.clone()),
-            username: name.clone(),
-            password: setup.password,
+            server: Some(host),
+            username: account.name,
+            // The game signs in with the game token, as its password.
+            password: account.token,
             cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key.clone() },
             skip_intro_videos: setup.skip_intro,
             ..old
-        };
-        server::check(&host)?;
-        let (checked, sent, token) = account(&host, &config.username, &config.password, setup.new_account, &setup.code)?;
-        let config = Config {
-            password: game_secret(config.password, token),
-            ..config
         };
         game::install(&dir, &files)?;
         settings::save_client(&dir, &config, &overlay)?;
@@ -342,42 +396,12 @@ impl Launcher {
         prefs.game_dir = Some(dir);
         prefs.dx9 = setup.dx9;
         self.save(prefs)?;
-        let said = match (setup.new_account, checked) {
-            (true, _) => format!("Account {name} made, and the game is set up."),
-            (false, true) => format!("Signed in as {name}, and the game is set up."),
-            (false, false) => "The game is set up. This server can't check passwords here; the game will.".into(),
+        let said = if made {
+            format!("Account {name} made, and the game is set up.")
+        } else {
+            format!("Signed in as {name}, and the game is set up.")
         };
-        Ok(said + unencrypted_note(sent) + &wall)
-    }
-
-    /// Another account on the server set up: signs in to it (or makes it), then the game uses it.
-    pub fn set_account(&self, account: Account) -> Result<String, String> {
-        let dir = self.game_dir().ok_or("Set the game up first.")?;
-        let name = account.name.trim().to_owned();
-        if name.is_empty() || account.password.is_empty() {
-            return Err("Fill in your name and password.".into());
-        }
-        let config = settings::client(&dir);
-        let host = config.server.clone().filter(|s| !s.is_empty()).ok_or("Set a server up first.")?;
-        let overlay = settings::overlay(&dir);
-        let config = Config {
-            username: name.clone(),
-            password: account.password,
-            ..config
-        };
-        let new = account.new_account;
-        let (checked, sent, token) = self::account(&host, &config.username, &config.password, new, &account.code)?;
-        let config = Config {
-            password: game_secret(config.password, token),
-            ..config
-        };
-        settings::save_client(&dir, &config, &overlay)?;
-        let said = match (new, checked) {
-            (true, _) => format!("Account {name} made. The game signs in with it."),
-            (false, true) => format!("Signed in as {name}. The game signs in with it."),
-            (false, false) => format!("The game signs in as {name} now. This server can't check passwords here; the game will."),
-        };
-        Ok(said + unencrypted_note(sent))
+        Ok(said + &wall)
     }
 
     /// The game options: written into the client's settings and the launcher's.
@@ -406,7 +430,6 @@ impl Launcher {
         let prefs = self.prefs();
         let dir = prefs.game_dir.clone().filter(|d| game::is_game_dir(d)).ok_or("Set the game up first.")?;
         let exe = dir.join(if prefs.dx9 { game::EXE_DX9 } else { game::EXE_DX11 });
-        swap_password_for_token(&dir);
         let mut updated = false;
         if let Some(files) = client::files() {
             if game::installed(&dir, &files) != Installed::Yes {
@@ -480,47 +503,17 @@ pub fn check_game(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Signs in to an account (`new` false) or makes one. Whether the server checked it (an older
-/// one can't), and how the password went.
-/// Makes the account or checks it, and gets the game token the game signs in with: whether the
-/// server checked it, how the password went, and the token (`None` from a server older than
-/// game tokens: the game then gets the password).
-fn account(host: &str, name: &str, password: &str, new: bool, code: &str) -> Result<(bool, server::Sent, Option<String>), String> {
-    if new {
-        let (_, sent) = server::sign_up(host, name, password, code)?;
-        // The token comes with a sign-in; one that fails right after the account was made only
-        // leaves the game with the password, as before.
-        let token = server::sign_in(host, name, password).ok().and_then(|s| s.token);
-        Ok((true, sent, token))
-    } else {
-        let signed = server::sign_in(host, name, password)?;
-        Ok((signed.pid.is_some(), signed.sent, signed.token))
+/// Signs `identity` in to its account on `host`, or, when it has none there, makes the account
+/// `name` (with the sign-up `code`, if the server has one): the account, with the game token the
+/// game signs in with, and whether it was made.
+fn account(host: &str, identity: &identity::Identity, name: &str, code: &str) -> Result<(server::Account, bool), String> {
+    if let Some(account) = server::key_login(host, identity)? {
+        return Ok((account, false));
     }
-}
-
-/// A setup from before game tokens has the player's password in the game's settings, which the
-/// game sends with only the protocol's shared-key encryption: it's swapped for a token, signing in
-/// over HTTPS. Left as it is if the server is older or can't be reached (the game still signs in
-/// with the password), or the password no longer matches (the game will say).
-fn swap_password_for_token(dir: &Path) {
-    let config = settings::client(dir);
-    let Some(host) = config.server.clone().filter(|s| !s.is_empty()) else { return };
-    if config.username.is_empty() || config.password.is_empty() || crosscom_client_common::config::is_game_token(&config.password) {
-        return;
+    if let Some(missing) = name_missing(name) {
+        return Err(missing.into());
     }
-    let Ok(server::SignedIn { token: Some(token), .. }) = server::sign_in(&host, &config.username, &config.password) else {
-        return;
-    };
-    // Logs still waiting from games played with the password go first, while it's the password
-    // they're scrubbed of (after the swap, the token is).
-    let _ = logs::send(dir, RELEASE, None);
-    let overlay = settings::overlay(dir);
-    let _ = settings::save_client(dir, &Config { password: token, ..config }, &overlay);
-}
-
-/// The game's sign-in secret: the token when the server gave one, else the password.
-fn game_secret(password: String, token: Option<String>) -> String {
-    token.unwrap_or(password)
+    server::sign_up(host, identity, name, code).map(|account| (account, true))
 }
 
 /// One line of Play's checklist: what's checked, how it stands ("good", "warn", "bad" or
@@ -641,7 +634,6 @@ pub fn launcher_firewall_would_ask() -> bool {
     crosscom_launcher::firewall::ensure_launcher_would_ask()
 }
 
-/// Said after an account's done, when its password went unencrypted.
 /// What to add to setup's message about the firewall rules.
 fn firewall_note(outcome: crosscom_launcher::firewall::Outcome) -> String {
     use crosscom_launcher::firewall::Outcome;
@@ -649,13 +641,6 @@ fn firewall_note(outcome: crosscom_launcher::firewall::Outcome) -> String {
         Outcome::Present | Outcome::Added => String::new(),
         Outcome::Declined => " The game wasn't let through Windows Firewall: when Windows asks, the first time you play online, allow it.".into(),
         Outcome::Failed(why) => format!(" The game couldn't be let through Windows Firewall ({why}): when Windows asks, the first time you play online, allow it."),
-    }
-}
-
-fn unencrypted_note(sent: server::Sent) -> &'static str {
-    match sent {
-        server::Sent::Encrypted => "",
-        server::Sent::Unencrypted => " This server on your network has no HTTPS, so your password went to it unencrypted.",
     }
 }
 
@@ -684,13 +669,11 @@ mod tests {
     }
 
     #[test]
-    fn checks_the_account_form() {
-        assert_eq!(account_missing("Kozak", "pw", "", false), None);
-        assert_eq!(account_missing("Kozak", "pw", "pw", true), None);
-        assert!(account_missing("Kozak", "pw", "pW", true).unwrap().contains("differ"));
-        assert!(account_missing("Ko zak", "pw", "pw", true).unwrap().contains("name"));
-        assert!(account_missing("", "pw", "pw", false).unwrap().contains("name"));
-        assert!(account_missing("Kozak", "", "", false).unwrap().contains("password"));
+    fn checks_a_new_accounts_name() {
+        assert_eq!(name_missing("Kozak"), None);
+        assert_eq!(name_missing(" Kozak "), None, "trimmed, as it's sent");
+        assert!(name_missing("Ko zak").unwrap().contains("name"));
+        assert!(name_missing("").unwrap().contains("name"));
         assert!(name_ok("a.b-c_9") && !name_ok(&"x".repeat(33)));
     }
 
@@ -760,30 +743,33 @@ mod checklist_tests {
 }
 
 #[cfg(test)]
-mod token_tests {
+mod identity_tests {
     use super::*;
 
     #[test]
-    fn the_game_gets_the_token_when_there_is_one() {
-        assert_eq!(game_secret("hunter2".into(), Some("cct_abc".into())), "cct_abc");
-        assert_eq!(game_secret("hunter2".into(), None), "hunter2", "an older server: the password, as before");
-    }
+    fn another_pcs_identity_asks_before_replacing_this_ones() {
+        let dir = std::env::temp_dir().join(format!("cc-identity-test-{}", std::process::id()));
+        let l = Launcher::new(dir.join("launcher.toml"));
+        let mine = l.identity_short().unwrap();
+        assert_eq!(l.identity_short().unwrap(), mine, "made once");
+        let same = l.identity_export().unwrap();
+        assert!(matches!(l.use_identity(&same, false), Ok(Imported::Done(_))), "the same one: nothing to ask");
 
-    #[test]
-    fn a_token_is_left_alone() {
-        let game = std::env::temp_dir().join(format!("cc-token-test-{}", std::process::id()));
-        std::fs::create_dir_all(&game).unwrap();
-        let token = format!("cct_{}", "a".repeat(28));
-        let config = Config {
-            server: Some("203.0.113.10".into()),
-            username: "Kozak".into(),
-            password: token.clone(),
-            ..Config::default()
-        };
-        settings::save_client(&game, &config, &settings::overlay(&game)).unwrap();
-        // A token: nothing is asked of the server (none answers at that address).
-        swap_password_for_token(&game);
-        assert_eq!(settings::client(&game).password, token);
-        std::fs::remove_dir_all(&game).unwrap();
+        let other = identity::Identity::generate();
+        let text = identity::export(&other);
+        let asked = l.use_identity(&text, false).unwrap();
+        assert_eq!(
+            asked,
+            Imported::Confirm {
+                current: mine.clone(),
+                new: identity::short(&other)
+            }
+        );
+        assert_eq!(l.identity_short().unwrap(), mine, "nothing changed before it's confirmed");
+        let Imported::Done(said) = l.use_identity(&text, true).unwrap() else { panic!("used") };
+        assert!(said.contains(&identity::short(&other)) && said.contains("kept"), "{said}");
+        assert_eq!(l.identity_short().unwrap(), identity::short(&other));
+        assert!(l.use_identity("my password", false).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

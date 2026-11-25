@@ -177,7 +177,7 @@ fn open(w: &AppWindow, l: &Arc<Launcher>, screen: &str) {
     let info = refresh_info(w, l);
     match screen {
         "play" if info.ready() => load_news(w, l),
-        "play" | "setup" => open_setup(w, &info, None),
+        "play" | "setup" => open_setup(w, l, &info, None),
         "settings" => open_settings(w, l, &info),
         _ => {}
     }
@@ -255,7 +255,7 @@ fn setup_host(w: &AppWindow) -> String {
 /// Setup, filled in from what's set up now. `community`: the server choice to start from
 /// (Settings' Change server and its way back to the community network); otherwise the community
 /// test network unless another server is set up.
-fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
+fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info, community: Option<bool>) {
     let first = !info.ready();
     let changing_server = community.is_some();
     let set_up = info.server.as_deref().filter(|h| !server::is_community(h));
@@ -266,10 +266,8 @@ fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
     w.set_setup_server_typed(s(set_up.unwrap_or_default()));
     w.set_setup_server_ok(s(""));
     w.set_setup_server_error(s(""));
-    w.set_setup_new_account(info.account.is_none());
-    w.set_setup_name(s(info.account.as_deref().unwrap_or_default()));
-    w.set_setup_password(s(""));
-    w.set_setup_again(s(""));
+    w.set_setup_account(s(""));
+    w.set_setup_name(s(""));
     w.set_setup_code(s(""));
     w.set_setup_skip_intro(first || info.skip_intro);
     w.set_setup_dx9(info.dx9);
@@ -294,7 +292,7 @@ fn open_setup(w: &AppWindow, info: &core::Info, community: Option<bool>) {
         });
     }
     if !setup_host(w).is_empty() {
-        check_server(w);
+        check_server(w, l);
     }
 }
 
@@ -310,8 +308,14 @@ fn setup_changed(w: &AppWindow) {
     if CHECKED.with(|c| *c.borrow() != host) {
         w.set_setup_server_ok(s(""));
         w.set_setup_server_error(s(""));
+        w.set_setup_account(s(""));
     }
-    let account = core::account_missing(&w.get_setup_name(), &w.get_setup_password(), &w.get_setup_again(), w.get_setup_new_account());
+    // The identity's account there, found when the server was checked; or a new one's name.
+    let account = if w.get_setup_account().is_empty() {
+        core::name_missing(&w.get_setup_name())
+    } else {
+        None
+    };
     w.set_setup_account_done(account.is_none());
     let missing = if w.get_setup_game_dir().is_empty() {
         "Choose the game's folder."
@@ -323,8 +327,9 @@ fn setup_changed(w: &AppWindow) {
     w.set_setup_missing(s(missing));
 }
 
-/// Checks the server Setup has chosen: where the game will sign in, or why not.
-fn check_server(w: &AppWindow) {
+/// Checks the server Setup has chosen: where the game will sign in, and the account the player's
+/// identity has there (if any); or why not.
+fn check_server(w: &AppWindow, l: &Arc<Launcher>) {
     let host = setup_host(w);
     if host.is_empty() {
         return;
@@ -333,10 +338,16 @@ fn check_server(w: &AppWindow) {
     w.set_setup_server_checking(true);
     w.set_setup_server_ok(s(""));
     w.set_setup_server_error(s(""));
+    w.set_setup_account(s(""));
     let checking = host.clone();
+    let l = l.clone();
     background(
         w,
-        move || server::check(&checking),
+        move || {
+            let at = server::check(&checking)?;
+            let account = l.find_account(&checking).map_err(|e| format!("Couldn't sign in with your identity: {e}"))?;
+            Ok::<_, String>((at, account))
+        },
         move |w, answer| {
             // A later check, or a server since changed: this answer is let go.
             if CHECKED.with(|c| *c.borrow() != host) {
@@ -347,9 +358,13 @@ fn check_server(w: &AppWindow) {
                 return;
             }
             match answer {
-                Ok(at) => w.set_setup_server_ok(s(at)),
+                Ok((at, account)) => {
+                    w.set_setup_account(s(account.unwrap_or_default()));
+                    w.set_setup_server_ok(s(at));
+                }
                 Err(e) => w.set_setup_server_error(s(e)),
             }
+            setup_changed(w);
         },
     );
 }
@@ -455,8 +470,6 @@ fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
         game_dir: PathBuf::from(w.get_setup_game_dir().as_str()),
         server: setup_host(w),
         name: w.get_setup_name().into(),
-        password: w.get_setup_password().into(),
-        new_account: w.get_setup_new_account(),
         code: w.get_setup_code().into(),
         skip_intro: w.get_setup_skip_intro(),
         dx9: w.get_setup_dx9(),
@@ -472,8 +485,6 @@ fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
             w.set_setup_busy(false);
             match done {
                 Ok(said) => {
-                    w.set_setup_password(s(""));
-                    w.set_setup_again(s(""));
                     // The server may be another: its card asks afresh.
                     w.set_server_state(s("asking"));
                     w.set_news(ModelRc::default());
@@ -496,13 +507,10 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_opt_send_logs(view.send_logs);
     w.set_opt_port_forwarding(view.port_forwarding);
     w.set_options_said(s(""));
-    w.set_acc_new(false);
-    w.set_acc_name(s(""));
-    w.set_acc_password(s(""));
-    w.set_acc_again(s(""));
-    w.set_acc_code(s(""));
-    w.set_acc_ready(false);
-    w.set_acc_said(s(""));
+    show_identity(w, l);
+    w.set_id_paste(s(""));
+    w.set_id_confirm(s(""));
+    w.set_id_said(s(""));
     w.set_restore_confirming(false);
     w.set_restore_said(s(""));
     show_logs(w, l);
@@ -606,40 +614,64 @@ fn save_options(w: &AppWindow, l: &Arc<Launcher>) {
     refresh_info(w, l);
 }
 
-fn account_changed(w: &AppWindow) {
-    let ready = core::account_missing(&w.get_acc_name(), &w.get_acc_password(), &w.get_acc_again(), w.get_acc_new()).is_none();
-    w.set_acc_ready(ready);
+/// The player's identity, in Settings: its short form, or why it can't be read.
+fn show_identity(w: &AppWindow, l: &Launcher) {
+    let (short, error) = match l.identity_short() {
+        Ok(short) => (short, String::new()),
+        Err(e) => (String::new(), e),
+    };
+    w.set_id_short(s(short));
+    w.set_id_error(s(error));
 }
 
-fn run_account(w: &AppWindow, l: &Arc<Launcher>) {
-    let account = core::Account {
-        name: w.get_acc_name().into(),
-        password: w.get_acc_password().into(),
-        new_account: w.get_acc_new(),
-        code: w.get_acc_code().into(),
-    };
-    w.set_acc_busy(true);
-    w.set_acc_said(s(""));
+/// Settings' Copy: the identity as text, for the clipboard ("" when it can't be read).
+fn identity_export(w: &AppWindow, l: &Launcher) -> SharedString {
+    match l.identity_export() {
+        Ok(text) => {
+            w.set_id_said(s(IDENTITY_COPIED));
+            w.set_id_failed(false);
+            s(text)
+        }
+        Err(e) => {
+            w.set_id_said(s(e));
+            w.set_id_failed(true);
+            s("")
+        }
+    }
+}
+
+/// Said once the identity is copied.
+pub const IDENTITY_COPIED: &str = "Copied. On the other PC, paste it into \"Use an identity from another PC\". Whoever has it can sign in as you: keep it private.";
+
+/// Uses the identity pasted from another PC: asks first when it would replace a different one,
+/// then signs in to its account on the server set up (off the window's thread).
+fn use_identity(w: &AppWindow, l: &Arc<Launcher>, confirmed: bool) {
+    let text = w.get_id_paste().to_string();
+    w.set_id_busy(true);
+    w.set_id_said(s(""));
     let worker = l.clone();
     let l = l.clone();
     background(
         w,
-        move || worker.set_account(account),
-        move |w, done| {
-            w.set_acc_busy(false);
-            match done {
-                Ok(said) => {
-                    w.set_acc_said(s(said));
-                    w.set_acc_failed(false);
-                    w.set_acc_password(s(""));
-                    w.set_acc_again(s(""));
-                    account_changed(w);
+        move || worker.use_identity(&text, confirmed),
+        move |w, used| {
+            w.set_id_busy(false);
+            match used {
+                Ok(core::Imported::Confirm { current, new }) => w.set_id_confirm(s(format!(
+                    "This replaces this PC's identity {current} with {new}: the accounts {current} has won't sign in from this \
+                     PC any more. The launcher keeps {current} in its folder, so it can be put back."
+                ))),
+                Ok(core::Imported::Done(said)) => {
+                    w.set_id_paste(s(""));
+                    w.set_id_said(s(said));
+                    w.set_id_failed(false);
                 }
                 Err(e) => {
-                    w.set_acc_said(s(e));
-                    w.set_acc_failed(true);
+                    w.set_id_said(s(e));
+                    w.set_id_failed(true);
                 }
             }
+            show_identity(w, &l);
             refresh_info(w, &l);
         },
     );
@@ -751,7 +783,7 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         });
     }
     w.on_setup_choose_game(on(|w, _| choose_game(w)));
-    w.on_setup_check_server(on(|w, _| check_server(w)));
+    w.on_setup_check_server(on(check_server));
     w.on_setup_changed(on(|w, _| setup_changed(w)));
     w.on_setup_run(on(run_setup));
     {
@@ -763,15 +795,25 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         });
     }
     w.on_options_changed(on(save_options));
-    w.on_account_changed(on(|w, _| account_changed(w)));
-    w.on_account_run(on(run_account));
+    {
+        let (weak, l) = (weak.clone(), l.clone());
+        w.on_identity_export(move || weak.upgrade().map(|w| identity_export(&w, &l)).unwrap_or_default());
+    }
+    {
+        let (weak, l) = (weak.clone(), l.clone());
+        w.on_identity_use(move |confirmed| {
+            if let Some(w) = weak.upgrade() {
+                use_identity(&w, &l, confirmed);
+            }
+        });
+    }
     {
         let (weak, l) = (weak.clone(), l.clone());
         w.on_change_server(move |community| {
             if let Some(w) = weak.upgrade() {
                 w.set_screen(s("setup"));
                 let info = refresh_info(&w, &l);
-                open_setup(&w, &info, Some(community));
+                open_setup(&w, &l, &info, Some(community));
             }
         });
     }
