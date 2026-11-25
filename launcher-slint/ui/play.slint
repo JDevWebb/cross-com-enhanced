@@ -18,6 +18,9 @@ component StatusCard inherits Card {
     in property <color> value-color: Theme.fg;
     // Under the value ("Community test network").
     in property <string> tag;
+    // A button at the bottom ("" for none).
+    in property <string> action;
+    callback act();
     min-height: lay.preferred-height;
     lay := VerticalLayout {
         alignment: start;
@@ -29,6 +32,7 @@ component StatusCard inherits Card {
         Text { text: root.value; color: root.value-color; font-weight: 600; font-size: 16px; wrap: word-wrap; }
         if root.tag != "": HorizontalLayout { alignment: start; Tag { text: root.tag; } }
         if root.detail != "": Text { text: root.detail; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+        if root.action != "": HorizontalLayout { alignment: start; padding-top: 4px; Btn { text: root.action; clicked => { root.act(); } } }
     }
 }
 
@@ -50,6 +54,8 @@ export component PlayScreen inherits Rectangle {
     in property <bool> failed;
     callback play();
     callback refresh();
+    // A checklist card's button, by its label ("Firewall").
+    callback check-action(string);
 
     // The accent's light from the top right.
     Rectangle {
@@ -210,6 +216,8 @@ export component PlayScreen inherits Rectangle {
                     value: check.value;
                     value-color: check.tone == "good" ? Theme.good : check.tone == "warn" ? Theme.warn : check.tone == "bad" ? Theme.bad : Theme.fg;
                     detail: check.detail;
+                    action: check.action;
+                    act => { root.check-action(check.label); }
                     Caps { text: check.label.to-uppercase(); }
                 }
             }

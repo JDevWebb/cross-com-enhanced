@@ -137,6 +137,7 @@ export component AppWindow inherits Window {
     // Play.
     callback play();
     callback refresh-news();
+    callback check-action(string);
     // Setup.
     callback setup-choose-game();
     callback setup-check-server();
@@ -204,6 +205,7 @@ export component AppWindow inherits Window {
                     failed: root.play-failed;
                     play => { root.play(); }
                     refresh => { root.refresh-news(); }
+                    check-action(label) => { root.check-action(label); }
                 }
                 if root.loaded && root.shown == "setup": SetupScreen {
                     first: !root.info.ready;

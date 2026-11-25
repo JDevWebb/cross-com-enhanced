@@ -120,6 +120,7 @@ fn play_with(w: &AppWindow, info: core::Info) {
         value: value.into(),
         tone,
         detail: detail.into(),
+        action: "",
     };
     ui::show_checks(
         w,

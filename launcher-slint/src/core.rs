@@ -531,6 +531,8 @@ pub struct Check {
     pub value: String,
     pub tone: &'static str,
     pub detail: String,
+    /// The button that fixes it ("" for none).
+    pub action: &'static str,
 }
 
 /// Play's checklist for the game in `dir`: the firewall rules, the port forward, and how other
@@ -543,7 +545,8 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             label: "Firewall",
             value: "Rules missing".into(),
             tone: "warn",
-            detail: "Windows may stop other players reaching your game. Set up › Finish adds the rules (Windows asks first).".into(),
+            detail: "Windows may stop other players reaching your game. Allow adds the rules (Windows asks first).".into(),
+            action: "Allow",
         }
     } else {
         Check {
@@ -551,6 +554,7 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             value: "Game allowed".into(),
             tone: "good",
             detail: "Windows lets other players reach your game.".into(),
+            action: "",
         }
     };
     let forwarding = if port_forwarding {
@@ -559,6 +563,7 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             value: "On".into(),
             tone: "good",
             detail: "Asked of your router (UPnP, PCP or NAT-PMP) while the game runs.".into(),
+            action: "",
         }
     } else {
         Check {
@@ -566,6 +571,7 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             value: "Off".into(),
             tone: "muted",
             detail: "Turned off in Settings › Connection.".into(),
+            action: "",
         }
     };
     let file = std::fs::read(dir.join(crosscom_client_net::keep::STATUS_FILE)).ok();
@@ -583,6 +589,7 @@ fn connection_check(last: Option<&crosscom_client_net::keep::Connection>, now: u
             value: "Not checked yet".into(),
             tone: "muted",
             detail: "The server checks who can reach your game during your next game.".into(),
+            action: "",
         };
     };
     let r = c.reachable();
@@ -596,6 +603,7 @@ fn connection_check(last: Option<&crosscom_client_net::keep::Connection>, now: u
         value: format!("{} · {}", r.title(), ago(now.saturating_sub(c.at))),
         tone,
         detail: r.advice().into(),
+        action: "",
     }
 }
 
@@ -606,6 +614,17 @@ fn ago(secs: u64) -> String {
         120..=7199 => format!("{} min ago", secs / 60),
         7200..=172_799 => format!("{} h ago", secs / 3600),
         _ => format!("{} days ago", secs / 86400),
+    }
+}
+
+/// Lets the game in `dir` (and this launcher's connection test) through Windows Firewall, asking
+/// Windows for permission: what Play's Firewall card's Allow does. What to tell the player.
+pub fn allow_firewall(dir: &Path) -> String {
+    use crosscom_launcher::firewall::Outcome;
+    match crosscom_launcher::firewall::ensure(dir) {
+        Outcome::Present | Outcome::Added => "The game is let through Windows Firewall.".into(),
+        Outcome::Declined => "Windows Firewall wasn't changed: Windows asks again the first time you play online.".into(),
+        Outcome::Failed(why) => format!("Couldn't let the game through Windows Firewall: {why}"),
     }
 }
 

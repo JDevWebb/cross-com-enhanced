@@ -206,6 +206,7 @@ pub fn show_checks(w: &AppWindow, checks: &[core::Check]) {
             value: s(&c.value),
             tone: s(c.tone),
             detail: s(&c.detail),
+            action: s(c.action),
         })
         .collect::<Vec<_>>();
     w.set_checks(ModelRc::new(VecModel::from(rows)));
@@ -389,6 +390,32 @@ const TEST_NOTICE: (&str, &str) = (
      that's the launcher adding a firewall rule for itself, for incoming UDP only.\n\nClick Yes when Windows asks. \
      With No, the test still runs, but it can't check your port forwarding.",
 );
+
+const FIREWALL_NOTICE: (&str, &str) = (
+    "Windows will ask for permission",
+    "Next, Windows asks whether to let Windows PowerShell make changes to your PC. That's the launcher adding \
+     Windows Firewall rules, so the players in your matches can reach your game: incoming UDP only, for the game \
+     and for this launcher's connection test. It changes nothing else.\n\nClick Yes when Windows asks.",
+);
+
+/// Play's Firewall card's Allow: the notice, then Windows' prompt (`allow_firewall_now`).
+fn allow_firewall(w: &AppWindow) {
+    notice(w, FIREWALL_NOTICE, "firewall");
+}
+
+/// Adds the firewall rules, off the window's thread; then says how it went and looks again.
+fn allow_firewall_now(w: &AppWindow, l: &Arc<Launcher>) {
+    let Some(dir) = l.game_dir() else { return };
+    let after = l.clone();
+    background(
+        w,
+        move || core::allow_firewall(&dir),
+        move |w, said| {
+            toast(w, &said);
+            load_checks(w, &after);
+        },
+    );
+}
 
 /// Shows the notice `(title, body)`; Continue goes on with `then`.
 fn notice(w: &AppWindow, (title, body): (&str, &str), then: &str) {
@@ -715,6 +742,14 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
     w.on_update_later(on(|w, _| crate::update::later(w)));
     w.on_check_update(on(|w, _| crate::update::check(w)));
     w.on_refresh_news(on(load_news));
+    {
+        let weak = weak.clone();
+        w.on_check_action(move |label| {
+            if let (Some(w), "Firewall") = (weak.upgrade(), label.as_str()) {
+                allow_firewall(&w);
+            }
+        });
+    }
     w.on_setup_choose_game(on(|w, _| choose_game(w)));
     w.on_setup_check_server(on(|w, _| check_server(w)));
     w.on_setup_changed(on(|w, _| setup_changed(w)));
@@ -757,8 +792,10 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         w.on_notice_proceed(move |then| {
             let Some(w) = weak.upgrade() else { return };
             close_notice(&w);
-            if then.as_str() == "test" {
-                test_connection_now(&w, &l);
+            match then.as_str() {
+                "test" => test_connection_now(&w, &l),
+                "firewall" => allow_firewall_now(&w, &l),
+                _ => {}
             }
         });
     }
