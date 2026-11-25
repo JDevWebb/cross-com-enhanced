@@ -1032,16 +1032,27 @@ mod tests {
         let answer = talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n");
         assert!(answer.starts_with("HTTP/1.1 200 OK"), "the game's config from the same address: {answer}");
         let more: Vec<TcpStream> = (PER_CLIENT..ACCEPTED_PER_CLIENT).map(|_| TcpStream::connect(addr).unwrap()).collect();
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(
-            talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n"),
-            "",
-            "past what one address may hold, turned away"
-        );
+        // Once the server has taken all of them (on a busy machine that can take a while; until
+        // then a request is still answered, which changes nothing).
+        let config = || talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n");
+        assert!(eventually(|| config().is_empty()), "past what one address may hold, turned away");
         drop((slow, more));
-        std::thread::sleep(Duration::from_millis(200));
-        let answer = talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n");
-        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+        assert!(eventually(|| config().starts_with("HTTP/1.1 200 OK")), "answered again once they close");
+    }
+
+    /// Whether `holds` comes true within a few seconds, tried every 50 ms: for what the server's
+    /// own threads bring about, which a fixed wait can miss on a busy machine.
+    fn eventually(holds: impl Fn() -> bool) -> bool {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if holds() {
+                return true;
+            }
+            if std::time::Instant::now() > until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[test]
