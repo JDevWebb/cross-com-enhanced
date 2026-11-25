@@ -76,8 +76,9 @@ if [ "$(git rev-parse HEAD)" != "$remote" ]; then
   git push "$PUSH_URL" HEAD:refs/heads/main
 fi
 # CI skips pushes that only change release.toml or release notes (ci.yml): what it checked is the
-# newest commit that changed anything else.
-tested=$(git log -1 --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
+# newest commit on main's own line (merges included: CI runs on what was pushed) that changed
+# anything else.
+tested=$(git log -1 --first-parent --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
 wait_for CI "$tested"
 
 say "Tagging $TAG"
