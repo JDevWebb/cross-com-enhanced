@@ -68,7 +68,11 @@ struct SignIns(std::sync::Mutex<SignInTables>);
 
 #[derive(Default)]
 struct SignInTables {
+    /// Players' sign-ins, by address.
     by_address: std::collections::HashMap<std::net::IpAddr, Bucket>,
+    /// The shared telemetry account's, by address: apart, so anyone behind a player's address
+    /// (it needs no secret) can't use up the players' own.
+    tracking_by_address: std::collections::HashMap<std::net::IpAddr, Bucket>,
     by_account: std::collections::HashMap<u32, Bucket>,
 }
 
@@ -103,7 +107,8 @@ impl SignIns {
         let mut tables = self.tables();
         let tables = &mut *tables;
         let lifted = per_address_lifted();
-        if !lifted && bucket(&mut tables.by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 < 1.0 {
+        let by_address = if pid == TRACKING_PID { &mut tables.tracking_by_address } else { &mut tables.by_address };
+        if !lifted && bucket(by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 < 1.0 {
             return false;
         }
         if pid != TRACKING_PID {
@@ -114,7 +119,8 @@ impl SignIns {
             account.0 -= 1.0;
         }
         if !lifted {
-            bucket(&mut tables.by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 -= 1.0;
+            let by_address = if pid == TRACKING_PID { &mut tables.tracking_by_address } else { &mut tables.by_address };
+            bucket(by_address, crate::rate_limit::address_key(from), SIGN_INS_PER_ADDRESS, now).0 -= 1.0;
         }
         true
     }
@@ -347,10 +353,15 @@ mod tests {
         assert!(limits.succeeded(ip("192.0.2.99"), player, now + Duration::from_secs(31)), "one more after a while");
         let ok = (0..100).filter(|_| limits.succeeded(ip("198.51.100.1"), TRACKING_PID, now)).count();
         assert_eq!(ok, SIGN_INS_PER_ADDRESS.0 as usize, "the telemetry account: per address only");
-        assert!(!limits.address_may(ip("198.51.100.1"), now));
-        assert!(limits.address_may(ip("198.51.100.2"), now));
-        for _ in 0..SIGN_INS_PER_ADDRESS.0 as usize {
-            assert!(limits.succeeded(ip("2001:db8::1"), TRACKING_PID, now));
+        assert!(limits.address_may(ip("198.51.100.1"), now), "its own budget: players there still sign in");
+        assert!(limits.succeeded(ip("198.51.100.1"), player + 1, now));
+        // Players' sign-ins, many accounts from one address, use up that address's.
+        let ok = (0..100).filter(|n| limits.succeeded(ip("203.0.113.5"), player + 10 + n, now)).count();
+        assert_eq!(ok, SIGN_INS_PER_ADDRESS.0 as usize);
+        assert!(!limits.address_may(ip("203.0.113.5"), now));
+        assert!(limits.address_may(ip("203.0.113.6"), now));
+        for n in 0..SIGN_INS_PER_ADDRESS.0 as u32 {
+            assert!(limits.succeeded(ip("2001:db8::1"), player + 200 + n, now));
         }
         assert!(!limits.address_may(ip("2001:db8::2"), now), "IPv6 counts by its /64");
     }

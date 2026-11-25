@@ -511,6 +511,9 @@ fn swap_password_for_token(dir: &Path) {
     let Ok(server::SignedIn { token: Some(token), .. }) = server::sign_in(&host, &config.username, &config.password) else {
         return;
     };
+    // Logs still waiting from games played with the password go first, while it's the password
+    // they're scrubbed of (after the swap, the token is).
+    let _ = logs::send(dir, RELEASE, None);
     let overlay = settings::overlay(dir);
     let _ = settings::save_client(dir, &Config { password: token, ..config }, &overlay);
 }

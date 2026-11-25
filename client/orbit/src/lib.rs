@@ -61,13 +61,13 @@ pub struct Login {
 const MAX_DETAIL: usize = 79;
 
 /// `value` if it fits the game's buffer (see [`MAX_DETAIL`]), else nothing (the server then
-/// refuses the sign-in, rather than the game stopping), saying why.
-fn fitting<'a>(name: &str, value: &'a str, ascii_only: bool) -> &'a str {
+/// refuses the sign-in, rather than the game stopping), saying why. Measured in UTF-8: the game
+/// copies the password into its own code page, where no character takes more bytes than in
+/// UTF-8, so this is never shorter than what it copies (an accented password still works, as it
+/// did; a game token is plain ASCII anyway).
+fn fitting<'a>(name: &str, value: &'a str) -> &'a str {
     if value.len() > MAX_DETAIL {
-        log::error!("The {name} is longer than the game takes ({MAX_DETAIL} characters): not given to the game");
-        ""
-    } else if ascii_only && !value.is_ascii() {
-        log::error!("The {name} has a character the game can't send (only plain ASCII): not given to the game");
+        log::error!("The {name} is longer than the game takes ({MAX_DETAIL} bytes): not given to the game");
         ""
     } else {
         value
@@ -102,9 +102,9 @@ impl Login {
         // The settings are checked for NULs (and their lengths) when they're read, so these can't
         // fail; the lengths are checked again here, as the game's buffers are what count.
         Self {
-            username: CString::new(fitting("user name", &config.username, false)).unwrap_or_default(),
-            password: fitting("password", &config.password, true).encode_utf16().chain(std::iter::once(0)).collect(),
-            cd_key: CString::new(fitting("CD key", &cd_key, false)).unwrap_or_default(),
+            username: CString::new(fitting("user name", &config.username)).unwrap_or_default(),
+            password: fitting("password", &config.password).encode_utf16().chain(std::iter::once(0)).collect(),
+            cd_key: CString::new(fitting("CD key", &cd_key)).unwrap_or_default(),
         }
     }
 }
@@ -217,8 +217,9 @@ mod tests {
         let longest = "p".repeat(MAX_DETAIL);
         assert_eq!(Login::new(&config(&longest, "Kozak"), None).password.len(), MAX_DETAIL + 1, "79 and the NUL");
         assert_eq!(Login::new(&config(&"p".repeat(MAX_DETAIL + 1), "Kozak"), None).password, vec![0]);
-        // Not ASCII: the game's narrow copy could be longer, and isn't what was set anyway.
-        assert_eq!(Login::new(&config("pässword", "Kozak"), None).password, vec![0]);
+        // Not ASCII: within the bytes, it's given (the game copies it into its code page).
+        assert_ne!(Login::new(&config("pässword", "Kozak"), None).password, vec![0]);
+        assert_eq!(Login::new(&config(&"ä".repeat(40), "Kozak"), None).password, vec![0], "80 bytes in UTF-8");
         assert_eq!(Login::new(&config("x", &"u".repeat(MAX_DETAIL + 1)), None).username.as_bytes(), b"");
         assert_eq!(Login::new(&config("x", &"u".repeat(MAX_DETAIL)), None).username.as_bytes().len(), MAX_DETAIL);
     }

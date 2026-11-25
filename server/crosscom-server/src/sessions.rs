@@ -470,7 +470,17 @@ impl Sessions {
 
     /// `pid` joins the session itself, if it may (see [`Session::may_join`]).
     pub fn join(&self, pid: u32, key: Key) -> Result<(), Error> {
-        if !self.lock().sessions.get(&key).ok_or(Error::NotFound)?.may_join(pid) {
+        let (allowed, members, removed) = {
+            let inner = self.lock();
+            let session = inner.sessions.get(&key).ok_or(Error::NotFound)?;
+            (session.may_join(pid), session.participants.clone(), session.removed.contains(&pid))
+        };
+        // A party following its leader: the game passes the match's key to the party's members
+        // itself, so they come with no search or invitation of their own. One who is in a
+        // session (the party) with someone already in this one may join it, unless the host
+        // took them out.
+        let with_their_party = || !removed && members.iter().any(|&m| m != pid && self.in_a_session_together(pid, m, key));
+        if !allowed && !with_their_party() {
             return Err(Error::NotAllowed);
         }
         self.add(key, &[pid], &[])?;
@@ -521,9 +531,18 @@ impl Sessions {
         }
     }
 
-    /// Notes that a search offered the session to `pid`.
+    /// Whether `a` and `b` have both joined some session other than `except` (their party).
+    fn in_a_session_together(&self, a: u32, b: u32, except: Key) -> bool {
+        self.lock().sessions.iter().any(|(k, s)| *k != except && s.joined(a) && s.joined(b))
+    }
+
+    /// Notes that a search offered the session to `pid`. A fresh offer lifts the host having
+    /// taken `pid` out: a player who dropped (or whose leaving crossed the host's removing them)
+    /// finds the lobby again and may come back, as before; a key kept from an earlier search
+    /// isn't enough.
     pub fn offer(&self, key: Key, pid: u32) {
         if let Some(session) = self.lock().sessions.get_mut(&key) {
+            session.removed.retain(|&p| p != pid);
             session.offered.retain(|&p| p != pid);
             if session.offered.len() >= MAX_OFFERED {
                 session.offered.remove(0);
@@ -840,6 +859,30 @@ mod tests {
         // A player leaving on its own may come back.
         sessions.remove(lobby, &[21]).unwrap();
         sessions.join(21, lobby).unwrap();
+    }
+
+    /// A player the host took out (or who dropped, the host's removing crossing its leaving)
+    /// comes back through a fresh search; a party follows its leader into a private match.
+    #[test]
+    fn a_fresh_offer_and_a_party_let_a_player_in() {
+        let sessions = Sessions::default();
+        let lobby = sessions.create(10, 1, &[(3, 0), (4, 6)]).unwrap();
+        sessions.offer(lobby, 11);
+        sessions.join(11, lobby).unwrap();
+        sessions.remove_by_host(lobby, &[11]).unwrap();
+        assert_eq!(sessions.join(11, lobby), Err(Error::NotAllowed), "the old offer isn't enough");
+        sessions.offer(lobby, 11);
+        sessions.join(11, lobby).unwrap();
+        // A party (12 and 13) whose leader goes into a private match: 13 follows, with no
+        // search or invitation of its own. A stranger with the key doesn't get in.
+        let party = sessions.create(12, 1, &[(7, 1), (3, 4)]).unwrap();
+        sessions.join(13, party).unwrap();
+        let private = sessions.create(12, 1, &[(3, 0), (4, 6)]).unwrap();
+        sessions.join(13, private).unwrap();
+        assert_eq!(sessions.join(14, private), Err(Error::NotAllowed), "not in the leader's party");
+        // Unless the host took them out.
+        sessions.remove_by_host(private, &[13]).unwrap();
+        assert_eq!(sessions.join(13, private), Err(Error::NotAllowed));
     }
 
     /// With as many sessions as can be kept, a new one ends the oldest with only its host in it.
