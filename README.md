@@ -55,9 +55,11 @@ You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Win
 3. **Make an account**: choose the name other players will see. There's no password: your [identity](#your-identity) signs you in, and if it already has an account on the server, the launcher signs you in to it with nothing to type.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
-To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Change server** switches later, and **Use the community test network** goes back to it.
+To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Server** switches later: pick the community test network or another server, then **Switch to this server**.
 
-The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime. When a new release is out, the launcher offers it in a bar under its title; **Update** installs it, with the client to match, and restarts the launcher.
+The setup shows only the first time. After that, everything it set is in **Settings**: the game's folder, the server, your identity, your connection and the game's options. **Settings › About › Run the setup again** goes through it once more, and changes nothing until its last step.
+
+The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Game › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime. When a new release is out, the launcher offers it in a bar under its title; **Update** installs it, with the client to match, and restarts the launcher.
 
 ### The DLC packs
 
@@ -84,17 +86,17 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 > **We don't provide the game or its DLC, and can't help you get them.** Cross-Com only brings back the online services: you need your own copy of the game, and of any pack you want to play. Please don't ask for game files in issues or discussions.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the community test network online (7 players, server 0.1.0), the account signed in, the client installed, the Play button, the checklist (firewall, port forwarding, the last game's connection), and the server's news">
+  <img src="./docs/screenshots/launcher-play.png" width="720" alt="The launcher's Play screen: the game's name, the player's name and identity, the community test network online (7 players) beside the Play button, the latest news, and a status panel: the server online, the client installed, the firewall, port forwarding and the last game's connection">
 </p>
 
 <table>
 <tr>
 <td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup, at its account step: the game folder found and the community test network answering, then a name for a new account and the server's sign-up code, with no password"></td>
-<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: intro videos, DirectX 9, the in-game overlay and its key, sending the game's logs, restoring the game's files, the server and account with the player's identity (copy it to another PC, or use another PC's), and the connection test"></td>
+<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: a menu of sections (Game, Server, Identity, Network, Logs, About) and the Network section open: the connection test's result and port forwarding"></td>
 </tr>
 <tr>
-<td align="center"><sub>Setup, a step at a time: your account, a name and no password</sub></td>
-<td align="center"><sub>Settings: the overlay, the logs, your server, account and identity, your connection</sub></td>
+<td align="center"><sub>The first launch's setup, a step at a time: your name, and no password</sub></td>
+<td align="center"><sub>Settings, a section at a time: the game, your server, identity and connection, the logs</sub></td>
 </tr>
 </table>
 
@@ -102,7 +104,7 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 
 Players have no password. The first time it runs, the launcher makes your **identity**: a key it keeps on your PC (in `%APPDATA%\Cross-Com`, encrypted for your Windows user). Your accounts belong to it: making one signs your chosen name with it, and signing in signs a message for that one server, which answers with a sign-in token for the game. So there's nothing to remember or type, and what a server is sent is no use for signing in as you anywhere else.
 
-**Whoever has your identity can sign in as you**, so keep it to yourself. To play from another PC, open **Settings › Server and account** on this one and press **Copy to move it to another PC**, then on the other PC paste it into **Use an identity from another PC** and press **Use**. If that PC had an identity of its own, the launcher asks first, and keeps the one it replaces in its folder so it can be put back. A copy kept somewhere safe also keeps your accounts if this PC is lost.
+**Whoever has your identity can sign in as you**, so keep it to yourself. To play from another PC, open **Settings › Identity** on this one and press **Copy**, then on the other PC paste it into **Use an identity from another PC** and press **Use**. If that PC had an identity of its own, the launcher asks first, and keeps the one it replaces in its folder so it can be put back. A copy kept somewhere safe also keeps your accounts if this PC is lost.
 
 <sub>The launcher screenshots show sample data.</sub>
 
@@ -125,7 +127,7 @@ Players have no password. The first time it runs, the launcher makes your **iden
 
 Matches are hosted by the players, so other players' games connect to yours. The server introduces you to each other and has both games open the way through your routers, which works for most home connections. While the game runs, Cross-Com also asks your router to **forward the game's port** to your PC (UPnP, PCP or NAT-PMP, if the router allows it), so other players can reach you whatever their own router does.
 
-**Settings › Connection › Test my connection** shows how reachable you are. It has the server send a packet to the port your router forwards, so Windows Firewall has to let the launcher receive it: Setup adds that rule with the game's (the same permission prompt), and a launcher you've moved since asks again.
+**Settings › Network › Test my connection** shows how reachable you are. It has the server send a packet to the port your router forwards, so Windows Firewall has to let the launcher receive it: Setup adds that rule with the game's (the same permission prompt), and a launcher you've moved since asks again.
 
 - **Open:** other players can reach your game directly. Nothing to do.
 - **Moderate:** you can play with most players. Two players whose routers are both strict may not reach each other.
@@ -155,9 +157,9 @@ After each game you play online, the game's log from that run (`crosscom.log`, n
 
 The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. That question carries only the launcher's version (GitHub sees your internet address, as with any download), and an update installs only when you press **Update**: the launcher checks the release's signature first.
 
-**Settings › Send game logs** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
+**Settings › Logs › Send game logs after each game** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
 
-While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Connection** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
+While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Network** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
 
 All of it goes over HTTPS, as signing in does; only a server on your own network or VPN without HTTPS is sent it unencrypted. Your identity itself never leaves your PC: servers get only your global id (its public half) and what it signs. Nothing else is collected.
 
@@ -174,7 +176,7 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 <tr><td><b>Multiplayer Challenges</b></td><td>The Daily Friend Challenge and Beat Your Best, and daring a friend back.</td></tr>
 <tr><td><b>News</b></td><td>The server's own news in the main menu's Ghost Feed and on Community Messages.</td></tr>
 <tr><td><b>Leaderboards</b></td><td>The game's own Leaderboards screen can't be opened on PC, so the overlay has its own: every player on the server, by mode.</td></tr>
-<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too, and the client asks your router to forward the game's port when it can. If the host leaves, the match moves to another player. <a href="#your-connection">Settings › Connection</a> tests how reachable you are.</td></tr>
+<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too, and the client asks your router to forward the game's port when it can. If the host leaves, the match moves to another player. <a href="#your-connection">Settings › Network</a> tests how reachable you are.</td></tr>
 </table>
 
 <table>

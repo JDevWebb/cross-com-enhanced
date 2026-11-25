@@ -126,6 +126,11 @@ pub struct Setup {
     pub code: String,
     pub skip_intro: bool,
     pub dx9: bool,
+    /// The in-game overlay, sending the game's logs, and asking the router to forward the game's
+    /// port (each on unless the player turns it off).
+    pub overlay: bool,
+    pub send_logs: bool,
+    pub port_forwarding: bool,
 }
 
 /// What using an identity from another PC came to.
@@ -378,7 +383,10 @@ impl Launcher {
         let (account, made) = account(&host, &identity, &setup.name, &setup.code)?;
         let name = account.name.clone();
         let old = settings::client(&dir);
-        let overlay = settings::overlay(&dir);
+        let overlay = settings::Overlay {
+            on: setup.overlay,
+            ..settings::overlay(&dir)
+        };
         let config = Config {
             server: Some(host),
             username: account.name,
@@ -386,6 +394,8 @@ impl Launcher {
             password: account.token,
             cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key.clone() },
             skip_intro_videos: setup.skip_intro,
+            send_logs: setup.send_logs,
+            port_forwarding: setup.port_forwarding,
             ..old
         };
         game::install(&dir, &files)?;
@@ -470,7 +480,7 @@ impl Launcher {
     pub fn restore(&self) -> Result<String, String> {
         let dir = self.game_dir().ok_or("No game set up.")?;
         game::restore(&dir)?;
-        Ok("The game's own files are back. Set up again to play on Cross-Com.".into())
+        Ok("The game's own files are back. To play on Cross-Com again, go to Play: the setup shows there.".into())
     }
 }
 
@@ -563,7 +573,7 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             label: "Port forwarding",
             value: "Off".into(),
             tone: "muted",
-            detail: "Turned off in Settings › Connection.".into(),
+            detail: "Turned off in Settings › Network.".into(),
             action: "",
         }
     };

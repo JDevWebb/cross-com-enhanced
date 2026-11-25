@@ -23,13 +23,13 @@ use crate::core::ClientState;
 use crate::ui;
 use crate::AppWindow;
 
-/// The window's size in the pictures: the launcher's own, and taller for Settings, so all of it
-/// shows.
+/// The window's size in the pictures: the launcher's own, and taller for Setup, so all of its
+/// step shows.
 const WIDTH: u32 = 1180;
 const HEIGHT: u32 = 780;
-const TALL: u32 = 990;
-/// About, whole, down to its small print and Slint's attribution.
-const ABOUT_HEIGHT: u32 = 1480;
+const TALL: u32 = 940;
+/// Settings › About, whole, down to its small print and Slint's attribution.
+const ABOUT_HEIGHT: u32 = 1560;
 /// Where the made-up game is.
 const GAME: &str = r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Tom Clancy's Ghost Recon Future Soldier";
 const NAME: &str = "Kozak";
@@ -101,6 +101,8 @@ fn play_missing_dlc(w: &AppWindow) {
 fn play_with(w: &AppWindow, info: core::Info) {
     w.set_info(ui::info_view(&info));
     w.set_screen(s("play"));
+    w.set_play_tab(s("status"));
+    w.set_id_short(s(IDENTITY));
     let info = server::Info {
         version: "0.1.0".into(),
         players_online: 7,
@@ -163,6 +165,7 @@ fn settings(w: &AppWindow) {
     let view = ui::info_view(&info);
     w.set_info(view.clone());
     w.set_screen(s("settings"));
+    w.set_settings_section(s("network"));
     w.set_opt_skip_intro(view.skip_intro);
     w.set_opt_dx9(view.dx9);
     w.set_opt_overlay(view.overlay);
@@ -197,7 +200,14 @@ fn settings(w: &AppWindow) {
 
 fn about(w: &AppWindow) {
     w.set_info(ui::info_view(&ready()));
-    w.set_screen(s("about"));
+    w.set_screen(s("settings"));
+    w.set_settings_section(s("about"));
+}
+
+/// Settings › Identity, just copied.
+fn identity(w: &AppWindow) {
+    settings(w);
+    w.set_settings_section(s("identity"));
 }
 
 pub fn run(dir: &Path) -> Result<(), String> {
@@ -214,11 +224,12 @@ pub fn run(dir: &Path) -> Result<(), String> {
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     w.show().map_err(|e| e.to_string())?;
 
-    let shots: [Shot; 5] = [
-        ("launcher-play", play, TALL),
-        ("launcher-play-missing-dlc", play_missing_dlc, TALL),
+    let shots: [Shot; 6] = [
+        ("launcher-play", play, HEIGHT),
+        ("launcher-play-missing-dlc", play_missing_dlc, HEIGHT),
         ("launcher-setup", setup, TALL),
-        ("launcher-settings", settings, TALL),
+        ("launcher-settings", settings, HEIGHT),
+        ("launcher-settings-identity", identity, HEIGHT),
         ("launcher-about", about, ABOUT_HEIGHT),
     ];
     for (name, set, height) in shots {

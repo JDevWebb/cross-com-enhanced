@@ -406,7 +406,7 @@ Players whose joins ended early most often:
 ```
 
 A player near the top of that last list, with a symmetric NAT and no forward, is one to ask to
-turn on UPnP, or to run the launcher's connection test (Settings › Connection). In testing, a
+turn on UPnP, or to run the launcher's connection test (Settings › Network). In testing, a
 player behind a symmetric NAT couldn't get into a lobby whose host had no forward either
 (`unreached`), and got in as soon as the host's router forwarded.
 

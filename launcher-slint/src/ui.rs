@@ -60,6 +60,7 @@ pub fn info_view(info: &core::Info) -> InfoView {
         server: s(info.server.as_deref().unwrap_or_default()),
         community: info.server.as_deref().is_some_and(server::is_community),
         account: s(info.account.as_deref().unwrap_or_default()),
+        initial: s(initial(info.account.as_deref())),
         skip_intro: info.skip_intro,
         dx9: info.dx9,
         overlay: info.overlay,
@@ -70,6 +71,11 @@ pub fn info_view(info: &core::Info) -> InfoView {
         dlc_note: s(dlc::warning(&info.dlc).unwrap_or_default()),
         ready: info.ready(),
     }
+}
+
+/// The account's first letter, in capitals, for the circle beside its name ("?" for none).
+fn initial(account: Option<&str>) -> String {
+    account.and_then(|a| a.chars().next()).map_or_else(|| "?".to_owned(), |c| c.to_uppercase().collect())
 }
 
 /// The packs as the screens list them.
@@ -171,13 +177,17 @@ fn toast(w: &AppWindow, said: &str) {
     });
 }
 
-/// Opens a screen ("play", "setup" or "settings"); Play is the setup until everything's set.
+/// Opens a screen ("play", "setup" or "settings"). Play is the setup until everything's set (the
+/// first launch); "setup" is the setup run again, from Settings › About.
 fn open(w: &AppWindow, l: &Arc<Launcher>, screen: &str) {
     w.set_screen(s(screen));
     let info = refresh_info(w, l);
     match screen {
-        "play" if info.ready() => load_news(w, l),
-        "play" | "setup" => open_setup(w, l, &info, None),
+        "play" if info.ready() => {
+            show_identity(w, l);
+            load_news(w, l);
+        }
+        "play" | "setup" => open_setup(w, l, &info),
         "settings" => open_settings(w, l, &info),
         _ => {}
     }
@@ -252,17 +262,15 @@ fn setup_host(w: &AppWindow) -> String {
     }
 }
 
-/// Setup, filled in from what's set up now. `community`: the server choice to start from
-/// (Settings' Change server and its way back to the community network); otherwise the community
-/// test network unless another server is set up.
-fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info, community: Option<bool>) {
+/// Setup's fields, filled in from what's set up now: the server set up (the community test
+/// network when there's none, or it's that), nothing checked yet. Settings' Server section
+/// switches server with them too.
+fn prepare_setup(w: &AppWindow, info: &core::Info) {
     let first = !info.ready();
-    let changing_server = community.is_some();
     let set_up = info.server.as_deref().filter(|h| !server::is_community(h));
-    let community = community.unwrap_or(set_up.is_none());
     w.set_setup_game_dir(s(info.game_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default()));
     w.set_setup_game_error(s(""));
-    w.set_setup_community(community);
+    w.set_setup_community(set_up.is_none());
     w.set_setup_server_typed(s(set_up.unwrap_or_default()));
     w.set_setup_server_ok(s(""));
     w.set_setup_server_error(s(""));
@@ -271,14 +279,22 @@ fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info, community: Op
     w.set_setup_code(s(""));
     w.set_setup_skip_intro(first || info.skip_intro);
     w.set_setup_dx9(info.dx9);
+    w.set_setup_overlay(info.overlay);
+    w.set_setup_send_logs(info.send_logs);
+    w.set_setup_port_forwarding(info.port_forwarding);
     w.set_setup_busy(false);
     w.set_setup_error(s(""));
-    // Changing server starts at the server; a setup from the start, at the game.
-    w.set_setup_step(i32::from(changing_server && info.game_dir.is_some()));
+    w.set_setup_step(0);
     w.set_setup_firewall_note(s(""));
     CHECKED.with(|c| c.borrow_mut().clear());
     w.set_setup_server_checking(false);
     setup_changed(w);
+}
+
+/// Setup, from the start: filled in from what's set up now, the game looked for when there's
+/// none, and the server asked.
+fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
+    prepare_setup(w, info);
     if info.game_dir.is_none() && !w.get_setup_game_finding() {
         w.set_setup_game_finding(true);
         background(w, core::find_game, |w, found| {
@@ -304,6 +320,7 @@ fn setup_changed(w: &AppWindow) {
     w.set_setup_dlc(dlc_rows(&scan));
     w.set_setup_dlc_note(s(dlc::warning(&scan).unwrap_or_default()));
     let host = setup_host(w);
+    w.set_setup_host(s(&host));
     // A server changed since it was checked: checked again before it's trusted.
     if CHECKED.with(|c| *c.borrow() != host) {
         w.set_setup_server_ok(s(""));
@@ -369,26 +386,66 @@ fn check_server(w: &AppWindow, l: &Arc<Launcher>) {
     );
 }
 
-/// Asks the player for the game's folder (Windows' own picker).
+/// Asks the player for the game's folder (Windows' own picker), for Setup's first step.
 fn choose_game(w: &AppWindow) {
+    pick_game(w, |w, picked| {
+        match picked {
+            Ok(dir) => {
+                w.set_setup_game_dir(s(dir.display().to_string()));
+                w.set_setup_game_error(s(""));
+            }
+            Err(e) => w.set_setup_game_error(s(e)),
+        }
+        setup_changed(w);
+    });
+}
+
+/// Settings' Change for the game's folder: the folder picked, then set up there as it is now
+/// (the server and account set up, the options as they are): the client goes into the new
+/// folder.
+fn move_game(w: &AppWindow, l: &Arc<Launcher>) {
+    let l = l.clone();
+    w.set_moved_said(s(""));
+    pick_game(w, move |w, picked| {
+        let dir = match picked {
+            Ok(dir) => dir,
+            Err(e) => {
+                w.set_moved_said(s(e));
+                w.set_moved_failed(true);
+                return;
+            }
+        };
+        let info = l.info();
+        let setup = core::Setup {
+            game_dir: dir,
+            server: info.server.clone().unwrap_or_default(),
+            name: String::new(),
+            code: String::new(),
+            skip_intro: info.skip_intro,
+            dx9: info.dx9,
+            overlay: info.overlay,
+            send_logs: info.send_logs,
+            port_forwarding: info.port_forwarding,
+        };
+        run_setup_with(w, &l, setup, After::Moved);
+    });
+}
+
+/// Windows' folder picker, then the folder checked for the game; `done` with it (`Err` for one
+/// without the game). Nothing when the player cancels.
+fn pick_game(w: &AppWindow, done: impl FnOnce(&AppWindow, Result<PathBuf, String>) + Send + 'static) {
     #[cfg(windows)]
     background(
         w,
         || rfd::FileDialog::new().set_title("The folder with \"Future Soldier DX11.exe\"").pick_folder(),
-        |w, dir: Option<PathBuf>| {
+        move |w, dir: Option<PathBuf>| {
             let Some(dir) = dir else { return };
-            match core::check_game(&dir) {
-                Ok(()) => {
-                    w.set_setup_game_dir(s(dir.display().to_string()));
-                    w.set_setup_game_error(s(""));
-                }
-                Err(e) => w.set_setup_game_error(s(e)),
-            }
-            setup_changed(w);
+            let checked = core::check_game(&dir).map(|()| dir);
+            done(w, checked);
         },
     );
     #[cfg(not(windows))]
-    w.set_setup_game_error(s("Choosing a folder needs Windows."));
+    done(w, Err("Choosing a folder needs Windows.".into()));
 }
 
 /// On Setup's last step, before the press that brings Windows' permission prompt (the firewall
@@ -464,16 +521,43 @@ fn setup_step_entered(w: &AppWindow, step: i32) {
     );
 }
 
-/// Sets it all up, from Setup's last step (which said whether Windows will ask, and why).
-fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
-    let setup = core::Setup {
+/// What a setup was run for: the setup screen's, Settings' switch of server, or its move of the
+/// game's folder (each says how it went in its own place).
+#[derive(Clone, Copy)]
+enum After {
+    Setup,
+    Switched,
+    Moved,
+}
+
+/// What Setup's fields (and Settings' Server section, which uses them) set up.
+fn setup_from_window(w: &AppWindow) -> core::Setup {
+    core::Setup {
         game_dir: PathBuf::from(w.get_setup_game_dir().as_str()),
         server: setup_host(w),
         name: w.get_setup_name().into(),
         code: w.get_setup_code().into(),
         skip_intro: w.get_setup_skip_intro(),
         dx9: w.get_setup_dx9(),
-    };
+        overlay: w.get_setup_overlay(),
+        send_logs: w.get_setup_send_logs(),
+        port_forwarding: w.get_setup_port_forwarding(),
+    }
+}
+
+/// Sets it all up, from Setup's last step (which said whether Windows will ask, and why).
+fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
+    run_setup_with(w, l, setup_from_window(w), After::Setup);
+}
+
+/// Settings' Switch to this server: the setup again with the server chosen there, the game and
+/// options as they are.
+fn switch_server(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_switch_said(s(""));
+    run_setup_with(w, l, setup_from_window(w), After::Switched);
+}
+
+fn run_setup_with(w: &AppWindow, l: &Arc<Launcher>, setup: core::Setup, after: After) {
     w.set_setup_busy(true);
     w.set_setup_error(s(""));
     let worker = l.clone();
@@ -483,15 +567,34 @@ fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
         move || worker.setup(setup),
         move |w, done| {
             w.set_setup_busy(false);
-            match done {
-                Ok(said) => {
-                    // The server may be another: its card asks afresh.
-                    w.set_server_state(s("asking"));
-                    w.set_news(ModelRc::default());
+            if done.is_ok() {
+                // The server may be another: Play asks afresh.
+                w.set_server_state(s("asking"));
+                w.set_news(ModelRc::default());
+            }
+            match (after, done) {
+                (After::Setup, Ok(said)) => {
+                    w.set_play_tab(s("status"));
                     open(w, &l, "play");
                     toast(w, &said);
                 }
-                Err(e) => w.set_setup_error(s(e)),
+                (After::Setup, Err(e)) => w.set_setup_error(s(e)),
+                (After::Switched | After::Moved, done) => {
+                    let failed = done.is_err();
+                    let said = done.unwrap_or_else(|e| e);
+                    let info = refresh_info(w, &l);
+                    if !failed {
+                        // Settings shows what's set up now: the new server, nothing to switch to.
+                        prepare_setup(w, &info);
+                    }
+                    if matches!(after, After::Switched) {
+                        w.set_switch_said(s(said));
+                        w.set_switch_failed(failed);
+                    } else {
+                        w.set_moved_said(s(said));
+                        w.set_moved_failed(failed);
+                    }
+                }
             }
         },
     );
@@ -513,6 +616,12 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_id_said(s(""));
     w.set_restore_confirming(false);
     w.set_restore_said(s(""));
+    w.set_moved_said(s(""));
+    w.set_switch_said(s(""));
+    // The Server section switches server with Setup's own fields and check.
+    if !w.get_setup_busy() {
+        prepare_setup(w, info);
+    }
     show_logs(w, l);
 }
 
@@ -807,16 +916,8 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
             }
         });
     }
-    {
-        let (weak, l) = (weak.clone(), l.clone());
-        w.on_change_server(move |community| {
-            if let Some(w) = weak.upgrade() {
-                w.set_screen(s("setup"));
-                let info = refresh_info(&w, &l);
-                open_setup(&w, &l, &info, Some(community));
-            }
-        });
-    }
+    w.on_move_game(on(move_game));
+    w.on_switch_server(on(switch_server));
     {
         let weak = weak.clone();
         w.on_open_link(move |id| {
@@ -889,6 +990,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_the_accounts_initial() {
+        assert_eq!(initial(Some("kozak")), "K");
+        assert_eq!(initial(Some("Ébène")), "É");
+        assert_eq!(initial(None), "?");
+    }
 
     #[test]
     fn says_when_in_utc() {

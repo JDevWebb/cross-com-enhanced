@@ -1,4 +1,5 @@
-// The guided setup, a step at a time: the game's folder (found on its own when it can be), the
+// The guided setup, shown on the first launch (until the game, a server and an account are set
+// up) and when the player asks for it again (Settings › About), a step at a time: the game's folder (found on its own when it can be), the
 // server (the community test network unless the player chooses another, checked before going on),
 // the account (the one the player's identity has on the server, or a name for a new one: there's
 // no password), the game options, and a last step that says what setting up will do (and that
@@ -6,7 +7,8 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
-import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Check, Option, Spinner } from "widgets.slint";
+import { Btn, Caps, Tag, Card, CardHead, Para, Field, LabelledField, Option, Spinner, SwitchLine } from "widgets.slint";
+import { CrossMark } from "brand.slint";
 import { DlcList, DlcNotice } from "dlc.slint";
 import { DlcRow } from "types.slint";
 
@@ -112,6 +114,9 @@ export component SetupScreen inherits Rectangle {
     // The options.
     in-out property <bool> skip-intro: true;
     in-out property <bool> dx9;
+    in-out property <bool> overlay: true;
+    in-out property <bool> send-logs: true;
+    in-out property <bool> port-forwarding: true;
     // The account's filled in as the server takes it.
     in property <bool> account-done;
     // What's missing ("" when it can go), the press, and why it failed.
@@ -149,29 +154,41 @@ export component SetupScreen inherits Rectangle {
             alignment: center;
             VerticalLayout {
                 // A dialog's width, in the middle of the window.
-                width: min(720px, root.width - 80px);
+                width: min(760px, root.width - 80px);
                 padding-top: 30px;
                 padding-bottom: 28px;
                 spacing: 0px;
                 alignment: start;
 
-                Caps { text: root.first ? "FIRST DEPLOYMENT" : "SET UP"; color: Theme.accent; }
+                // Welcome, in the middle.
+                HorizontalLayout { alignment: center; CrossMark { size: 56px; glow: true; } }
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 12px;
+                    Caps { text: root.first ? "FIRST LAUNCH" : "SET UP AGAIN"; color: Theme.accent; }
+                }
                 Text {
-                    text: (root.first ? "Get Cross-Com ready" : "Game, server and account").to-uppercase();
+                    text: (root.first ? "Welcome to Cross-Com Enhanced" : "Game, server and name").to-uppercase();
                     font-family: Type.cond;
                     font-weight: 700;
-                    font-size: 40px;
+                    font-size: 32px;
                     color: Theme.fg;
+                    horizontal-alignment: center;
                     wrap: word-wrap;
                     accessible-role: AccessibleRole.text;
                 }
                 VerticalLayout {
-                    padding-top: 4px;
+                    padding-top: 6px;
                     padding-bottom: 18px;
-                    Para { text: "A few steps, then the launcher does the rest: it installs Cross-Com's client into the game (keeping the game's own files), makes your account and writes your settings. You need your own copy of the game."; }
+                    Para {
+                        horizontal-alignment: center;
+                        text: root.first
+                            ? "The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game."
+                            : "Nothing changes until you press Set up on the last step. Cancel leaves everything as it is.";
+                    }
                 }
                 StepBar {
-                    steps: ["The game", "The server", "Your account", "Options", "Set up"];
+                    steps: ["The game", "The server", "Your name", "Game options", "Set up"];
                     current: root.step;
                     go(i) => { if !root.busy { root.go-to(i); } }
                 }
@@ -299,7 +316,7 @@ export component SetupScreen inherits Rectangle {
                         al := VerticalLayout {
                             padding: 20px;
                             spacing: 12px;
-                            CardHead { number: "03"; title: "Your account"; note: root.account != "" ? "Found" : ""; }
+                            CardHead { number: "03"; title: "Your name"; note: root.account != "" ? "Found" : ""; }
                             if root.account != "": Text {
                                 text: "Signed in as " + root.account;
                                 color: Theme.good;
@@ -333,7 +350,7 @@ export component SetupScreen inherits Rectangle {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "There's no password: your identity, which the launcher keeps on this PC, signs you in. Settings › Server and account moves it to another PC.";
+                                text: "There's no password: your identity, which the launcher keeps on this PC, signs you in. Settings › Identity moves it to another PC.";
                                 color: Theme.muted;
                                 font-size: Type.small;
                                 wrap: word-wrap;
@@ -346,11 +363,14 @@ export component SetupScreen inherits Rectangle {
                         min-height: ol.preferred-height;
                         ol := VerticalLayout {
                             padding: 20px;
-                            spacing: 8px;
+                            spacing: 14px;
                             CardHead { number: "04"; title: "Game options"; }
-                            Para { text: "You can change these any time in Settings."; }
-                            Check { text: "Skip the intro videos"; checked <=> root.skip-intro; enabled: !root.busy; }
-                            Check { text: "Use DirectX 9 (for older graphics cards)"; checked <=> root.dx9; enabled: !root.busy; }
+                            Para { text: "Each is set as we recommend. Settings has all of them later."; }
+                            SwitchLine { text: "Skip the intro videos"; sub: "Straight to the main menu."; checked <=> root.skip-intro; enabled: !root.busy; }
+                            SwitchLine { text: "Use DirectX 9"; sub: "Only for older graphics cards; DirectX 11 otherwise."; checked <=> root.dx9; enabled: !root.busy; }
+                            SwitchLine { text: "In-game overlay"; sub: "The server, your connection and who's online, over the game (F5)."; checked <=> root.overlay; enabled: !root.busy; }
+                            SwitchLine { text: "Ask my router to forward the game's port"; sub: "UPnP, PCP or NAT-PMP while the game runs, so other players reach you directly."; checked <=> root.port-forwarding; enabled: !root.busy; }
+                            SwitchLine { text: "Send game logs after each game"; sub: "Helps fix problems. Your Windows user name and sign-in token are removed."; checked <=> root.send-logs; enabled: !root.busy; }
                         }
                     }
                     if root.step == 4: Card {
@@ -366,7 +386,9 @@ export component SetupScreen inherits Rectangle {
                             Summary { label: "Your account"; value: root.account != "" ? "Signed in as " + root.account : "A new account, " + root.name; }
                             Summary {
                                 label: "Options";
-                                value: (root.skip-intro ? "Intro videos skipped" : "Intro videos played") + " · " + (root.dx9 ? "DirectX 9" : "DirectX 11");
+                                value: (root.skip-intro ? "Intro videos skipped" : "Intro videos played") + " · " + (root.dx9 ? "DirectX 9" : "DirectX 11")
+                                    + " · overlay " + (root.overlay ? "on" : "off") + " · port forwarding " + (root.port-forwarding ? "on" : "off")
+                                    + " · logs " + (root.send-logs ? "sent" : "not sent");
                             }
                             VerticalLayout {
                                 padding-top: 6px;

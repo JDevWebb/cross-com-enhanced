@@ -1,5 +1,6 @@
-// The launcher's window: its own title bar, the side menu, and the screen chosen. Until the game,
-// a server and an account are set up, the guided setup is the screen.
+// The launcher's window: its own title bar, the side menu, the screen chosen and the status bar
+// under it. Until the game, a server and an account are set up (the first launch), the guided
+// setup is the screen, and Play is locked; Settings stays open.
 
 import "../../assets/fonts/IBMPlexSans-Regular.ttf";
 import "../../assets/fonts/IBMPlexSans-SemiBold.ttf";
@@ -9,11 +10,10 @@ import "../../assets/fonts/IBMPlexMono-Regular.ttf";
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
 import { Spinner } from "widgets.slint";
-import { TitleBar, SideMenu, Toast, Notice, UpdateBar } from "chrome.slint";
+import { TitleBar, SideMenu, Toast, Notice, UpdateBar, StatusBar } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
-import { AboutScreen } from "about.slint";
 import { InfoView, NewsRow, DlcRow, CheckRow } from "types.slint";
 
 export { Theme, InfoView, NewsRow, DlcRow }
@@ -32,9 +32,13 @@ export component AppWindow inherits Window {
 
     in property <string> release;
     in property <bool> maximised;
-    // "play", "setup", "settings" or "about". Play needs everything set up: until then it's the setup.
+    // "play", "setup" (run again, from Settings › About) or "settings". Play needs everything set
+    // up: until then it's the setup.
     in-out property <string> screen: "play";
-    out property <string> shown: screen == "play" && !info.ready ? "setup" : screen;
+    out property <string> shown: !info.ready && screen != "settings" ? "setup" : screen;
+    // Play's side panel ("status" or "news"), and the section Settings shows.
+    in-out property <string> play-tab: "status";
+    in-out property <string> settings-section: "game";
     // The first look at the game is in.
     in property <bool> loaded;
     in property <InfoView> info;
@@ -89,6 +93,12 @@ export component AppWindow inherits Window {
     in-out property <string> setup-code;
     in-out property <bool> setup-skip-intro: true;
     in-out property <bool> setup-dx9;
+    in-out property <bool> setup-overlay: true;
+    in-out property <bool> setup-send-logs: true;
+    in-out property <bool> setup-port-forwarding: true;
+    // The server chosen, as the launcher will use it (Settings › Server compares it with the one
+    // set up).
+    in property <string> setup-host;
     in property <bool> setup-account-done;
     in property <string> setup-missing;
     in property <bool> setup-busy;
@@ -97,7 +107,11 @@ export component AppWindow inherits Window {
     in-out property <int> setup-step;
     in property <string> setup-firewall-note;
 
-    // Settings.
+    // Settings: moving the game's folder and switching server (Setup's work, run from there).
+    in property <string> moved-said;
+    in property <bool> moved-failed;
+    in property <string> switch-said;
+    in property <bool> switch-failed;
     in-out property <bool> opt-skip-intro;
     in-out property <bool> opt-dx9;
     in-out property <bool> opt-overlay;
@@ -147,11 +161,12 @@ export component AppWindow inherits Window {
     callback options-changed();
     callback identity-export() -> string;
     callback identity-use(bool);
-    callback change-server(bool);
     callback send-logs-now();
     callback open-logs();
     callback restore();
     callback test-connection();
+    callback move-game();
+    callback switch-server();
     // The notice: go on (with `notice-for`), or not.
     callback notice-proceed(string);
     callback notice-cancel(string);
@@ -185,122 +200,180 @@ export component AppWindow inherits Window {
             vertical-stretch: 1;
             SideMenu {
                 current: root.shown;
-                go(s) => { root.go(s); }
+                news: root.play-tab == "news";
+                locked: root.shown == "setup";
+                release: root.release;
+                go(s) => {
+                    if s == "news" {
+                        root.play-tab = "news";
+                        root.go("play");
+                    } else {
+                        if s == "play" { root.play-tab = "status"; }
+                        root.go(s);
+                    }
+                }
             }
-            Rectangle {
+            VerticalLayout {
                 horizontal-stretch: 1;
-                if root.loaded && root.shown == "play": PlayScreen {
-                    info: root.info;
-                    community-name: root.community-name;
-                    community-status: root.community-status;
-                    server-state: root.server-state;
-                    server-detail: root.server-detail;
-                    news: root.news;
-                    news-note: root.news-note;
-                    news-loading: root.news-loading;
-                    checks: root.checks;
-                    starting: root.starting;
-                    said: root.play-said;
-                    failed: root.play-failed;
-                    play => { root.play(); }
-                    refresh => { root.refresh-news(); }
-                    check-action(label) => { root.check-action(label); }
+                Rectangle {
+                    vertical-stretch: 1;
+                    if root.loaded && root.shown == "play": PlayScreen {
+                        info: root.info;
+                        community-name: root.community-name;
+                        community-status: root.community-status;
+                        identity: root.id-short;
+                        server-state: root.server-state;
+                        server-detail: root.server-detail;
+                        news: root.news;
+                        news-note: root.news-note;
+                        news-loading: root.news-loading;
+                        checks: root.checks;
+                        starting: root.starting;
+                        tab <=> root.play-tab;
+                        play => { root.play(); }
+                        refresh => { root.refresh-news(); }
+                        check-action(label) => { root.check-action(label); }
+                        settings(section) => {
+                            root.settings-section = section;
+                            root.go("settings");
+                        }
+                    }
+                    if root.loaded && root.shown == "setup": SetupScreen {
+                        first: !root.info.ready;
+                        community-host: root.community-host;
+                        community-name: root.community-name;
+                        community-status: root.community-status;
+                        game-dir: root.setup-game-dir;
+                        game-finding: root.setup-game-finding;
+                        game-error: root.setup-game-error;
+                        dlc: root.setup-dlc;
+                        dlc-note: root.setup-dlc-note;
+                        community <=> root.setup-community;
+                        server-typed <=> root.setup-server-typed;
+                        server-ok: root.setup-server-ok;
+                        server-checking: root.setup-server-checking;
+                        server-error: root.setup-server-error;
+                        account: root.setup-account;
+                        name <=> root.setup-name;
+                        code <=> root.setup-code;
+                        skip-intro <=> root.setup-skip-intro;
+                        dx9 <=> root.setup-dx9;
+                        overlay <=> root.setup-overlay;
+                        send-logs <=> root.setup-send-logs;
+                        port-forwarding <=> root.setup-port-forwarding;
+                        account-done: root.setup-account-done;
+                        missing: root.setup-missing;
+                        busy: root.setup-busy;
+                        error: root.setup-error;
+                        step <=> root.setup-step;
+                        firewall-note: root.setup-firewall-note;
+                        step-entered(n) => { root.setup-step-entered(n); }
+                        choose-game => { root.setup-choose-game(); }
+                        check-server => { root.setup-check-server(); }
+                        changed => { root.setup-changed(); }
+                        run => { root.setup-run(); }
+                        cancel => {
+                            root.settings-section = "about";
+                            root.go("settings");
+                        }
+                    }
+                    if root.loaded && root.shown == "settings": SettingsScreen {
+                        info: root.info;
+                        release: root.release;
+                        community-host: root.community-host;
+                        community-name: root.community-name;
+                        community-status: root.community-status;
+                        section <=> root.settings-section;
+                        skip-intro <=> root.opt-skip-intro;
+                        dx9 <=> root.opt-dx9;
+                        overlay <=> root.opt-overlay;
+                        overlay-key <=> root.opt-overlay-key;
+                        send-logs <=> root.opt-send-logs;
+                        port-forwarding <=> root.opt-port-forwarding;
+                        options-said: root.options-said;
+                        options-failed: root.options-failed;
+                        busy: root.setup-busy;
+                        moved-said: root.moved-said;
+                        moved-failed: root.moved-failed;
+                        community <=> root.setup-community;
+                        server-typed <=> root.setup-server-typed;
+                        server-chosen: root.setup-host;
+                        server-ok: root.setup-server-ok;
+                        server-checking: root.setup-server-checking;
+                        server-error: root.setup-server-error;
+                        account: root.setup-account;
+                        name <=> root.setup-name;
+                        code <=> root.setup-code;
+                        account-done: root.setup-account-done;
+                        switch-said: root.switch-said;
+                        switch-failed: root.switch-failed;
+                        connection-testing: root.conn-testing;
+                        connection-summary: root.conn-summary;
+                        connection-tone: root.conn-tone;
+                        connection-details: root.conn-details;
+                        identity: root.id-short;
+                        identity-error: root.id-error;
+                        identity-paste <=> root.id-paste;
+                        identity-confirm <=> root.id-confirm;
+                        identity-busy: root.id-busy;
+                        identity-said: root.id-said;
+                        identity-failed: root.id-failed;
+                        logs-last: root.logs-last;
+                        logs-said: root.logs-said;
+                        logs-sending: root.logs-sending;
+                        confirming <=> root.restore-confirming;
+                        restore-said: root.restore-said;
+                        restore-failed: root.restore-failed;
+                        update-checking: root.update-checking;
+                        update-checked: root.update-checked;
+                        options-changed => { root.options-changed(); }
+                        move-game => { root.move-game(); }
+                        check-server => { root.setup-check-server(); }
+                        server-changed => { root.setup-changed(); }
+                        switch-server => { root.switch-server(); }
+                        identity-export => { return root.identity-export(); }
+                        identity-use(confirmed) => { root.identity-use(confirmed); }
+                        send-logs-now => { root.send-logs-now(); }
+                        open-logs => { root.open-logs(); }
+                        restore => { root.restore(); }
+                        test-connection => { root.test-connection(); }
+                        check-update => { root.check-update(); }
+                        open-link(id) => { root.open-link(id); }
+                        run-setup => { root.go("setup"); }
+                    }
+                    if !root.loaded: VerticalLayout {
+                        alignment: center;
+                        spacing: 18px;
+                        HorizontalLayout { alignment: center; CrossMark { size: 96px; glow: true; } }
+                        HorizontalLayout { alignment: center; Spinner { size: 18px; } }
+                    }
+                    if root.toast != "": Toast {
+                        text: root.toast;
+                        x: parent.width - self.width - 22px;
+                        y: parent.height - self.height - 22px;
+                    }
+                    if root.notice-title != "": Notice {
+                        title: root.notice-title;
+                        body: root.notice-body;
+                        proceed => { root.notice-proceed(root.notice-for); }
+                        cancel => { root.notice-cancel(root.notice-for); }
+                    }
                 }
-                if root.loaded && root.shown == "setup": SetupScreen {
-                    first: !root.info.ready;
-                    community-host: root.community-host;
-                    community-name: root.community-name;
-                    community-status: root.community-status;
-                    game-dir: root.setup-game-dir;
-                    game-finding: root.setup-game-finding;
-                    game-error: root.setup-game-error;
-                    dlc: root.setup-dlc;
-                    dlc-note: root.setup-dlc-note;
-                    community <=> root.setup-community;
-                    server-typed <=> root.setup-server-typed;
-                    server-ok: root.setup-server-ok;
-                    server-checking: root.setup-server-checking;
-                    server-error: root.setup-server-error;
-                    account: root.setup-account;
-                    name <=> root.setup-name;
-                    code <=> root.setup-code;
-                    skip-intro <=> root.setup-skip-intro;
-                    dx9 <=> root.setup-dx9;
-                    account-done: root.setup-account-done;
-                    missing: root.setup-missing;
-                    busy: root.setup-busy;
-                    error: root.setup-error;
-                    step <=> root.setup-step;
-                    firewall-note: root.setup-firewall-note;
-                    step-entered(n) => { root.setup-step-entered(n); }
-                    choose-game => { root.setup-choose-game(); }
-                    check-server => { root.setup-check-server(); }
-                    changed => { root.setup-changed(); }
-                    run => { root.setup-run(); }
-                    cancel => { root.go("play"); }
-                }
-                if root.loaded && root.shown == "settings": SettingsScreen {
-                    info: root.info;
-                    release: root.release;
-                    community-name: root.community-name;
-                    community-status: root.community-status;
-                    skip-intro <=> root.opt-skip-intro;
-                    dx9 <=> root.opt-dx9;
-                    overlay <=> root.opt-overlay;
-                    overlay-key <=> root.opt-overlay-key;
-                    send-logs <=> root.opt-send-logs;
-                    port-forwarding <=> root.opt-port-forwarding;
-                    connection-testing: root.conn-testing;
-                    connection-summary: root.conn-summary;
-                    connection-tone: root.conn-tone;
-                    connection-details: root.conn-details;
-                    options-said: root.options-said;
-                    options-failed: root.options-failed;
-                    identity: root.id-short;
-                    identity-error: root.id-error;
-                    identity-paste <=> root.id-paste;
-                    identity-confirm <=> root.id-confirm;
-                    identity-busy: root.id-busy;
-                    identity-said: root.id-said;
-                    identity-failed: root.id-failed;
-                    logs-last: root.logs-last;
-                    logs-said: root.logs-said;
-                    logs-sending: root.logs-sending;
-                    confirming <=> root.restore-confirming;
-                    restore-said: root.restore-said;
-                    restore-failed: root.restore-failed;
-                    options-changed => { root.options-changed(); }
-                    identity-export => { return root.identity-export(); }
-                    identity-use(confirmed) => { root.identity-use(confirmed); }
-                    change-server(c) => { root.change-server(c); }
-                    send-logs-now => { root.send-logs-now(); }
-                    open-logs => { root.open-logs(); }
-                    restore => { root.restore(); }
-                    test-connection => { root.test-connection(); }
-                }
-                if root.loaded && root.shown == "about": AboutScreen {
-                    release: root.release;
-                    checking: root.update-checking;
-                    checked: root.update-checked;
-                    check => { root.check-update(); }
-                    link(id) => { root.open-link(id); }
-                }
-                if !root.loaded: VerticalLayout {
-                    alignment: center;
-                    spacing: 18px;
-                    HorizontalLayout { alignment: center; CrossMark { size: 96px; glow: true; } }
-                    HorizontalLayout { alignment: center; Spinner { size: 18px; } }
-                }
-                if root.toast != "": Toast {
-                    text: root.toast;
-                    x: parent.width - self.width - 22px;
-                    y: parent.height - self.height - 22px;
-                }
-                if root.notice-title != "": Notice {
-                    title: root.notice-title;
-                    body: root.notice-body;
-                    proceed => { root.notice-proceed(root.notice-for); }
-                    cancel => { root.notice-cancel(root.notice-for); }
+                if root.loaded: StatusBar {
+                    text: root.shown == "setup" ? (root.info.ready ? "Setting up again: nothing changes until you press Set up." : "Not set up yet: step " + (root.setup-step + 1) + " of 5.")
+                        : !root.info.ready ? "Not set up: Play opens the setup."
+                        : root.starting ? "Starting the game…"
+                        : root.play-said != "" ? root.play-said
+                        : root.setup-busy ? "Setting up…"
+                        : root.logs-sending ? "Sending the game's logs…"
+                        : root.server-state == "down" ? "The server didn't answer: " + root.server-detail
+                        : root.server-state == "asking" ? "Asking " + root.info.server + "…"
+                        : "Signed in to " + root.info.server + " as " + root.info.account;
+                    tone: root.shown == "setup" || !root.info.ready ? "warn"
+                        : root.starting || root.setup-busy || root.logs-sending || (root.play-said == "" && root.server-state == "asking") ? "busy"
+                        : root.play-said != "" ? (root.play-failed ? "bad" : "good")
+                        : root.server-state == "down" ? "bad"
+                        : "good";
                 }
             }
         }
