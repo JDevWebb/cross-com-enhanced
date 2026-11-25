@@ -83,6 +83,8 @@ jobs:
             launcher-slint -> target
       - name: Client DLLs (32-bit, as the game)
         run: cargo build --locked -p crosscom-orbit -p crosscom-uplay --target i686-pc-windows-msvc
+      - name: The game's Orbit imports are exported by their exact names (link.exe)
+        run: python scripts/check-exports.py target/i686-pc-windows-msvc/debug/ubiorbitapi_r2_loader.dll
       - name: Client tests
         run: cargo test --locked -p crosscom-orbit -p crosscom-client-common -p crosscom-client-net --target i686-pc-windows-msvc
       - name: Launcher tests, with the Windows parts (firewall rules, the game's folder)

@@ -84,6 +84,8 @@ jobs:
           # The client DLLs (32-bit, as the game), then the launcher with them built in: the one
           # file players need.
           cargo build --locked --release -p crosscom-orbit -p crosscom-uplay --target i686-pc-windows-msvc
+          # The game's Orbit imports, by their exact names: link.exe once cut them short.
+          python scripts/check-exports.py target/i686-pc-windows-msvc/release/ubiorbitapi_r2_loader.dll
           mkdir -p client-dlls dist
           cp target/i686-pc-windows-msvc/release/ubiorbitapi_r2_loader.dll target/i686-pc-windows-msvc/release/uplay_r1_loader.dll client-dlls/
           CROSSCOM_CLIENT_DIR="$PWD/client-dlls" cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dlls
