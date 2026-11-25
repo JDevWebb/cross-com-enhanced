@@ -7,4 +7,4 @@
 # signed release, and comes off when one is made (scripts/release.sh, which then moves on to the
 # next patch). docs/releasing.md has the whole process.
 name = "Cross-Com Enhanced"
-version = "0.1.1-dev"
+version = "0.1.1"
