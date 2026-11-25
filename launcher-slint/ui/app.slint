@@ -118,6 +118,8 @@ export component AppWindow inherits Window {
     in-out property <int> opt-overlay-key;
     in-out property <bool> opt-send-logs;
     in-out property <bool> opt-port-forwarding;
+    // The fewest players a Quick Match starts with, as an index from 2.
+    in-out property <int> opt-min-players;
     // The connection test: running, its verdict ("good", "warn" or "bad" for its colour) and
     // what it found.
     in property <bool> conn-testing;
@@ -290,6 +292,7 @@ export component AppWindow inherits Window {
                         overlay-key <=> root.opt-overlay-key;
                         send-logs <=> root.opt-send-logs;
                         port-forwarding <=> root.opt-port-forwarding;
+                        min-players <=> root.opt-min-players;
                         options-said: root.options-said;
                         options-failed: root.options-failed;
                         busy: root.setup-busy;

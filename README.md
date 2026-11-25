@@ -168,7 +168,7 @@ All of it goes over HTTPS, as signing in does; only a server on your own network
 Tested end to end on real copies of the game, on Windows 11 and under Wine on Linux, with up to four players, on one network and between home networks over the internet.
 
 <table>
-<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Every map is offered. A Quick Match starts at the game's own 8 players (6 in the smaller modes); on a quieter server, its host lowers that in the overlay's **Lobby** tab.</td></tr>
+<tr><td><b>Ranked and player matches</b></td><td>Every adversarial mode: Conflict, Decoy, Saboteur, Siege, and the DLC modes Stockade (Arctic Strike) and Takeover (Khyber Strike). Every map is offered. A Quick Match starts with 2 players or more, not the game's own 8, so a quiet server still gets matches; **Settings › Game › Fewest players to start a match** changes it (2 to 12), and a lobby's host can change it for that lobby in the overlay's **Lobby** tab. Squad matches start with half that a side.</td></tr>
 <tr><td><b>Co-op</b></td><td>The campaign and Guerrilla with friends, invited from the lobby.</td></tr>
 <tr><td><b>Friends and parties</b></td><td>Friends lists, requests, invites into a lobby, the party following its host, and lobby chat.</td></tr>
 <tr><td><b>Progression</b></td><td>XP, levels, unlocks, Gunsmith loadouts and stats, kept on the server; a friend's stats from View Player Stats.</td></tr>

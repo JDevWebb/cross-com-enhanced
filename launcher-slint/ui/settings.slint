@@ -94,6 +94,8 @@ export component SettingsScreen inherits Rectangle {
     in-out property <int> overlay-key;
     in-out property <bool> send-logs;
     in-out property <bool> port-forwarding;
+    // The fewest players a Quick Match starts with, as an index from 2.
+    in-out property <int> min-players;
     in property <string> options-said;
     in property <bool> options-failed;
     // Moving the game's folder, or switching server: Setup's own work (its server check and its
@@ -283,6 +285,16 @@ export component SettingsScreen inherits Rectangle {
                             model: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
                             current <=> root.overlay-key;
                             enabled: root.overlay;
+                            chosen => { root.options-changed(); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Fewest players to start a match";
+                        sub: "A Quick Match starts with this many; a squad match with half that a side. The game's own 8 is rarely reached on a small server.";
+                        Choice {
+                            label: "The fewest players to start a match";
+                            model: ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
+                            current <=> root.min-players;
                             chosen => { root.options-changed(); }
                         }
                     }

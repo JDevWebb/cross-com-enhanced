@@ -25,6 +25,9 @@ use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
 
+/// The fewest-players list in Settings starts at this many.
+const MIN_PLAYERS_FROM: u8 = crosscom_client_common::config::MIN_QUICK_MATCH_PLAYERS;
+
 /// How long a note stays in the corner.
 const TOAST: Duration = Duration::from_secs(5);
 
@@ -67,6 +70,7 @@ pub fn info_view(info: &core::Info) -> InfoView {
         overlay_key: key_index(&info.overlay_key),
         send_logs: info.send_logs,
         port_forwarding: info.port_forwarding,
+        min_players: i32::from(info.min_players),
         dlc: dlc_rows(&info.dlc),
         dlc_note: s(dlc::warning(&info.dlc).unwrap_or_default()),
         ready: info.ready(),
@@ -609,6 +613,7 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_opt_overlay_key(view.overlay_key);
     w.set_opt_send_logs(view.send_logs);
     w.set_opt_port_forwarding(view.port_forwarding);
+    w.set_opt_min_players(view.min_players - i32::from(MIN_PLAYERS_FROM));
     w.set_options_said(s(""));
     show_identity(w, l);
     w.set_id_paste(s(""));
@@ -709,6 +714,7 @@ fn save_options(w: &AppWindow, l: &Arc<Launcher>) {
         overlay_key: key.into(),
         send_logs: w.get_opt_send_logs(),
         port_forwarding: w.get_opt_port_forwarding(),
+        min_players: u8::try_from(w.get_opt_min_players()).map_or(core::DEFAULT_MIN_PLAYERS, |i| i.saturating_add(MIN_PLAYERS_FROM)),
     };
     match l.set_options(options) {
         Ok(()) => {

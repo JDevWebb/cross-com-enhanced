@@ -66,6 +66,7 @@ fn ready() -> core::Info {
         dx9: false,
         overlay: true,
         overlay_key: "F5".into(),
+        min_players: core::DEFAULT_MIN_PLAYERS,
         send_logs: true,
         port_forwarding: true,
         dlc: packs(&[]),
@@ -166,6 +167,7 @@ fn settings(w: &AppWindow) {
     w.set_info(view.clone());
     w.set_screen(s("settings"));
     w.set_settings_section(s("network"));
+    w.set_opt_min_players(view.min_players - 2);
     w.set_opt_skip_intro(view.skip_intro);
     w.set_opt_dx9(view.dx9);
     w.set_opt_overlay(view.overlay);
