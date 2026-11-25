@@ -107,7 +107,7 @@ pub fn save_client(game: &Path, config: &Config, overlay: &Overlay) -> Result<()
     table.insert(OVERLAY_KEY.into(), overlay.key.clone().into());
     let text = format!(
         "# Written by the Cross-Com launcher; it rewrites this file when you change its settings.\n\
-         # `password` holds a game token (cct_...) the launcher got from the server, not your password.\n{}",
+         # `password` holds a game token (cct_...) the launcher got from the server; players have no password.\n{}",
         toml::to_string(&table).map_err(|e| e.to_string())?
     );
     std::fs::write(game.join(FILE_NAME), text).map_err(|e| format!("couldn't write {FILE_NAME}: {e}"))

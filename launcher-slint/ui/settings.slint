@@ -1,12 +1,11 @@
 // The game options (with the in-game overlay and its key), sending the game's logs, the server
-// (changing it, or going back to the community test network), signing in to another account or
-// making one on the same server, the connection test and port forwarding, and taking Cross-Com
-// out of the game.
+// (changing it, or going back to the community test network), the account and the identity that
+// signs the player in to it (copied to move it to another PC, or another PC's used here), the
+// connection test and port forwarding, and taking Cross-Com out of the game.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
-import { Btn, Caps, Tag, Card, CardHead, Para, Check, Choice } from "widgets.slint";
-import { AccountForm } from "setup.slint";
+import { Btn, Caps, Tag, Card, CardHead, Para, Check, Choice, Field } from "widgets.slint";
 import { InfoView } from "types.slint";
 
 export component SettingsScreen inherits Rectangle {
@@ -23,16 +22,15 @@ export component SettingsScreen inherits Rectangle {
     in-out property <bool> port-forwarding;
     in property <string> options-said;
     in property <bool> options-failed;
-    // The account form.
-    in-out property <bool> new-account;
-    in-out property <string> name;
-    in-out property <string> password;
-    in-out property <string> again;
-    in-out property <string> code;
-    in property <bool> account-ready;
-    in property <bool> account-busy;
-    in property <string> account-said;
-    in property <bool> account-failed;
+    // The player's identity: its short form ("ABCD-EFGH"), or why it can't be read; the text
+    // pasted from another PC, and (when using it would replace a different one) what to confirm.
+    in property <string> identity;
+    in property <string> identity-error;
+    in-out property <string> identity-paste;
+    in-out property <string> identity-confirm;
+    in property <bool> identity-busy;
+    in property <string> identity-said;
+    in property <bool> identity-failed;
     // The logs: the last report, what the last sending said, and whether it's sending now.
     in property <string> logs-last;
     in property <string> logs-said;
@@ -48,8 +46,10 @@ export component SettingsScreen inherits Rectangle {
     in property <string> restore-said;
     in property <bool> restore-failed;
     callback options-changed();
-    callback account-changed();
-    callback account-run();
+    // The identity as text, to copy ("" when there's none to copy).
+    callback identity-export() -> string;
+    // Uses the identity pasted; `true` once replacing a different one is confirmed.
+    callback identity-use(bool);
     // To Setup with the community test network chosen (true), or another server.
     callback change-server(bool);
     callback send-logs-now();
@@ -125,7 +125,7 @@ export component SettingsScreen inherits Rectangle {
                             spacing: 10px;
                             CardHead { title: "Logs"; }
                             Check {
-                                text: "Send game logs to the server after each game (helps fix problems; your Windows user name and password are removed)";
+                                text: "Send game logs to the server after each game (helps fix problems; your Windows user name and the game's sign-in token are removed)";
                                 checked <=> root.send-logs;
                                 toggled => { root.options-changed(); }
                             }
@@ -209,7 +209,7 @@ export component SettingsScreen inherits Rectangle {
                                 if root.info.community && root.community-status != "": VerticalLayout { alignment: center; Tag { text: root.community-status; tint: Theme.warn; } }
                             }
                             Text {
-                                text: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account.";
+                                text: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account here yet: Setup makes one.";
                                 color: Theme.soft;
                             }
                             HorizontalLayout {
@@ -218,31 +218,79 @@ export component SettingsScreen inherits Rectangle {
                                 Btn { text: "Change server"; clicked => { root.change-server(false); } }
                                 if !root.info.community: Btn { text: "Use the " + root.community-name.to-lowercase(); kind: "ghost"; clicked => { root.change-server(true); } }
                             }
-                            // Another account on the same server: signing in to it, or making it.
-                            if root.info.server != "" && root.info.game-dir != "": AccountForm {
-                                make-first: false;
-                                new-account <=> root.new-account;
-                                name <=> root.name;
-                                password <=> root.password;
-                                again <=> root.again;
-                                code <=> root.code;
-                                enabled: !root.account-busy;
-                                changed => { root.account-changed(); }
-                                accepted => { if root.account-ready && !root.account-busy { root.account-run(); } }
-                            }
-                            if root.info.server != "" && root.info.game-dir != "": HorizontalLayout {
+                            // The identity that signs the player in: no password.
+                            Rectangle { height: 1px; background: Theme.line; }
+                            HorizontalLayout {
+                                spacing: 10px;
                                 alignment: start;
-                                Btn {
-                                    text: root.new-account ? "Make the account" : "Sign in";
-                                    kind: "primary";
-                                    busy: root.account-busy;
-                                    enabled: root.account-ready && !root.account-busy;
-                                    clicked => { root.account-run(); }
+                                Text { text: "Your identity"; color: Theme.soft; vertical-alignment: center; }
+                                if root.identity != "": Text {
+                                    text: root.identity;
+                                    font-family: Type.mono;
+                                    font-size: 14px;
+                                    color: Theme.fg;
+                                    vertical-alignment: center;
                                 }
                             }
-                            if root.account-said != "": Text {
-                                text: root.account-said;
-                                color: root.account-failed ? Theme.bad : Theme.good;
+                            if root.identity-error != "": Para { text: root.identity-error; color: Theme.bad; }
+                            Para {
+                                text: "It signs you in to your accounts, so there's no password. The launcher keeps it on this PC. Whoever has it can sign in as you: keep the copy private.";
+                                font-size: Type.small;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                // The copy goes through a hidden text field, to Slint's own clipboard.
+                                clip := TextInput { width: 0px; height: 0px; visible: false; read-only: true; single-line: true; }
+                                Btn {
+                                    text: "Copy to move it to another PC";
+                                    enabled: root.identity != "" && !root.identity-busy;
+                                    clicked => {
+                                        clip.text = root.identity-export();
+                                        clip.select-all();
+                                        clip.copy();
+                                        clip.text = "";
+                                    }
+                                }
+                            }
+                            Caps { text: "USE AN IDENTITY FROM ANOTHER PC"; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Field {
+                                    text <=> root.identity-paste;
+                                    label: "The identity copied on another PC";
+                                    placeholder: "Paste it here";
+                                    secret: true;
+                                    enabled: !root.identity-busy && root.identity-confirm == "";
+                                    accepted => { if root.identity-paste != "" { root.identity-use(false); } }
+                                }
+                                Btn {
+                                    text: "Use";
+                                    busy: root.identity-busy;
+                                    enabled: root.identity-paste != "" && !root.identity-busy && root.identity-confirm == "";
+                                    clicked => { root.identity-use(false); }
+                                }
+                            }
+                            if root.identity-confirm != "": Rectangle {
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: Theme.warn;
+                                background: Theme.warn.with-alpha(0.06);
+                                min-height: rl.preferred-height;
+                                rl := VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    Text { text: root.identity-confirm; color: Theme.soft; wrap: word-wrap; }
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        alignment: start;
+                                        Btn { text: "Replace it"; kind: "primary"; clicked => { root.identity-confirm = ""; root.identity-use(true); } }
+                                        Btn { text: "Keep mine"; clicked => { root.identity-confirm = ""; } }
+                                    }
+                                }
+                            }
+                            if root.identity-said != "": Text {
+                                text: root.identity-said;
+                                color: root.identity-failed ? Theme.bad : Theme.good;
                                 font-size: Type.small;
                                 wrap: word-wrap;
                             }

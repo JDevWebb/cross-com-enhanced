@@ -1,8 +1,10 @@
 //! Talking to a Cross-Com server over HTTP, as the game does first: checking it answers with
-//! its online config, asking how it is (its version, players online and news), signing in to an
-//! account and making one when the server allows sign-up.
+//! its online config, asking how it is (its version, players online and news), and signing in to
+//! the player's account there with their identity (`crate::identity`), or making one when the
+//! server allows sign-up. Either way the server answers a game token, which the game signs in
+//! with: players have no password.
 //!
-//! The API goes over HTTPS, passwords above all. Only a server set up by its private address (a
+//! The API goes over HTTPS, the game token above all. Only a server set up by its private address (a
 //! LAN, or a VPN such as Tailscale, or this machine) may be asked over plain HTTP, and only when
 //! nothing answers on its HTTPS port at all; a server set up by name, or on the internet, without
 //! HTTPS is refused (`crosscom_client_common::http`, which the client DLL shares). The online
@@ -13,6 +15,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
+
+use crate::identity::Identity;
 
 const ONLINE_CONFIG: &str = "/OnlineConfigService.svc/GetOnlineConfig?onlineConfigID=23ad683803a0457cabce83f905811dbc";
 const TIMEOUT: Duration = Duration::from_secs(8);
@@ -48,44 +52,35 @@ fn agent() -> ureq::Agent {
         .timeout_global(Some(TIMEOUT))
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .http_status_as_error(false)
-        // A redirect would send the password on somewhere else.
+        // A redirect would send the sign-in on somewhere else.
         .max_redirects(0)
         .build()
         .into()
-}
-
-/// How a password went to the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Sent {
-    /// Over HTTPS.
-    Encrypted,
-    /// Over plain HTTP, to a server on this machine or a private network without HTTPS.
-    Unencrypted,
 }
 
 pub use crosscom_client_common::http::is_private;
 pub(crate) use crosscom_client_common::http::may_go_plain as may_send_unencrypted;
 pub(crate) use crosscom_client_common::http::nothing_answered;
 
-/// Whether a password may go to `host` over plain HTTP after HTTPS failed with `error`.
+/// Whether a sign-in may go to `host` over plain HTTP after HTTPS failed with `error`.
 fn falls_back_to_plain(host: &str, error: &ureq::Error) -> bool {
     may_send_unencrypted(host) && nothing_answered(error)
 }
 
-/// Why a password didn't go to a server whose HTTPS failed with `error`.
+/// Why a sign-in didn't go to a server whose HTTPS failed with `error`.
 fn needs_https(host: &str, error: &ureq::Error) -> String {
     if crosscom_client_common::http::lookup_failed(error) {
         return crosscom_client_common::http::lookup_failed_said(host, error);
     }
     if may_send_unencrypted(host) {
         // A private address whose HTTPS answered but failed: not a server without HTTPS.
-        format!("{host}'s HTTPS didn't work ({error}), so your password wasn't sent. Whoever runs the server can check its HTTPS: {HTTPS_HELP}")
+        format!("{host}'s HTTPS didn't work ({error}), so nothing was sent. Whoever runs the server can check its HTTPS: {HTTPS_HELP}")
     } else {
         format!(
             "{host} didn't answer over HTTPS ({error}). It may be down for now; try again in a moment. If it \
-             never answers, it may not have HTTPS: passwords only go to a server set up by name or on the \
-             internet encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}. A server on \
-             your own network or VPN without HTTPS can be set up by its IP address."
+             never answers, it may not have HTTPS: the launcher only signs in to a server set up by name or on \
+             the internet encrypted, so it needs HTTPS; whoever runs it can set it up: {HTTPS_HELP}. A server \
+             on your own network or VPN without HTTPS can be set up by its IP address."
         )
     }
 }
@@ -193,49 +188,68 @@ fn api_get(server: &str, path: &str) -> Result<crosscom_client_common::http::Res
     crosscom_client_common::http::request(&host(server), "GET", path, &[("Accept", "application/json".into())], &[], TIMEOUT).map_err(|e| e.0)
 }
 
-/// What a sign-in found.
+/// An account on a server, as making it or signing in to it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignedIn {
-    /// The account's ID; `None` when the server is older than this check (the game's own sign-in
-    /// will tell).
-    pub pid: Option<u32>,
-    /// The game token the game signs in with in place of the password; `None` from a server
-    /// older than game tokens, which takes the password from the game.
-    pub token: Option<String>,
-    /// How the password went.
-    pub sent: Sent,
+pub struct Account {
+    /// The account's ID.
+    pub pid: u32,
+    /// Its name, which other players see.
+    pub name: String,
+    /// The game token the game signs in with (written as its `password`).
+    pub token: String,
 }
 
-/// Checks a name and password with the server, and gets a game token for the game; or why it
-/// refused.
-pub fn sign_in(server: &str, name: &str, password: &str) -> Result<SignedIn, String> {
-    let body = json!({ "name": name.trim(), "password": password }).to_string();
-    let (status, text, sent) = post_password(server, "/api/login", &body)?;
-    if status == 404 {
-        return Ok(SignedIn { pid: None, token: None, sent });
+/// Makes the account `name` on the server, owned by `identity` (with the server's sign-up code,
+/// if it has one); or the server's reason for refusing.
+pub fn sign_up(server: &str, identity: &Identity, name: &str, code: &str) -> Result<Account, String> {
+    let body = signup_body(&host(server), identity, name, code, crosscom_identity::now());
+    let (status, text) = post_json(server, "/accounts", &body.to_string())?;
+    match status {
+        404 => Err("this server doesn't let players make accounts; ask whoever runs it".into()),
+        _ => account(status, &text),
     }
-    let pid = answer(status, &text)?;
-    let token = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|j| j["token"].as_str().map(str::to_owned))
-        .filter(|t| crosscom_client_common::config::is_game_token(t));
-    Ok(SignedIn { pid: Some(pid), token, sent })
 }
 
-/// Makes an account; its ID and how the password went, or the server's reason for refusing.
-pub fn sign_up(server: &str, name: &str, password: &str, code: &str) -> Result<(u32, Sent), String> {
-    let code = Some(code.trim()).filter(|c| !c.is_empty());
-    let body = json!({ "name": name.trim(), "password": password, "code": code }).to_string();
-    let (status, text, sent) = post_password(server, "/accounts", &body)?;
-    answer(status, &text).map(|pid| (pid, sent))
+/// Signs `identity` in to its account on the server; `None` when it has none there.
+pub fn key_login(server: &str, identity: &Identity) -> Result<Option<Account>, String> {
+    let body = login_body(&host(server), identity, crosscom_identity::now());
+    let (status, text) = post_json(server, "/api/key-login", &body.to_string())?;
+    match status {
+        404 => Ok(None),
+        _ => account(status, &text).map(Some),
+    }
 }
 
-/// Posts JSON carrying a password: over HTTPS, or plain HTTP to a server at a private address
-/// where nothing answers on the HTTPS port. The status, the answer's text and how it went.
-fn post_password(server: &str, path: &str, body: &str) -> Result<(u16, String, Sent), String> {
+/// What `POST /accounts` is sent: the name, and the identity's signature for it on `host` at
+/// `time`.
+fn signup_body(host: &str, identity: &Identity, name: &str, code: &str, time: i64) -> serde_json::Value {
+    let name = name.trim();
+    json!({
+        "name": name,
+        "global_id": identity.global_id(),
+        "time": time,
+        "host": host,
+        "signature": identity.sign_signup(host, name, time),
+        "code": Some(code.trim()).filter(|c| !c.is_empty()),
+    })
+}
+
+/// What `POST /api/key-login` is sent: the identity's signature for `host` at `time`.
+fn login_body(host: &str, identity: &Identity, time: i64) -> serde_json::Value {
+    json!({
+        "global_id": identity.global_id(),
+        "time": time,
+        "host": host,
+        "signature": identity.sign_login(host, time),
+    })
+}
+
+/// Posts JSON to the server's API: over HTTPS, or plain HTTP to a server at a private address
+/// where nothing answers on the HTTPS port. The status and the answer's text.
+fn post_json(server: &str, path: &str, body: &str) -> Result<(u16, String), String> {
     let host = host(server);
     let https = match post(&format!("https://{host}{path}"), body) {
-        Ok((status, text)) => return Ok((status, text, Sent::Encrypted)),
+        Ok(answer) => return Ok(answer),
         Err(e) => e,
     };
     if !falls_back_to_plain(&host, &https) {
@@ -243,29 +257,38 @@ fn post_password(server: &str, path: &str, body: &str) -> Result<(u16, String, S
     }
     let (status, text) = post(&format!("http://{host}{path}"), body).map_err(|e| format!("couldn't reach {host}: {e}"))?;
     if (300..400).contains(&status) {
-        // A proxy sending passwords to its HTTPS, which didn't work from here.
-        return Err(format!("{host} takes passwords over HTTPS only, and its HTTPS didn't work: {https}"));
+        // A proxy sending the API to its HTTPS, which didn't work from here.
+        return Err(format!("{host} takes sign-ins over HTTPS only, and its HTTPS didn't work: {https}"));
     }
-    Ok((status, text, Sent::Unencrypted))
+    Ok((status, text))
 }
 
-/// Posts JSON; the status and the answer's text.
+/// Posts JSON; the status and the answer's text. No `Origin`: the server refuses posts from web
+/// pages.
 fn post(url: &str, body: &str) -> Result<(u16, String), ureq::Error> {
     let mut response = agent().post(url).header("Content-Type", "application/json").send(body)?;
     let status = response.status().as_u16();
     Ok((status, response.body_mut().read_to_string().unwrap_or_default()))
 }
 
-fn answer(status: u16, body: &str) -> Result<u32, String> {
+/// The account in a server's answer, or why it refused.
+fn account(status: u16, body: &str) -> Result<Account, String> {
     let json: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-    match status {
-        200 | 201 => json["pid"]
-            .as_u64()
-            .and_then(|p| u32::try_from(p).ok())
-            .ok_or_else(|| "the server's answer made no sense".into()),
-        404 => Err("this server doesn't let players make accounts; ask whoever runs it".into()),
-        _ => Err(json["error"].as_str().map_or_else(|| format!("the server refused ({status})"), str::to_owned)),
+    if !matches!(status, 200 | 201) {
+        return Err(match json["error"].as_str() {
+            Some(error) => error.to_owned(),
+            None if status == 429 => "the server has had too many sign-ins from here; try again in a minute".into(),
+            None => format!("the server refused ({status})"),
+        });
     }
+    let read = || {
+        Some(Account {
+            pid: u32::try_from(json["pid"].as_u64()?).ok()?,
+            name: json["name"].as_str().filter(|n| !n.is_empty())?.to_owned(),
+            token: json["token"].as_str().filter(|t| crosscom_client_common::config::is_game_token(t))?.to_owned(),
+        })
+    };
+    read().ok_or_else(|| "the server's answer made no sense".into())
 }
 
 #[cfg(test)]
@@ -336,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_http_for_passwords_only_to_a_private_address() {
+    fn plain_http_only_to_a_private_address() {
         assert!(may_send_unencrypted("192.168.1.20"));
         assert!(may_send_unencrypted("100.100.1.2"), "a Tailscale address");
         assert!(may_send_unencrypted("localhost"));
@@ -372,7 +395,7 @@ mod tests {
         let why = needs_https("play.example.org", &refused());
         assert!(why.contains("play.example.org") && why.contains(HTTPS_HELP) && why.contains("IP address"), "{why}");
         let why = needs_https(lan, &ureq::Error::Tls("certificate not valid"));
-        assert!(why.contains("wasn't sent") && why.contains("certificate not valid"), "{why}");
+        assert!(why.contains("nothing was sent") && why.contains("certificate not valid"), "{why}");
     }
 
     #[test]
@@ -384,12 +407,42 @@ mod tests {
 
     #[test]
     fn explains_the_servers_answers() {
-        assert_eq!(answer(201, r#"{"pid":1048577}"#), Ok(1_048_577));
-        assert_eq!(answer(409, r#"{"error":"that name is taken"}"#), Err("that name is taken".into()));
-        assert!(answer(404, "").unwrap_err().contains("doesn't let players"));
-        assert_eq!(answer(502, "gateway"), Err("the server refused (502)".into()));
-        assert_eq!(answer(200, r#"{"pid":1048576}"#), Ok(1_048_576));
-        assert_eq!(answer(401, r#"{"error":"wrong name or password"}"#), Err("wrong name or password".into()));
+        let token = format!("cct_{}", "a1".repeat(14));
+        let made = account(201, &format!(r#"{{"pid":1048577,"name":"Kozak","token":"{token}"}}"#)).unwrap();
+        assert_eq!(
+            made,
+            Account {
+                pid: 1_048_577,
+                name: "Kozak".into(),
+                token
+            }
+        );
+        assert_eq!(account(409, r#"{"error":"that name is taken"}"#), Err("that name is taken".into()));
+        assert_eq!(account(502, "gateway"), Err("the server refused (502)".into()));
+        assert!(account(429, "").unwrap_err().contains("try again"));
+        assert_eq!(account(401, r#"{"error":"bad signature"}"#), Err("bad signature".into()));
+        assert!(account(200, r#"{"pid":1048576,"name":"Kozak"}"#).unwrap_err().contains("no sense"), "no token");
+        assert!(account(200, r#"{"pid":1048576,"name":"Kozak","token":"hunter2"}"#).is_err(), "not a game token");
+    }
+
+    #[test]
+    fn signs_for_the_server_as_set_up() {
+        let me = Identity::generate();
+        let id = me.global_id();
+        let up = signup_body("play.example.org", &me, " Kozak ", "", 1_000);
+        assert_eq!(
+            (up["name"].as_str(), up["host"].as_str(), up["time"].as_i64()),
+            (Some("Kozak"), Some("play.example.org"), Some(1_000))
+        );
+        assert_eq!((up["global_id"].as_str(), &up["code"]), (Some(id.as_str()), &serde_json::Value::Null));
+        let message = crosscom_identity::signup_message("play.example.org", "Kozak", 1_000);
+        assert!(crosscom_identity::verify(&id, &message, up["signature"].as_str().unwrap()));
+        assert_eq!(signup_body("play.example.org", &me, "Kozak", " ABC ", 1_000)["code"], "ABC");
+
+        let login = login_body("play.example.org", &me, 1_000);
+        let message = crosscom_identity::login_message("play.example.org", 1_000);
+        assert!(crosscom_identity::verify(&id, &message, login["signature"].as_str().unwrap()));
+        assert_eq!(login["host"], "play.example.org");
     }
 
     #[test]
