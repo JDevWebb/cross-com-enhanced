@@ -4,6 +4,7 @@ members = [
   "client/net",
   "client/orbit",
   "client/uplay",
+  "identity",
   "launcher",
   "quazal",
   "quazal/quazal-macros",
