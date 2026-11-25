@@ -6,8 +6,9 @@
 //! games, and their packets open the way through both players' routers.
 //!
 //! A probe makes another player's game send to an address, so the server only asks it of
-//! players who joined a session with the caller, or host a match a search may offer (a player
-//! finds one and probes its host before joining), a few at a time, and only towards the caller:
+//! players who joined a session with the caller, host a match a search may offer (a player
+//! finds one and probes its host before joining), or host a room of the caller's squad (a
+//! squadmate looking at its party, `clans.rs`), a few at a time, and only towards the caller:
 //! the public address the server sees it at, or a private one when both players are behind
 //! that same public address (on one network).
 
@@ -44,6 +45,15 @@ const MAX_STATIONS: usize = 2;
 
 struct NatTraversal {
     sessions: Arc<Sessions>,
+    squads: Arc<crate::clans::Store>,
+    rooms: Arc<crate::clans::Rooms>,
+}
+
+impl NatTraversal {
+    /// Whether `host` hosts a room of `caller`'s squad (a squadmate looking at its party).
+    fn hosts_squad_room_for(&self, host: u32, caller: u32) -> bool {
+        self.rooms.hosted_by(host).is_some_and(|clan| self.squads.clan_of(caller).is_ok_and(|mine| mine == clan))
+    }
 }
 
 /// The caller's stations a plain request has probed: those it registered at the address the
@@ -123,8 +133,11 @@ impl NatTraversal {
             let Some(other) = target.user_id.filter(|&p| p != caller) else {
                 continue;
             };
-            if !self.sessions.share(caller, other) && !self.sessions.hosts_public(other) {
-                warn!(logger, "Not probing {other:#x} for {caller:#x}: not in a session together, nor hosting a public one");
+            if !self.sessions.share(caller, other) && !self.sessions.hosts_public(other) && !self.hosts_squad_room_for(other, caller) {
+                warn!(
+                    logger,
+                    "Not probing {other:#x} for {caller:#x}: not in a session together, nor hosting a public one or a room of its squad"
+                );
                 continue;
             }
             let address = *target.address();
@@ -188,8 +201,8 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
     }
 }
 
-pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>) -> Box<dyn Protocol<CI>> {
-    Box::new(NatTraversalProtocolServer::new(NatTraversal { sessions }))
+pub fn new_protocol<CI: 'static>(sessions: Arc<Sessions>, squads: Arc<crate::clans::Store>, rooms: Arc<crate::clans::Rooms>) -> Box<dyn Protocol<CI>> {
+    Box::new(NatTraversalProtocolServer::new(NatTraversal { sessions, squads, rooms }))
 }
 
 #[cfg(test)]

@@ -16,8 +16,10 @@
 //! 12 ChangePrivilege(role, mask)           -> result
 //! 13 GetCurUserClan()                      -> clan id (0: none)
 //! 14 GetMembers(clan id)                   -> list<Member>
-//! 15 JoinRoom(u32, name, bool, bool, bool) -> result
-//! 16 squad rooms                           -> list (none)
+//! 15 SetRoom(clan id, session, u8 room, u8 state, u8) -> result
+//! 16 GetRooms(u8 first, u8 count)          -> list<Room>    (Room: u8 room, u8 state, session)
+//! 17 JoinRoom(u8 room)                     -> nothing
+//! 18 SetRoomState(u32, u8, u8)             -> nothing
 //! 19 Leaderboard(u8, u32, u32)             -> list, u32, u32 (none yet)
 //! 20 SetProperty(clan id, list<Change>)    -> nothing   (Change: u32 value, u8 id, u8 how)
 //! 21 RemoveEvent(event id)                 -> result
@@ -35,10 +37,22 @@
 //! screen adds them), 6 to 12 wins per mode, 20 level. A change adds to the value (how 0), keeps
 //! the larger (3) or the smaller (4).
 //!
+//! Squad rooms: room 1 is Squad HQ (the first squadmate to open it hosts it), rooms 2 to 5 the
+//! "Squad Parties" 1 to 4 under Play Squad Quick Match. A squad member who opens one becomes its
+//! host, makes a game session for it, and tells the server with SetRoom: the squad, the room, the
+//! session as the game writes it (its own serialised session handle, kept as it came and never
+//! read here) and the room's state (0 open, 1 its match under way; 2 or 4 closed, with an empty
+//! session). Squadmates list the rooms with GetRooms ("Party N [Vacancy]"); choosing one, a game
+//! looks the session up itself and joins it, the server having its host probe them (`nat.rs`),
+//! then says so with JoinRoom. Rooms are kept in memory only, as they last no longer than their
+//! host's game: one room per host, cleared when the host sets an empty session, and left out of
+//! the list once the host is offline or no longer in the squad.
+//!
 //! Roles: 0 leader, 1 lieutenant, 2 sergeant, 3 recruit; lower is higher. A leader may leave
 //! only once someone else leads (the game then asks who, and hands over with ChangeRole), or
 //! as the last member, which ends the squad.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -60,6 +74,7 @@ use slog::info;
 use slog::Logger;
 
 use crate::accounts::Accounts;
+use crate::online::Online;
 
 /// The game's result codes (it shows a message for each).
 pub mod result {
@@ -677,6 +692,18 @@ fn put_str(out: &mut Vec<u8>, s: &str) {
     out.push(0);
 }
 
+/// A String of bytes kept as they came (a room's session), with its NUL.
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.is_empty() {
+        out.extend_from_slice(&[0, 0]);
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation)] // at most MAX_SESSION_BYTES
+    out.extend_from_slice(&((bytes.len() + 1) as u16).to_le_bytes());
+    out.extend_from_slice(bytes);
+    out.push(0);
+}
+
 fn put_time(out: &mut Vec<u8>, unix: i64) {
     out.extend_from_slice(&crate::fixed::packed_date_time(u64::try_from(unix).unwrap_or(0)).to_le_bytes());
 }
@@ -731,6 +758,15 @@ impl<'a> Params<'a> {
         String::from_utf8(text.to_vec()).map_err(|_| Error::ParsingError)
     }
 
+    /// A String's bytes as they are, without its NUL (a room's session).
+    fn bytes(&mut self) -> Result<Vec<u8>, Error> {
+        let len = usize::from(self.0.read_u16::<LittleEndian>().map_err(|_| Error::ParsingError)?);
+        let start = usize::try_from(self.0.position()).map_err(|_| Error::ParsingError)?;
+        let bytes = self.0.get_ref().get(start..start + len).ok_or(Error::ParsingError)?;
+        self.0.set_position((start + len) as u64);
+        Ok(bytes.strip_suffix(&[0]).unwrap_or(bytes).to_vec())
+    }
+
     fn ids(&mut self) -> Result<Vec<u32>, Error> {
         let n = self.u32()?;
         if n > MAX_ASKED {
@@ -740,14 +776,137 @@ impl<'a> Params<'a> {
     }
 }
 
+/// The most a room's session may take (the game's are well under this).
+const MAX_SESSION_BYTES: usize = 1024;
+/// Rooms a squad can have (the game shows four; it asks for up to ten).
+const MAX_ROOMS: u8 = 16;
+
+/// A squad room: who hosts it, its session as the game sent it, and its state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Room {
+    host: u32,
+    state: u8,
+    session: Vec<u8>,
+}
+
+/// The squads' rooms, by squad and room number. Shared with NAT traversal, which lets a room's
+/// host be probed for its squadmates (`nat.rs`).
+#[derive(Default)]
+pub struct Rooms(Mutex<HashMap<(u32, u8), Room>>);
+
+impl Rooms {
+    /// The squad whose room `host` hosts, if any.
+    pub fn hosted_by(&self, host: u32) -> Option<u32> {
+        self.lock().iter().find(|(_, r)| r.host == host).map(|((clan, _), _)| *clan)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(u32, u8), Room>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `host` opens `room` of `clan` with `session`, leaving any other room it held; an empty
+    /// session closes the host's room. Another host's room isn't taken over while it's listed.
+    fn set(&self, clan: u32, room: u8, host: u32, state: u8, session: Vec<u8>, still_there: impl Fn(u32) -> bool) -> bool {
+        let mut rooms = self.lock();
+        if let Some(other) = rooms.get(&(clan, room)) {
+            if other.host != host && !session.is_empty() && still_there(other.host) {
+                return false;
+            }
+        }
+        rooms.retain(|_, r| r.host != host);
+        if !session.is_empty() {
+            rooms.insert((clan, room), Room { host, state, session });
+        }
+        true
+    }
+
+    /// The rooms of `clan` numbered `first` to `first + count - 1` whose host is still there,
+    /// in room order; rooms whose host isn't are dropped.
+    fn list(&self, clan: u32, first: u8, count: u8, still_there: impl Fn(u32) -> bool) -> Vec<(u8, Room)> {
+        let mut rooms = self.lock();
+        rooms.retain(|_, r| still_there(r.host));
+        let last = u32::from(first) + u32::from(count);
+        let mut listed: Vec<(u8, Room)> = rooms
+            .iter()
+            .filter(|((c, n), _)| *c == clan && u32::from(*n) >= u32::from(first) && u32::from(*n) < last)
+            .map(|((_, n), r)| (*n, r.clone()))
+            .collect();
+        listed.sort_by_key(|(n, _)| *n);
+        listed
+    }
+}
+
 pub struct Clans {
     store: Arc<Store>,
     accounts: Arc<Accounts>,
+    online: Arc<Online>,
+    rooms: Arc<Rooms>,
 }
 
 impl Clans {
-    pub fn new(store: Arc<Store>, accounts: Arc<Accounts>) -> Self {
-        Self { store, accounts }
+    pub fn new(store: Arc<Store>, accounts: Arc<Accounts>, online: Arc<Online>, rooms: Arc<Rooms>) -> Self {
+        Self { store, accounts, online, rooms }
+    }
+
+    /// The squad room calls (15 to 18), logged; `None` for any other method.
+    fn room_call(&self, logger: &Logger, pid: u32, method: u32, p: &mut Params) -> Option<Result<Vec<u8>, Error>> {
+        let clan = || self.store.clan_of(pid).map_err(|_| Error::InternalError);
+        let still_there = |clan: u32| move |host: u32| self.online.is_online(host) && self.store.clan_of(host).is_ok_and(|c| c == clan);
+        let answer = match method {
+            15 => (|| {
+                let (asked, session, room, state, other) = (p.u32()?, p.bytes()?, p.u8()?, p.u8()?, p.u8()?);
+                let mine = clan()?;
+                let mut out = Vec::new();
+                if mine == 0 || asked != mine || room >= MAX_ROOMS || session.len() > MAX_SESSION_BYTES {
+                    info!(logger, "{pid:#x} can't set room {room} of squad {asked} (in squad {mine})");
+                    put_u32(&mut out, result::NOT_ALLOWED);
+                } else if self.rooms.set(mine, room, pid, state, session.clone(), still_there(mine)) {
+                    if session.is_empty() {
+                        info!(logger, "{pid:#x} left room {room} of squad {mine} (state {state}, {other})");
+                    } else {
+                        info!(
+                            logger,
+                            "{pid:#x} hosts room {room} of squad {mine} (state {state}, {other}; session {} bytes)",
+                            session.len()
+                        );
+                    }
+                    put_u32(&mut out, result::OK);
+                } else {
+                    info!(logger, "{pid:#x} can't take room {room} of squad {mine}: another member hosts it");
+                    put_u32(&mut out, result::NOT_ALLOWED);
+                }
+                Ok(out)
+            })(),
+            16 => (|| {
+                let (first, count) = (p.u8()?, p.u8()?);
+                let mine = clan()?;
+                let listed = if mine == 0 {
+                    Vec::new()
+                } else {
+                    self.rooms.list(mine, first, count, still_there(mine))
+                };
+                debug!(logger, "{pid:#x} lists rooms {first}+{count} of squad {mine}: {}", listed.len());
+                let mut out = Vec::new();
+                put_len(&mut out, listed.len());
+                for (n, room) in &listed {
+                    out.push(*n);
+                    out.push(room.state);
+                    put_bytes(&mut out, &room.session);
+                }
+                Ok(out)
+            })(),
+            17 => p.u8().map(|room| {
+                info!(logger, "{pid:#x} joins squad room {room}");
+                Vec::new()
+            }),
+            18 => (|| {
+                let (a, b, c) = (p.u32()?, p.u8()?, p.u8()?);
+                info!(logger, "{pid:#x} sets squad room state ({a}, {b}, {c})");
+                Ok(Vec::new())
+            })(),
+            _ => return None,
+        };
+        Some(answer)
     }
 
     fn name(&self, pid: u32) -> String {
@@ -826,10 +985,6 @@ impl Clans {
                     out.push(0);
                 }
             }
-            // The squad's room (where the Squad HQ screen puts its members): joining it
-            // succeeds; its list of rooms is empty.
-            15 => put_u32(&mut out, result::OK),
-            16 => put_len(&mut out, 0),
             19 => {
                 put_len(&mut out, 0);
                 put_u32(&mut out, 0);
@@ -844,7 +999,7 @@ impl Clans {
                 let changes = (0..n).map(|_| Ok((p.u32()?, p.u8()?, p.u8()?))).collect::<Result<Vec<_>, Error>>().map_err(bad)?;
                 self.store.change_properties(pid, clan, &changes)?;
             }
-            25 | 17 | 18 => {}
+            25 => {}
             21 => put_u32(&mut out, self.store.remove_event(pid, p.u32().map_err(bad)?)?),
             22 => {
                 let id = p.u32().map_err(bad)?;
@@ -921,10 +1076,10 @@ const NAMES: &[(u32, &str)] = &[
     (12, "ChangePrivilege"),
     (13, "GetCurUserClan"),
     (14, "GetMembers"),
-    (15, "JoinRoom"),
+    (15, "SetRoom"),
     (16, "GetRooms"),
-    (17, "Room17"),
-    (18, "Room18"),
+    (17, "JoinRoom"),
+    (18, "SetRoomState"),
     (19, "GetLeaderboard"),
     (20, "SetProperties"),
     (21, "RemoveEvent"),
@@ -961,6 +1116,9 @@ impl<CI> Protocol<CI> for Clans {
     ) -> Result<Vec<u8>, Error> {
         let pid = crate::ticket::player(ci)?;
         let mut params = Params::new(&request.parameters);
+        if let Some(answer) = self.room_call(logger, pid, request.method_id, &mut params) {
+            return answer;
+        }
         match self.answer(pid, request.method_id, &mut params) {
             Ok(Some(reply)) => {
                 debug!(logger, "Clans.{}: {} bytes", request.method_id, reply.len());
@@ -988,6 +1146,58 @@ impl<CI> Protocol<CI> for Clans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host opens a room; squadmates list it with its session as it came; moving to another
+    /// room, closing it, going offline or leaving the squad each take it off the list.
+    #[test]
+    fn squad_rooms_list_their_hosts_sessions() {
+        let rooms = Rooms::default();
+        let there = |_: u32| true;
+        assert!(rooms.set(7, 0, 0x100001, 1, b"session-a".to_vec(), there));
+        assert!(rooms.set(7, 2, 0x100003, 0, b"session-c".to_vec(), there));
+        assert!(rooms.set(8, 0, 0x100009, 1, b"other squad".to_vec(), there));
+        let listed = rooms.list(7, 0, 10, there);
+        assert_eq!(
+            listed.iter().map(|(n, r)| (*n, r.host, r.session.as_slice())).collect::<Vec<_>>(),
+            vec![(0, 0x100001, b"session-a".as_slice()), (2, 0x100003, b"session-c".as_slice()),]
+        );
+        assert_eq!(rooms.list(7, 1, 1, there), vec![], "only the rooms asked for");
+        assert_eq!(listed[0].1.state, 1);
+        assert_eq!(rooms.hosted_by(0x100003), Some(7), "the host's squad, for its probes");
+        assert_eq!(rooms.hosted_by(0x100004), None);
+
+        // The host moves to room 1: room 0 is free again.
+        assert!(rooms.set(7, 1, 0x100001, 1, b"session-a2".to_vec(), there));
+        assert_eq!(rooms.list(7, 0, 10, there).iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![1, 2]);
+        // An empty session closes the host's room.
+        assert!(rooms.set(7, 1, 0x100001, 1, Vec::new(), there));
+        assert_eq!(rooms.list(7, 0, 10, there).iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![2]);
+
+        // Another member can't take a room whose host is still there, but can once it's gone.
+        assert!(!rooms.set(7, 2, 0x100004, 0, b"session-d".to_vec(), there));
+        let gone = |host: u32| host != 0x100003;
+        assert!(rooms.set(7, 2, 0x100004, 0, b"session-d".to_vec(), gone));
+        assert_eq!(rooms.list(7, 0, 10, gone)[0].1.host, 0x100004);
+
+        // A host offline (or out of the squad) drops out of the list, and stays out.
+        assert_eq!(rooms.list(7, 0, 10, |host| host != 0x100004), vec![]);
+        assert_eq!(rooms.list(7, 0, 10, there), vec![]);
+        assert_eq!(rooms.list(8, 0, 10, there).len(), 1, "other squads untouched");
+    }
+
+    /// GetRooms' answer: a list of {u8 room, u8 state, String session}, the session's bytes as
+    /// they came with a NUL after them.
+    #[test]
+    fn a_room_goes_out_as_the_game_reads_it() {
+        let mut out = Vec::new();
+        put_len(&mut out, 1);
+        out.push(3);
+        out.push(1);
+        put_bytes(&mut out, &[0xab, 0x00, 0xcd]);
+        assert_eq!(out, [1, 0, 0, 0, 3, 1, 4, 0, 0xab, 0x00, 0xcd, 0]);
+        let mut p = Params::new(&out[6..]);
+        assert_eq!(p.bytes().unwrap(), vec![0xab, 0x00, 0xcd], "read back as sent");
+    }
 
     /// Whatever a member sends, a squad's properties stay within what matches could bring.
     #[test]

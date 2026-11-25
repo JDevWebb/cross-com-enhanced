@@ -359,9 +359,12 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
             }
         }),
         spawn("secure", logger.clone(), move |logger| {
+            let online_for_clans = Arc::clone(&online);
+            // The squads' rooms: kept by the squads, read by NAT traversal.
+            let rooms = Arc::new(clans::Rooms::default());
             run_server(&logger, &secure, Some(online), |handler| {
                 handler.register_protocol(secure::new_protocol(Arc::clone(&sessions)));
-                handler.register_protocol(nat::new_protocol(Arc::clone(&sessions)));
+                handler.register_protocol(nat::new_protocol(Arc::clone(&sessions), Arc::clone(&clans), Arc::clone(&rooms)));
                 handler.register_protocol(game_session::new_protocol(
                     Arc::clone(&sessions),
                     Arc::clone(&accounts),
@@ -378,7 +381,7 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
                 handler.register_protocol(Box::new(dares::GameEvents::new(Arc::clone(&dares), Arc::clone(&friends))));
                 handler.register_protocol(Box::new(dares::OverlordDare::new(Arc::clone(&dares))));
                 handler.register_protocol(Box::new(news::OverlordNews::new(news.clone())));
-                handler.register_protocol(Box::new(clans::Clans::new(Arc::clone(&clans), Arc::clone(&accounts))));
+                handler.register_protocol(Box::new(clans::Clans::new(Arc::clone(&clans), Arc::clone(&accounts), online_for_clans, Arc::clone(&rooms))));
             })
         }),
     ];
