@@ -232,7 +232,8 @@ export component SettingsScreen inherits Rectangle {
                         accessible-role: AccessibleRole.text;
                     }
                     Caps {
-                        text: root.options-said != "" && root.options-failed ? "" : "SAVED AS YOU CHANGE IT";
+                        // Only where the switches are: Server and Identity act on a button.
+                        text: (root.section == "game" || root.section == "network" || root.section == "logs") && !(root.options-said != "" && root.options-failed) ? "SAVED AS YOU CHANGE IT" : "";
                         vertical-alignment: bottom;
                     }
                 }
@@ -289,7 +290,7 @@ export component SettingsScreen inherits Rectangle {
                     GroupLabel { text: "Undo"; }
                     SettingRow {
                         title: "Restore the game's own files";
-                        sub: "Takes Cross-Com out of the game and puts back the two files it replaced. The setup shows again the next time you open the launcher.";
+                        sub: "Takes Cross-Com out of the game and puts back the two files it replaced. Play then shows the setup, to put it back.";
                         if !root.confirming: Btn {
                             text: "Restore";
                             enabled: root.info.game-dir != "" && root.info.client != "no";

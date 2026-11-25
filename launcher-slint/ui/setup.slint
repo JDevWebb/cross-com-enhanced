@@ -368,7 +368,7 @@ export component SetupScreen inherits Rectangle {
                             Para { text: "Each is set as we recommend. Settings has all of them later."; }
                             SwitchLine { text: "Skip the intro videos"; sub: "Straight to the main menu."; checked <=> root.skip-intro; enabled: !root.busy; }
                             SwitchLine { text: "Use DirectX 9"; sub: "Only for older graphics cards; DirectX 11 otherwise."; checked <=> root.dx9; enabled: !root.busy; }
-                            SwitchLine { text: "In-game overlay"; sub: "The server, your connection and who's online, over the game (F5)."; checked <=> root.overlay; enabled: !root.busy; }
+                            SwitchLine { text: "In-game overlay"; sub: "The server, your connection and who's online, over the game."; checked <=> root.overlay; enabled: !root.busy; }
                             SwitchLine { text: "Ask my router to forward the game's port"; sub: "UPnP, PCP or NAT-PMP while the game runs, so other players reach you directly."; checked <=> root.port-forwarding; enabled: !root.busy; }
                             SwitchLine { text: "Send game logs after each game"; sub: "Helps fix problems. Your Windows user name and sign-in token are removed."; checked <=> root.send-logs; enabled: !root.busy; }
                         }

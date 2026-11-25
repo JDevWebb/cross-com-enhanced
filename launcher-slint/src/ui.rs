@@ -982,14 +982,82 @@ pub fn run() -> Result<(), slint::PlatformError> {
     w.set_loaded(true);
     crate::update::start(&w);
     // Logs left from earlier games (one that crashed, or was started without the launcher) go
-    // as the launcher starts.
-    send_logs(&w, &l, None);
-    w.run()
+    // as the launcher starts; with no game yet there are none.
+    if l.game_dir().is_some() {
+        send_logs(&w, &l, None);
+    }
+    w.show()?;
+    // Once the event loop has made the window and Windows has placed it.
+    let weak = w.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(50), move || {
+        if let Some(w) = weak.upgrade() {
+            fit_to_screen(&w);
+        }
+    });
+    slint::run_event_loop()?;
+    w.hide()
+}
+
+/// Room left under the window for the taskbar, and round it.
+const TASKBAR: f64 = 64.0;
+const EDGE: f64 = 16.0;
+
+/// Fits the window to the screen it opened on: smaller when the screen is (a laptop at 150 %
+/// scaling has 720 points of height), and moved up when Windows placed it running under the
+/// taskbar; otherwise Play and the status bar are hidden there.
+fn fit_to_screen(w: &AppWindow) {
+    use slint::winit_030::WinitWindowAccessor as _;
+    let fit = w.window().with_winit_window(|win| {
+        let monitor = win.current_monitor()?;
+        let scale = monitor.scale_factor();
+        let screen = monitor.size().to_logical::<f64>(scale);
+        let at = monitor.position().to_logical::<f64>(scale);
+        let size = win.outer_size().to_logical::<f64>(scale);
+        let now = win.outer_position().ok()?.to_logical::<f64>(scale);
+        let resized = fitted((size.width, size.height), (screen.width, screen.height));
+        let (width, height) = resized.unwrap_or((size.width, size.height));
+        let below = now.y + height > at.y + screen.height - TASKBAR;
+        let beside = now.x + width > at.x + screen.width;
+        if resized.is_none() && !below && !beside {
+            return None;
+        }
+        let x = at.x + ((screen.width - width) / 2.0).max(0.0);
+        let y = at.y + ((screen.height - TASKBAR - height) / 2.0).max(0.0);
+        Some((width, height, x, y))
+    });
+    if let Some(Some((width, height, x, y))) = fit {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            w.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+            w.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+        }
+    }
+}
+
+/// The window's size fitted to a screen's (in points), keeping clear of the taskbar and the
+/// edges; `None` when it fits already. Never below the window's least (940 by 600).
+fn fitted((width, height): (f64, f64), (screen_width, screen_height): (f64, f64)) -> Option<(f64, f64)> {
+    let room = (screen_width - 2.0 * EDGE, screen_height - TASKBAR - EDGE);
+    if width <= room.0 && height <= room.1 {
+        return None;
+    }
+    Some((width.min(room.0).max(940.0), height.min(room.1).max(600.0)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fits_the_window_to_a_small_screen() {
+        // A 1920 by 1080 screen at 100 %: room to spare.
+        assert_eq!(fitted((1180.0, 780.0), (1920.0, 1080.0)), None);
+        // At 150 %, 1280 by 720 points: shorter, as wide.
+        assert_eq!(fitted((1180.0, 780.0), (1280.0, 720.0)), Some((1180.0, 640.0)));
+        // The Surface at 200 %, 1024 by 768: both, never below the least.
+        assert_eq!(fitted((1180.0, 780.0), (1024.0, 768.0)), Some((992.0, 688.0)));
+        assert_eq!(fitted((1180.0, 780.0), (800.0, 600.0)), Some((940.0, 600.0)));
+    }
 
     #[test]
     fn takes_the_accounts_initial() {
