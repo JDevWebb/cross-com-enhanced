@@ -6,7 +6,8 @@
 //! crosscom-testbot SERVER_IP NAME PASSWORD [HTTP_PORT] [--signup [CODE]] [--host SECONDS | --join | --friend NAME SECONDS | --answer SECONDS | --reach | --keep SECONDS HOST]
 //! ```
 //!
-//! With `--signup`, it first makes the account over HTTP, as the launcher does (with the server's
+//! With `--signup`, it first makes the account over HTTP for a new identity, as the launcher does,
+//! and signs in with the game token it gets instead of PASSWORD (with the server's
 //! sign-up code, if it has one).
 //!
 //! With `--host`, it then hosts a quick match as the game does and waits that long for a player
@@ -100,11 +101,22 @@ async fn online_config(server: IpAddr, port: u16) -> Result<String> {
     Ok(body.to_owned())
 }
 
-/// Makes an account over HTTP, as the launcher does: the status line and the body.
-async fn sign_up(server: IpAddr, port: u16, name: &str, password: &str, code: Option<&str>) -> Result<(String, String)> {
+/// Makes an account over HTTP for a new identity, as the launcher does (signed for the server
+/// as `server`, the Host it's asked by): the status line and the body.
+async fn sign_up(server: IpAddr, port: u16, name: &str, code: Option<&str>) -> Result<(String, String)> {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
-    let body = serde_json::json!({ "name": name, "password": password, "code": code }).to_string();
+    let id = crosscom_identity::Identity::generate();
+    let (host, time) = (server.to_string(), crosscom_identity::now());
+    let body = serde_json::json!({
+        "name": name,
+        "global_id": id.global_id(),
+        "time": time,
+        "host": host,
+        "signature": id.sign_signup(&host, name, time),
+        "code": code,
+    })
+    .to_string();
     let mut stream = tokio::net::TcpStream::connect((server, port)).await?;
     let request = format!(
         "POST /accounts HTTP/1.1\r\nHost: {server}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -226,13 +238,19 @@ async fn main() -> Result<()> {
         .and_then(|p| p.parse::<u16>().ok())
         .ok_or_else(|| eyre!("no SandboxUrl in the online config"))?;
     println!("ok   online config: sign in on port {auth_port}");
+    // With --signup, a new identity makes the account, and the game token it answers is what
+    // the bot signs in with (as the launcher gives the game), in place of PASSWORD.
+    let mut token = None;
     if let Some(code) = signup {
-        let (status, body) = sign_up(server, http_port, name, password, code.as_deref()).await?;
+        let (status, body) = sign_up(server, http_port, name, code.as_deref()).await?;
         if !status.starts_with("HTTP/1.1 201") {
             bail!("sign-up refused: {status} {body}");
         }
-        println!("ok   signed up as {name}: {body}");
+        let answer: serde_json::Value = serde_json::from_str(&body)?;
+        token = answer["token"].as_str().map(str::to_owned);
+        println!("ok   signed up as {name} with a new identity");
     }
+    let password = token.as_deref().unwrap_or(password);
     let auth = SocketAddr::new(server, auth_port);
 
     if sign_in(auth, name, "not-the-password").await.is_ok() {

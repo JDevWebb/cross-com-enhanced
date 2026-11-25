@@ -1,9 +1,17 @@
-//! Player accounts, in SQLite. Passwords are kept as Argon2 hashes.
+//! Player accounts, in SQLite.
+//!
+//! **Players have no passwords.** A player's account belongs to their identity
+//! (`crosscom_identity`): an Ed25519 key their launcher keeps, whose public half is the account's
+//! global id. The launcher makes the account by signing its name ([`Accounts::add_identity`], from
+//! `signup`) and signs in by signing the server's name and the time (`api`'s key login, which
+//! [`Accounts::use_key_login`] lets through once per signature). Accounts made by the server's
+//! operator (`crosscom-server add-account`: test players, bots) have a password instead, kept as
+//! an Argon2 hash; an identity's account has none (an empty hash, which nothing matches).
 //!
 //! **Game tokens.** The game sends its sign-in secret inside the Quazal protocol, whose encryption
 //! uses a key every copy of the game shares: anyone who can see a player's traffic can read it. So
-//! the launcher doesn't give the game the player's password: it signs in over HTTPS
-//! (`/api/login`, the password only), gets a game token (`cct_` and 28 random letters and digits,
+//! the launcher doesn't give the game a password: it signs in over HTTPS with the player's
+//! identity (`/api/key-login`), gets a game token (`cct_` and 28 random letters and digits,
 //! about 166 bits), and writes that into the game's settings instead. The game signs in with the
 //! token (`verify` takes a token or the password); a token seen on the wire is good only for
 //! this game on this server, and the player's password, which they may use elsewhere, never leaves
@@ -49,6 +57,9 @@ pub enum Error {
     InvalidName,
     InvalidPassword,
     Hash,
+    /// The identity has an account already (its name).
+    IdentityTaken(String),
+    InvalidIdentity,
 }
 
 impl std::fmt::Display for Error {
@@ -59,6 +70,8 @@ impl std::fmt::Display for Error {
             Error::InvalidName => write!(f, "names are 1 to {MAX_NAME_LEN} letters, digits, '-', '_' or '.'"),
             Error::InvalidPassword => write!(f, "passwords are 1 to {MAX_PASSWORD_LEN} characters"),
             Error::Hash => write!(f, "couldn't hash the password"),
+            Error::IdentityTaken(name) => write!(f, "this identity has an account here already: {name}"),
+            Error::InvalidIdentity => write!(f, "that isn't an identity"),
         }
     }
 }
@@ -95,6 +108,20 @@ impl Accounts {
             );
             CREATE INDEX IF NOT EXISTS game_tokens_pid ON game_tokens (pid);",
         )?;
+        // The identity an account belongs to, and the time of its last key sign-in (each
+        // signature goes through once): added to a database from before identities.
+        let columns: Vec<String> = {
+            let mut query = db.prepare("SELECT name FROM pragma_table_info('accounts')")?;
+            let rows = query.query_map([], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        if !columns.iter().any(|c| c == "global_id") {
+            db.execute_batch("ALTER TABLE accounts ADD COLUMN global_id TEXT;")?;
+        }
+        if !columns.iter().any(|c| c == "last_key_login") {
+            db.execute_batch("ALTER TABLE accounts ADD COLUMN last_key_login INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS accounts_global_id ON accounts (global_id) WHERE global_id IS NOT NULL;")?;
         Ok(Self { db: Mutex::new(db) })
     }
 
@@ -117,6 +144,46 @@ impl Accounts {
         let next: u32 = db.query_row("SELECT COALESCE(MAX(pid) + 1, ?1) FROM accounts", [FIRST_PID], |r| r.get(0))?;
         db.execute("INSERT INTO accounts (pid, name, password_hash) VALUES (?1, ?2, ?3)", params![next, name, hash])?;
         Ok(next)
+    }
+
+    /// Makes the account `name` for the identity `global_id` (no password: the identity signs in);
+    /// its PID.
+    pub fn add_identity(&self, name: &str, global_id: &str) -> Result<u32, Error> {
+        if !valid_name(name) {
+            return Err(Error::InvalidName);
+        }
+        if !crosscom_identity::is_global_id(global_id) {
+            return Err(Error::InvalidIdentity);
+        }
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let theirs: Option<String> = db.query_row("SELECT name FROM accounts WHERE global_id = ?1", [global_id], |r| r.get(0)).optional()?;
+        if let Some(name) = theirs {
+            return Err(Error::IdentityTaken(name));
+        }
+        if db.query_row("SELECT 1 FROM accounts WHERE name = ?1", [name], |_| Ok(())).optional()?.is_some() {
+            return Err(Error::NameTaken);
+        }
+        let next: u32 = db.query_row("SELECT COALESCE(MAX(pid) + 1, ?1) FROM accounts", [FIRST_PID], |r| r.get(0))?;
+        db.execute(
+            "INSERT INTO accounts (pid, name, password_hash, global_id) VALUES (?1, ?2, '', ?3)",
+            params![next, name, global_id],
+        )?;
+        Ok(next)
+    }
+
+    /// The account belonging to the identity `global_id`: its PID and name.
+    pub fn by_identity(&self, global_id: &str) -> Result<Option<(u32, String)>, Error> {
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(db
+            .query_row("SELECT pid, name FROM accounts WHERE global_id = ?1", [global_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?)
+    }
+
+    /// Notes a key sign-in to `pid` signed at `time`: false (and nothing changed) unless it's
+    /// later than the last one, so a signature, seen once, can't sign anyone in again.
+    pub fn use_key_login(&self, pid: u32, time: i64) -> Result<bool, Error> {
+        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(db.execute("UPDATE accounts SET last_key_login = ?2 WHERE pid = ?1 AND last_key_login < ?2", params![pid, time])? == 1)
     }
 
     /// The name of the account with this PID.

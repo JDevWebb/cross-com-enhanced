@@ -5,6 +5,7 @@ edition = "2021"
 description = "Signs in to a Cross-Com server the way the game does, to test it without the game"
 
 [dependencies]
+crosscom-identity = { path = "../../identity" }
 eyre = { workspace = true }
 log = { workspace = true }
 # The client's side of reaching players (--reach).

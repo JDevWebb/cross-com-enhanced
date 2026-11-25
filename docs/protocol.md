@@ -21,7 +21,7 @@ The game uses Ubisoft's online SDK, built on Quazal Rendez-Vous: the same family
 
 ## 3. Signing in
 
-1. The game connects to the **auth server** and calls `TicketGranting.LoginEx` (protocol 10, method 2). Its extra data is a `UbiAuthenticationLoginCustomData { userName, onlineKey, password }`: the Ubisoft account name, the game's CD key and the password, which the game gets from the Orbit library (section 6).
+1. The game connects to the **auth server** and calls `TicketGranting.LoginEx` (protocol 10, method 2). Its extra data is a `UbiAuthenticationLoginCustomData { userName, onlineKey, password }`: the Ubisoft account name, the game's CD key and the password, which the game gets from the Orbit library (section 6). Cross-Com's launcher puts a game token there, not a password: players' accounts belong to their identity, and the token is what the server answered when the launcher signed in with it.
 2. A built-in tracking user signs in with plain `TicketGranting.Login` (method 1) as `Tracking`.
 3. The server answers with the player's PID, a Kerberos ticket, and `RVConnectionData`, whose station URL is the **secure server**.
 4. `TicketGranting.RequestTicket` (method 3) issues the ticket for the secure server. The ticket key is MD5 applied `65000 + (pid % 1024)` times to the password (`UbiDummyPwd` for players), as in `quazal/src/kerberos.rs`.

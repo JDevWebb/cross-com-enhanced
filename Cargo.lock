@@ -421,6 +421,7 @@ dependencies = [
  "argon2",
  "byteorder",
  "crosscom-client-net",
+ "crosscom-identity",
  "grfs_protocols",
  "quazal",
  "rand",
@@ -440,6 +441,7 @@ name = "crosscom-testbot"
 version = "0.1.0"
 dependencies = [
  "crosscom-client-net",
+ "crosscom-identity",
  "eyre",
  "grfs_protocols",
  "log",

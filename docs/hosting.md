@@ -62,12 +62,11 @@ over the file.
 
 ## HTTPS with Caddy
 
-The launcher and the client DLL use the server's API over HTTPS: passwords when players sign in
-or make an account, players' logs, the client's router reports, and the overlay's reads. They
-fall back to plain HTTP only for a server set up by a private IP address (`10.x`, `172.16-31.x`,
-`192.168.x`, `100.64-127.x` as Tailscale uses, `fc00::/7`, link-local, or this machine) where
-nothing answers on port 443 at all; the launcher tells the player their password went
-unencrypted. A server set up by name or by a public address is only spoken to over HTTPS,
+The launcher and the client DLL use the server's API over HTTPS: players signing in and making
+accounts (which hands back the game token the game signs in with), players' logs, the client's
+router reports, and the overlay's reads. They fall back to plain HTTP only for a server set up by
+a private IP address (`10.x`, `172.16-31.x`, `192.168.x`, `100.64-127.x` as Tailscale uses,
+`fc00::/7`, link-local, or this machine) where nothing answers on port 443 at all. A server set up by name or by a public address is only spoken to over HTTPS,
 whatever its name points at, and so is one whose HTTPS answers but fails (a certificate that
 isn't valid): they refuse and say the server needs HTTPS. So a server on the internet needs
 HTTPS (a domain and Caddy, below), and a LAN or VPN server without a domain is set up in the
@@ -95,10 +94,10 @@ What stays on plain HTTP, on port 80, and why:
 
 - `GET /OnlineConfigService.svc/GetOnlineConfig`: the game asks for it there and can't use HTTPS.
 - `GET /api/...` (the server's info, news and other read-only answers), for websites and tools
-  that read them; Cross-Com's own launcher and overlay read them over HTTPS. None carries a
-  password.
+  that read them; Cross-Com's own launcher and overlay read them over HTTPS. None carries
+  anything secret.
 
-Everything else on port 80, notably `POST /accounts`, `POST /api/login`, `POST /api/logs` and the
+Everything else on port 80, notably `POST /accounts`, `POST /api/key-login`, `POST /api/logs` and the
 router reports (`POST /api/forward`, `/api/reach`), is redirected to
 `https://` the domain. Certificates' challenges are answered on port 80 too. The UDP ports aren't
 proxied; the game's own sign-in goes there as before.
@@ -106,7 +105,7 @@ proxied; the game's own sign-in goes there as before.
 Caddy's address on the compose network is fixed (`172.31.80.10`), and the server trusts it alone
 (`CROSSCOM_TRUSTED_PROXIES`): from it, the server counts each request as coming from the rightmost
 `X-Forwarded-For` address, so the sign-in and sign-up limits count each player rather than Caddy,
-and it refuses passwords unless `X-Forwarded-Proto` says HTTPS. From any other address those
+and it refuses sign-ins and sign-ups unless `X-Forwarded-Proto` says HTTPS. From any other address those
 headers are ignored. If `172.31.80.0/24` is already used on the machine, change the subnet,
 Caddy's address and `CROSSCOM_TRUSTED_PROXIES` in `compose.https.yaml` together.
 
@@ -206,10 +205,31 @@ Messages. The game takes up to 14. With no `news.toml`, players see a short welc
 
 ## Accounts
 
-Each player needs an account: a name (letters, digits, `-`, `_`, `.`; up to 32) and a password
-(up to 79 characters). The name is what others see in game.
+**Players have no passwords.** Each player's launcher makes an identity the first time it runs: an
+Ed25519 key it keeps (encrypted for the Windows user), whose public half is the player's global
+id. A player's account on a server belongs to their identity: the launcher makes it by signing its
+name, and signs in by signing the server's name and the time, and the server answers a game token
+that the launcher gives the game in place of a password (the game's own sign-in is readable on the
+wire, so the token is good for this game on this server and nothing else). A player moves to
+another PC by moving their identity (the launcher's Settings). A name is letters, digits, `-`,
+`_` and `.`, up to 32; it's what others see in game.
 
-**Made by you:**
+**Made by players**, when sign-up is on: the launcher does it, as `POST /accounts` with
+`{"name", "global_id", "time", "host", "signature", "code"}`, the signature the identity's over the
+name, the server's name as the player set it up (it must be the name the request reached this
+server by) and the time (within 5 minutes of the server's clock). It answers `201` with the
+account's ID, name and a game token, or an error with `{"error": "..."}`: `403` without the right
+code, `401` for a signature that doesn't match, `409` if the name is taken or the identity has an
+account already (saying which), `400` for a name the game can't use or a time that's off, `429`
+after too many tries (10 a day from one address; 200 sign-ups an hour in all, counting only those
+with the right code).
+
+If you leave sign-up open without a code, anyone who can reach the server can make accounts. The
+server refuses a code shorter than 12 characters; make it random (`openssl rand -base64 12`), not a
+word.
+
+**Made by you** (test players, bots): these have a password instead, which the game signs in with
+(set it as `password` in that copy's `crosscom.toml`; the launcher only makes identity accounts):
 
 ```sh
 docker compose -f docker/compose.yaml exec server /app/crosscom-server \
@@ -224,25 +244,6 @@ PASSWORD`) still works, but it's then in your shell's history and, while it runs
 process list.
 
 (Without Docker: `crosscom-server --config crosscom-server.toml add-account NAME`.)
-
-**Made by players**, when sign-up is on: the launcher does it, or by hand:
-
-```sh
-curl -X POST http://SERVER/accounts \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "Kozak", "password": "their-password", "code": "the-signup-code"}'
-```
-
-It answers `201` with the account's ID, or an error with `{"error": "..."}`: `403` without the
-right code, `409` if the name is taken, `400` for a name or password the game can't use, `429`
-after too many tries (10 a day from one address; 200 sign-ups an hour in all, counting only
-those with the right code).
-
-Without [HTTPS](#https-with-caddy), sign-up goes over plain HTTP and passwords cross the network
-unencrypted; the launcher only does that with a server set up by a private IP address. With it, use
-`https://DOMAIN/accounts`. Either way, players should use a password they use nowhere else. If you leave sign-up
-open without a code, anyone who can reach the server can make accounts. The server refuses a code
-shorter than 12 characters; make it random (`openssl rand -base64 12`), not a word.
 
 ## The launcher's API
 
@@ -264,7 +265,7 @@ when an address reaches another game's server (on a machine that hosts both, see
 sign-in until their game disconnects, or a minute after it stops answering. `udp_ports` are the
 sign-in ports, which clients' connection tests ask (see [Connection records](#connection-records)).
 
-The `POST`s (`/api/login`, `/accounts`, the router reports) take JSON only, sent as
+The `POST`s (`/api/key-login`, `/accounts`, the router reports) take JSON only, sent as
 `Content-Type: application/json` (`415` otherwise), and none from a web page: one carrying an
 `Origin` header, or a browser's `Sec-Fetch-Site` other than `same-origin` or `none`, is refused
 (`403`). Otherwise any website a player opened could have their browser post here in their
@@ -272,10 +273,13 @@ name; a script, a bot or `curl` sends neither header. The HTTP side answers 64 c
 once, 4 from one address (behind Caddy, from one player), keeping the last 8 for the game's
 online config.
 
-`POST /api/login` with `{"name": "Kozak", "password": "their-password"}` checks an account:
-`200 {"pid": ...}` when it matches, `401 {"error": "wrong name or password"}` when it doesn't.
+`POST /api/key-login` with `{"global_id", "time", "host", "signature"}` signs a player's identity
+in (the signature over the server's name, as the request reached it, and the time): `200 {"pid":
+..., "name": ..., "token": ...}` with a new game token, `404` when the identity has no account here
+(only its holder can learn that), `401` when the signature doesn't match, was made for another
+server, or was used already (each goes through once), `400` for a time more than 5 minutes off.
 Failed tries count with the game's own sign-in: after 10 in 15 minutes from one address, or for
-one name, it answers `429`. Like sign-up, it goes over HTTPS when the server has it; through a
+one identity, it answers `429`. Like sign-up, it goes over HTTPS when the server has it; through a
 trusted proxy, both answer `403` to a request that didn't come over HTTPS.
 
 `GET /api/leaderboard?mode=conflict` ranks every player who has played that mode (`all`,
@@ -303,16 +307,16 @@ sends the earlier runs itself, over HTTPS, a little after it signs in. Each run 
 it's then renamed `*.sent.log`, and the player keeps it.
 
 **What's taken out first.** Before a log leaves the PC, the client takes out the Windows user
-name (wherever it appears, and the folder name in `C:\Users\<name>`) and the account's password,
-should either be in it; both become `<user>` and `<password>`. The account name stays: the server
+name (wherever it appears, and the folder name in `C:\Users\<name>`) and what the game signs in
+with (its game token, or an operator account's password), should either be in it; both become
+`<user>` and `<password>`. The account name stays: the server
 knows it. A log over 2 MiB is cut to its first 256 KiB and its last 1.75 MiB. The copies on the
 player's PC aren't changed.
 
 **Who may send.** `POST /api/logs` is only taken from an address the account it names
 (`X-Crosscom-Account`) signed in to the game from in the last 24 hours (IPv4 exactly, IPv6 by its
-/64; behind Caddy, the player's own address), otherwise `403`. It isn't a password check: the
-game's own DLL sends logs, and it doesn't hold the player's password for it (the game has it);
-where the player plays from stands in for one, so strangers can't fill your disk. Through Caddy
+/64; behind Caddy, the player's own address), otherwise `403`. Where the player plays from stands
+in for a sign-in, so strangers can't fill your disk. Through Caddy
 it's only taken over HTTPS (`403` otherwise). On
 top of that: 20 an hour from one address (`429`), 4 MiB at most (`413`, refused from the
 `Content-Length` before the body is read), 4 at once in all and 2 from one account, each given 10
@@ -348,8 +352,8 @@ server after each game") or with `send_logs = false` in `crosscom.toml`.
 
 **Tell your players.** Something like: "After each game, your Cross-Com client sends its log to
 this server so we can fix problems. It says what the client did (signing in, errors), your
-account name, your Windows version and your IP address; your Windows user name and your password
-are taken out first. Logs are kept for 30 days and only the server's hosts read them. Turn it off
+account name, your Windows version and your IP address; your Windows user name and your sign-in
+token are taken out first. Logs are kept for 30 days and only the server's hosts read them. Turn it off
 in the launcher's Settings."
 
 ## Connection records
@@ -470,8 +474,8 @@ router report."
 `crosscom-testbot` signs in the way the game does and checks each step:
 
 ```sh
-cargo run -p crosscom-testbot -- SERVER_ADDRESS NAME PASSWORD
-cargo run -p crosscom-testbot -- SERVER_ADDRESS NEWNAME PASSWORD --signup CODE   # sign-up too
+cargo run -p crosscom-testbot -- SERVER_ADDRESS NAME PASSWORD             # an account you made
+cargo run -p crosscom-testbot -- SERVER_ADDRESS NEWNAME x --signup CODE    # a new identity's account
 ```
 
 Two bots, or a bot and the game, test matchmaking: one runs with `--host 60`, the other with
