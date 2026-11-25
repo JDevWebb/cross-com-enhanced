@@ -81,6 +81,11 @@ impl Online {
         self.pids().remove(&pid);
     }
 
+    /// Whether the player has a connection open now.
+    pub fn is_online(&self, pid: u32) -> bool {
+        self.pids().contains(&pid)
+    }
+
     pub fn count(&self) -> usize {
         self.pids().len()
     }

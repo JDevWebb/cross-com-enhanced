@@ -29,6 +29,8 @@ mod orbit;
 mod overlay;
 #[cfg(windows)]
 mod quick_match;
+#[cfg(all(windows, target_arch = "x86"))]
+mod squad_minimum;
 #[cfg(windows)]
 mod video;
 
@@ -175,6 +177,8 @@ fn start() {
         video::install();
     }
     if let Some(players) = CONFIG.get().and_then(|c| c.quick_match_min_players) {
+        #[cfg(target_arch = "x86")]
+        squad_minimum::install(players);
         quick_match::install(players);
     }
     logs::start(dir, config());

@@ -96,6 +96,17 @@ pub const PACKS: u32 = 115;
 /// for it. A host may make its lobbies smaller (the overlay's most players): such a lobby is offered
 /// to searches for its mode's size too.
 pub const SIZE: u32 = 114;
+/// The kind of match (2 Quick Match, 3 squad match), as a session has it and a search asks.
+pub const MATCH_TYPE: u32 = 101;
+pub const SQUAD_MATCH: u32 = 3;
+/// A squad match lobby's squad (its host's squad id), and the squad it's matched against (0 none
+/// yet). A squad match search sends its own squad as `OPPONENT`, meaning "against another squad".
+/// It also sends 110 = 5 and 111 = 0, always: the game's one squad search (AI library 0x10475a72,
+/// through exe binding 0xc04 to 0xa5abe0) passes them as constants, and no session ever has them,
+/// so they're matchmaking hints for the server that made them, not attributes to compare.
+pub const SQUAD: u32 = 106;
+pub const OPPONENT: u32 = 108;
+const SQUAD_SEARCH_RANGE: [u32; 2] = [110, 111];
 
 impl Session {
     pub fn attribute(&self, id: u32) -> Option<u32> {
@@ -121,7 +132,11 @@ impl Session {
         if full {
             return false;
         }
+        let squad_search = parameters.contains(&(MATCH_TYPE, SQUAD_MATCH));
         parameters.iter().all(|&(id, value)| match id {
+            // Another squad's lobby, not yet matched against a squad.
+            OPPONENT if squad_search => self.attribute(SQUAD).is_some_and(|squad| squad != value) && self.attribute(OPPONENT).unwrap_or(0) == 0,
+            _ if squad_search && SQUAD_SEARCH_RANGE.contains(&id) => true,
             PUBLIC_SLOTS => free >= value.max(1),
             PACKS => self.attribute(id).is_some_and(|lobby| lobby & !value == 0),
             SIZE => self.attribute(id).is_some_and(|lobby| lobby <= value),
@@ -1264,6 +1279,44 @@ mod tests {
         assert!(offered(&sessions));
         sessions.join(15, small).unwrap();
         assert!(!offered(&sessions));
+    }
+
+    /// What the game sends for squad matches: the lobby a squad's leader makes (squad 1 here),
+    /// and another squad's search, which sends its own squad (2) as the opponent.
+    const SQUAD_LOBBY: [(u32, u32); 15] = [
+        (7, 0),
+        (3, 24),
+        (4, 0),
+        (100, 1),
+        (101, 3),
+        (116, 2),
+        (105, 16),
+        (115, 3),
+        (103, 0),
+        (107, 2),
+        (108, 0),
+        (106, 1),
+        (112, 0),
+        (117, 0),
+        (102, 3),
+    ];
+    const SQUAD_SEARCH: [(u32, u32); 10] = [(3, 12), (100, 1), (101, 3), (105, 16), (103, 0), (115, 3), (116, 2), (108, 2), (110, 5), (111, 0)];
+
+    #[test]
+    fn a_squad_search_finds_another_squads_lobby() {
+        let sessions = Sessions::default();
+        let lobby = sessions.create(10, 1, &SQUAD_LOBBY).unwrap();
+        let found = |search: &[(u32, u32)]| sessions.find(1, search, 10).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(found(&SQUAD_SEARCH), vec![lobby], "squad 2 finds squad 1's lobby");
+        let mut own = SQUAD_SEARCH;
+        own[7] = (108, 1);
+        assert!(found(&own).is_empty(), "not its own squad's");
+        assert!(found(&SEARCH).is_empty(), "nor does a Quick Match search");
+        // Once matched against a squad, it's offered no more.
+        let mut matched = SQUAD_LOBBY;
+        matched[10] = (108, 3);
+        sessions.create(11, 1, &matched).unwrap();
+        assert_eq!(found(&SQUAD_SEARCH), vec![lobby]);
     }
 
     #[test]
