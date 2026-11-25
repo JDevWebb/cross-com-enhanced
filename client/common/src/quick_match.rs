@@ -30,6 +30,23 @@ const JOIN_RULE: Pattern = "80 7C 24 37 01 75 4B 0F B6 4C 24 39 39 0D ?? ?? ?? ?
 const JOIN_READ: usize = 0x19;
 const JOIN_PARTY: usize = 0x1f;
 
+/// Where the game reads "Squad room min players" (4 in its data: four a side). Each read is
+/// patched to the setting as the library loads, so no lobby or menu ever gets the data's value:
+/// the menus are told it once, as they start (`setAIDLLMinSquadPartyPlayers`), and their Squad
+/// Ready Room won't search for a match with fewer in the party ("Failed to join the requested
+/// match. Waiting for players... [N]"); a squad room lobby's minimum is twice it.
+///
+/// - The menus: `mov edx, [minimum]` (8B 15 + address) at +0, followed by the binding call.
+const SQUAD_MENU: Pattern = "8B 15 ?? ?? ?? ?? A1 ?? ?? ?? ?? 8B 88 34 13 00 00 83 C4 0C 53 52 FF D1";
+/// - A squad room lobby, made by the host: `cmp eax, 5; jnz; mov al, [minimum]; add al, al`, the
+///   read (A0 + address) at +11.
+const SQUAD_ROOM: Pattern = "89 5E 0C 88 5E 23 83 F8 05 75 09 A0 ?? ?? ?? ?? 02 C0";
+const SQUAD_ROOM_READ: usize = 11;
+/// - A squad room lobby, made on joining: `cmp al, 5; jnz; mov cl, [minimum]; add cl, cl`, the read
+///   (8A 0D + address) at +4. Twice, one per lobby size.
+const SQUAD_JOIN: Pattern = "3C 05 75 0A 8A 0D ?? ?? ?? ?? 02 C9 EB 06 8A 0D";
+const SQUAD_JOIN_READ: usize = 4;
+
 /// The library's file name, as the game loads it.
 pub const MODULE: &str = "AICLASS_PC_F.dll";
 
@@ -54,6 +71,17 @@ pub(crate) fn find_once(image: &[u8], pattern: Pattern) -> Result<usize, String>
     }
 }
 
+/// Every place `pattern` is found.
+pub(crate) fn find_all(image: &[u8], pattern: Pattern) -> Vec<usize> {
+    let pattern = bytes(pattern);
+    image
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, w)| w.iter().zip(&pattern).all(|(b, p)| p.is_none_or(|p| *b == p)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 pub(crate) fn address_at(image: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]])
 }
@@ -66,6 +94,45 @@ pub(crate) fn address_at(image: &[u8], at: usize) -> u32 {
 pub fn minimums(image: &[u8]) -> Result<[u32; 3], String> {
     let chooser = find_once(image, CHOOSER).map_err(|e| format!("lobby minimum: {e}"))?;
     Ok(CHOOSER_READS.map(|read| address_at(image, chooser + read + 1)))
+}
+
+/// The squad room minimum (players a side) for a Quick Match minimum of `players`: half, rounded
+/// up, so a squad match starts with as few players in all.
+#[must_use]
+pub fn squad_players(players: u8) -> u8 {
+    players.div_ceil(2).max(1)
+}
+
+/// The changes that make "Squad room min players" `per_side` wherever the library reads it.
+///
+/// # Errors
+/// A place isn't found exactly once, or the three don't read the same value.
+pub fn plan_squad(image: &[u8], per_side: u8) -> Result<Vec<Patch>, String> {
+    let menu = find_once(image, SQUAD_MENU).map_err(|e| format!("squad minimum for the menus: {e}"))?;
+    let room = find_once(image, SQUAD_ROOM).map_err(|e| format!("squad room minimum: {e}"))?;
+    let joins = find_all(image, SQUAD_JOIN);
+    if joins.len() != 2 {
+        return Err(format!("squad room minimum on joining: found {} times, not twice", joins.len()));
+    }
+    let minimum = address_at(image, menu + 2);
+    if address_at(image, room + SQUAD_ROOM_READ + 1) != minimum || joins.iter().any(|&j| address_at(image, j + SQUAD_JOIN_READ + 2) != minimum) {
+        return Err("the squad minimum's reads read different values".into());
+    }
+    let mut menu_bytes = vec![0xBA]; // mov edx, per_side
+    menu_bytes.extend(u32::from(per_side).to_le_bytes());
+    menu_bytes.push(0x90);
+    let mut patches = vec![
+        Patch { offset: menu, bytes: menu_bytes },
+        Patch {
+            offset: room + SQUAD_ROOM_READ,
+            bytes: vec![0xB0, per_side, 0x90, 0x90, 0x90], // mov al, per_side
+        },
+    ];
+    patches.extend(joins.iter().map(|&join| Patch {
+        offset: join + SQUAD_JOIN_READ,
+        bytes: vec![0xB1, per_side, 0x90, 0x90, 0x90, 0x90], // mov cl, per_side
+    }));
+    Ok(patches)
 }
 
 /// The changes that make every Quick Match minimum `players`, in the module's image as loaded
@@ -137,6 +204,56 @@ mod tests {
         );
         assert_eq!(patches[3].bytes, vec![0xB1, 2, 0x90, 0x90, 0x90, 0x90]);
         assert_eq!(plan(&img, 0).unwrap()[0].bytes[1], 2, "at least 2");
+    }
+
+    #[test]
+    fn patches_the_three_squad_minimum_reads() {
+        let fill = |p: Pattern, at: usize, value: u32| {
+            let mut bytes: Vec<u8> = super::bytes(p).iter().map(|b| b.unwrap_or(0x11)).collect();
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let min = 0x1071_8f94;
+        let mut img = vec![0xCC; 16];
+        img.extend(fill(SQUAD_MENU, 2, min));
+        img.extend(vec![0xCC; 16]);
+        let room = img.len();
+        img.extend(fill(SQUAD_ROOM, SQUAD_ROOM_READ + 1, min));
+        img.extend(vec![0xCC; 16]);
+        let join = img.len();
+        img.extend(fill(SQUAD_JOIN, SQUAD_JOIN_READ + 2, min));
+        img.extend(vec![0xCC; 16]);
+        assert!(plan_squad(&img, 1).is_err(), "the join read once only");
+        let join2 = img.len();
+        img.extend(fill(SQUAD_JOIN, SQUAD_JOIN_READ + 2, min));
+        img.extend(vec![0xCC; 16]);
+        let patches = plan_squad(&img, 1).unwrap();
+        assert_eq!(patches.len(), 4);
+        assert_eq!(patches[3].offset, join2 + SQUAD_JOIN_READ);
+        assert_eq!(
+            patches[0],
+            Patch {
+                offset: 16,
+                bytes: vec![0xBA, 1, 0, 0, 0, 0x90]
+            }
+        );
+        assert_eq!(
+            patches[1],
+            Patch {
+                offset: room + SQUAD_ROOM_READ,
+                bytes: vec![0xB0, 1, 0x90, 0x90, 0x90]
+            }
+        );
+        assert_eq!(
+            patches[2],
+            Patch {
+                offset: join + SQUAD_JOIN_READ,
+                bytes: vec![0xB1, 1, 0x90, 0x90, 0x90, 0x90]
+            }
+        );
+        img[join + SQUAD_JOIN_READ + 2..join + SQUAD_JOIN_READ + 6].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        assert!(plan_squad(&img, 1).is_err(), "the reads disagree");
+        assert_eq!((squad_players(2), squad_players(3), squad_players(8), squad_players(0)), (1, 2, 4, 1));
     }
 
     #[test]
