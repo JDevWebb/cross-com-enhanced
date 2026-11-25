@@ -172,7 +172,7 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 <tr><td><b>Co-op</b></td><td>The campaign and Guerrilla with friends, invited from the lobby.</td></tr>
 <tr><td><b>Friends and parties</b></td><td>Friends lists, requests, invites into a lobby, the party following its host, and lobby chat.</td></tr>
 <tr><td><b>Progression</b></td><td>XP, levels, unlocks, Gunsmith loadouts and stats, kept on the server; a friend's stats from View Player Stats.</td></tr>
-<tr><td><b>Squads</b></td><td>Make a squad, invite, accept, ranks, the motto and message of the day.</td></tr>
+<tr><td><b>Squads</b></td><td>Make a squad, invite, accept, ranks, the motto and message of the day. Squad parties (squadmates join from the Squad Parties list) and squad matches against other squads, with squad wins, XP and levels.</td></tr>
 <tr><td><b>Multiplayer Challenges</b></td><td>The Daily Friend Challenge and Beat Your Best, and daring a friend back.</td></tr>
 <tr><td><b>News</b></td><td>The server's own news in the main menu's Ghost Feed and on Community Messages.</td></tr>
 <tr><td><b>Leaderboards</b></td><td>The game's own Leaderboards screen can't be opened on PC, so the overlay has its own: every player on the server, by mode.</td></tr>
