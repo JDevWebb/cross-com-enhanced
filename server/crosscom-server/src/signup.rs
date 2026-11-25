@@ -1,12 +1,15 @@
-//! Account sign-up over HTTP, for the launcher: `POST /accounts` with
-//! `{"name": ..., "password": ..., "code": ...}`.
+//! Account sign-up over HTTP, for the launcher: `POST /accounts` with `{"name": ..., "global_id":
+//! ..., "time": ..., "host": ..., "signature": ..., "code": ...}`. There is no password: the
+//! account belongs to the player's identity (see `accounts`), which signs its name for this
+//! server (`crosscom_identity::signup_message`), and signs in with it afterwards.
 //!
 //! Off unless the server's settings turn it on (`signup = true`). A server can ask for a sign-up
 //! code (`signup_code`) that it gives to its players, so strangers can't make accounts. Each
 //! address may try a few times a day, and the server takes only so many attempts an hour in
 //! all, so names can't be listed by trying them and the database can't be filled.
 //!
-//! Answers are JSON: `201 {"pid": ...}`, or an error status with `{"error": "..."}`.
+//! Answers are JSON: `201 {"pid": ..., "name": ..., "token": ...}` (the token the game signs in
+//! with), or an error status with `{"error": "..."}`.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -22,7 +25,7 @@ use crate::accounts;
 use crate::accounts::Accounts;
 
 pub const PATH: &str = "/accounts";
-/// The biggest request body taken: a name, a password and a code fit many times over.
+/// The biggest request body taken: a name, an identity, a signature and a code fit many times over.
 pub const MAX_BODY: usize = 1024;
 /// Attempts per address in a day, and by everyone in an hour.
 const PER_ADDRESS: u32 = 10;
@@ -111,7 +114,10 @@ impl Limits {
 #[serde(deny_unknown_fields)]
 struct Request {
     name: String,
-    password: String,
+    global_id: String,
+    time: i64,
+    host: String,
+    signature: String,
     #[serde(default)]
     code: Option<String>,
 }
@@ -137,9 +143,9 @@ impl SignUp {
         }
     }
 
-    /// Answers a sign-up from `address` with `body`. The name is returned for the log when an
-    /// account was made.
-    pub fn handle(&self, address: IpAddr, body: &[u8]) -> (Answer, Option<String>) {
+    /// Answers a sign-up from `address` with `body`, made to the server as `reached` (the
+    /// request's Host). The name is returned for the log when an account was made.
+    pub fn handle(&self, address: IpAddr, reached: Option<&str>, body: &[u8]) -> (Answer, Option<String>) {
         let limits = || self.limits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let too_many = || (error("429 Too Many Requests", "too many sign-ups; try again later"), None);
         if !limits().allow_address(address, Instant::now()) {
@@ -147,7 +153,10 @@ impl SignUp {
         }
         let Ok(request) = serde_json::from_slice::<Request>(body) else {
             return (
-                error("400 Bad Request", "expected {\"name\", \"password\"} (and \"code\" if the server asks for one)"),
+                error(
+                    "400 Bad Request",
+                    "expected {\"name\", \"global_id\", \"time\", \"host\", \"signature\"} (and \"code\" if the server asks for one)",
+                ),
                 None,
             );
         };
@@ -156,14 +165,35 @@ impl SignUp {
                 return (error("403 Forbidden", "this server needs its sign-up code"), None);
             }
         }
+        // The identity's own word for it, for this server, now.
+        if !crosscom_identity::fresh(request.time, crosscom_identity::now()) {
+            return (error("400 Bad Request", "the signature's time is off: check this PC's clock"), None);
+        }
+        let signed = crosscom_identity::is_global_id(&request.global_id)
+            && reached.is_some_and(|host| crosscom_identity::host_key(host) == crosscom_identity::host_key(&request.host))
+            && crosscom_identity::verify(
+                &request.global_id,
+                &crosscom_identity::signup_message(&request.host, &request.name, request.time),
+                &request.signature,
+            );
+        if !signed {
+            return (error("401 Unauthorized", "the identity's signature doesn't match"), None);
+        }
         if !limits().allow_all(Instant::now()) {
             return too_many();
         }
-        match self.accounts.add(&request.name, &request.password) {
-            Ok(pid) => (("201 Created", json!({ "pid": pid }).to_string()), Some(request.name)),
-            Err(accounts::Error::NameTaken) => (error("409 Conflict", "that name is taken"), None),
-            Err(e @ (accounts::Error::InvalidName | accounts::Error::InvalidPassword)) => (error("400 Bad Request", &e.to_string()), None),
-            Err(_) => (error("500 Internal Server Error", "couldn't make the account"), None),
+        let pid = match self.accounts.add_identity(&request.name, &request.global_id) {
+            Ok(pid) => pid,
+            Err(accounts::Error::NameTaken) => return (error("409 Conflict", "that name is taken"), None),
+            // The identity's holder learns its account's name: it's theirs.
+            Err(e @ accounts::Error::IdentityTaken(_)) => return (error("409 Conflict", &e.to_string()), None),
+            Err(e @ accounts::Error::InvalidName) => return (error("400 Bad Request", &e.to_string()), None),
+            Err(_) => return (error("500 Internal Server Error", "couldn't make the account"), None),
+        };
+        // The game's own sign-in uses this token (see `accounts`).
+        match self.accounts.issue_token(pid) {
+            Ok(token) => (("201 Created", json!({ "pid": pid, "name": request.name, "token": token }).to_string()), Some(request.name)),
+            Err(_) => (error("500 Internal Server Error", "couldn't make a game token"), None),
         }
     }
 }
@@ -172,8 +202,18 @@ impl SignUp {
 mod tests {
     use super::*;
 
-    fn body(name: &str, password: &str, code: Option<&str>) -> Vec<u8> {
-        json!({ "name": name, "password": password, "code": code }).to_string().into_bytes()
+    const HOST: &str = "play.example.org";
+
+    /// A sign-up for `name` by a new identity.
+    fn body(name: &str, code: Option<&str>) -> Vec<u8> {
+        body_by(&crosscom_identity::Identity::generate(), name, code)
+    }
+
+    fn body_by(id: &crosscom_identity::Identity, name: &str, code: Option<&str>) -> Vec<u8> {
+        let time = crosscom_identity::now();
+        json!({ "name": name, "global_id": id.global_id(), "time": time, "host": HOST, "signature": id.sign_signup(HOST, name, time), "code": code })
+            .to_string()
+            .into_bytes()
     }
 
     #[test]
@@ -181,14 +221,32 @@ mod tests {
         let accounts = Arc::new(Accounts::open(std::path::Path::new(":memory:")).unwrap());
         let signup = SignUp::new(Arc::clone(&accounts), None);
         let here: IpAddr = "203.0.113.7".parse().unwrap();
-        let ((status, json), name) = signup.handle(here, &body("Kozak", "hunter2", None));
+        let id = crosscom_identity::Identity::generate();
+        let ((status, json), name) = signup.handle(here, Some(HOST), &body_by(&id, "Kozak", None));
         assert_eq!(status, "201 Created", "{json}");
         assert_eq!(name.as_deref(), Some("Kozak"));
-        assert!(accounts.verify("Kozak", "hunter2").unwrap().is_some());
-        assert_eq!(signup.handle(here, &body("kozak", "x", None)).0 .0, "409 Conflict");
-        assert_eq!(signup.handle(here, &body("no spaces", "x", None)).0 .0, "400 Bad Request");
-        assert_eq!(signup.handle(here, b"{not json").0 .0, "400 Bad Request");
-        assert_eq!(signup.handle(here, br#"{"name":"a","password":"b","admin":true}"#).0 .0, "400 Bad Request");
+        let answer: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let token = answer["token"].as_str().unwrap();
+        assert_eq!(accounts.verify("Kozak", token).unwrap(), accounts.pid("Kozak").unwrap(), "the game signs in with the token");
+        assert_eq!(accounts.by_identity(&id.global_id()).unwrap().map(|(_, n)| n).as_deref(), Some("Kozak"));
+        assert_eq!(signup.handle(here, Some(HOST), &body("kozak", None)).0 .0, "409 Conflict", "the name is taken");
+        let again = signup.handle(here, Some(HOST), &body_by(&id, "Pepper", None)).0;
+        assert_eq!(again.0, "409 Conflict", "one account per identity");
+        assert!(again.1.contains("Kozak"), "{}", again.1);
+        assert_eq!(signup.handle(here, Some(HOST), &body("no spaces", None)).0 .0, "400 Bad Request", "not a name");
+        assert_eq!(
+            signup.handle(here, Some("other.example.org"), &body("Pepper", None)).0 .0,
+            "401 Unauthorized",
+            "signed for another server"
+        );
+        assert_eq!(signup.handle(here, Some(HOST), b"{not json").0 .0, "400 Bad Request");
+        let mut extra: serde_json::Value = serde_json::from_slice(&body("Pepper", None)).unwrap();
+        extra["admin"] = true.into();
+        assert_eq!(signup.handle(here, Some(HOST), extra.to_string().as_bytes()).0 .0, "400 Bad Request");
+        // A signature for one name doesn't make another.
+        let mut renamed: serde_json::Value = serde_json::from_slice(&body("Pepper", None)).unwrap();
+        renamed["name"] = "Mallory".into();
+        assert_eq!(signup.handle(here, Some(HOST), renamed.to_string().as_bytes()).0 .0, "401 Unauthorized");
     }
 
     #[test]
@@ -196,9 +254,9 @@ mod tests {
         let accounts = Arc::new(Accounts::open(std::path::Path::new(":memory:")).unwrap());
         let signup = SignUp::new(accounts, Some("ghosts".into()));
         let here: IpAddr = "203.0.113.7".parse().unwrap();
-        assert_eq!(signup.handle(here, &body("Kozak", "pw", None)).0 .0, "403 Forbidden");
-        assert_eq!(signup.handle(here, &body("Kozak", "pw", Some("ghost"))).0 .0, "403 Forbidden");
-        assert_eq!(signup.handle(here, &body("Kozak", "pw", Some("ghosts"))).0 .0, "201 Created");
+        assert_eq!(signup.handle(here, Some(HOST), &body("Kozak", None)).0 .0, "403 Forbidden");
+        assert_eq!(signup.handle(here, Some(HOST), &body("Kozak", Some("ghost"))).0 .0, "403 Forbidden");
+        assert_eq!(signup.handle(here, Some(HOST), &body("Kozak", Some("ghosts"))).0 .0, "201 Created");
         assert!(SignUp::new(Arc::new(Accounts::open(std::path::Path::new(":memory:")).unwrap()), Some(String::new()))
             .code
             .is_none());
@@ -229,10 +287,10 @@ mod tests {
         let signup = SignUp::new(accounts, Some("ghosts".into()));
         for i in 0..IN_ALL + 50 {
             let stranger = IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]);
-            assert_eq!(signup.handle(stranger, &body("x", "pw", Some("guess"))).0 .0, "403 Forbidden");
+            assert_eq!(signup.handle(stranger, Some(HOST), &body("x", Some("guess"))).0 .0, "403 Forbidden");
         }
         let player: IpAddr = "203.0.113.7".parse().unwrap();
-        assert_eq!(signup.handle(player, &body("Kozak", "pw", Some("ghosts"))).0 .0, "201 Created");
+        assert_eq!(signup.handle(player, Some(HOST), &body("Kozak", Some("ghosts"))).0 .0, "201 Created");
     }
 
     #[test]

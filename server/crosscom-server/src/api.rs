@@ -5,9 +5,10 @@
 //!   "version": "0.1.0", "players_online": 3, "news": [...], "udp_ports": [21030, 21031]}`, the news as
 //!   the game shows it (see `news.rs`), each `{"title", "body", "date": "YYYY-MM-DD", "shows"}`
 //!   with `shows` null or `"multiplayer"`, `"campaign"` or `"guerrilla"`.
-//! - `POST /api/login` with `{"name": ..., "password": ...}`: `200 {"pid": ..., "token": ...}` when
-//!   they match an account, with a new game token the game signs in with in place of the password
-//!   (see `accounts.rs`); else `401 {"error": ...}`. Only the password is taken here, not a token. Failures count against the same limits as the game's
+//! - `POST /api/key-login` with `{"global_id": ..., "time": ..., "host": ..., "signature": ...}`:
+//!   the player's identity signing in (see `key_login`): `200 {"pid": ..., "name": ..., "token":
+//!   ...}` with a new game token the game signs in with (see `accounts.rs`), `404` when the
+//!   identity has no account here, else `401 {"error": ...}`. Failures count against the same limits as the game's
 //!   own sign-in (`rate_limit.rs`), so the two together give no more guesses than either:
 //!   `429` once over them.
 //! - `GET /api/leaderboard?mode=...`: every player ranked (see `leaderboard.rs`).
@@ -24,7 +25,6 @@ use serde::Serialize;
 use serde_json::json;
 use slog::Logger;
 
-use crate::accounts;
 use crate::accounts::Accounts;
 use crate::leaderboard;
 use crate::news;
@@ -39,8 +39,8 @@ pub const INFO_PATH: &str = "/api/info";
 /// reach that one's API.
 pub const GAME: &str = "ghost-recon-future-soldier";
 pub const NAME: &str = "Cross-Com Enhanced";
-pub const LOGIN_PATH: &str = "/api/login";
-/// The biggest request body taken: a name and a password fit many times over.
+pub const KEY_LOGIN_PATH: &str = "/api/key-login";
+/// The biggest request body taken: an identity, a time and a signature fit many times over.
 pub const MAX_BODY: usize = 1024;
 
 pub struct Api {
@@ -65,9 +65,11 @@ struct Info {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Login {
-    name: String,
-    password: String,
+struct KeyLogin {
+    global_id: String,
+    time: i64,
+    host: String,
+    signature: String,
 }
 
 impl Api {
@@ -132,34 +134,56 @@ impl Api {
         serde_json::to_string(&info).unwrap_or_default()
     }
 
-    /// Answers a sign-in from `address` with `body`. The account's name is returned for the log
-    /// when it matched.
-    pub fn login(&self, address: IpAddr, body: &[u8]) -> (Answer, Option<String>) {
-        let wrong = || (error("401 Unauthorized", "wrong name or password"), None);
-        let Ok(login) = serde_json::from_slice::<Login>(body) else {
-            return (error("400 Bad Request", "expected {\"name\", \"password\"}"), None);
+    /// Answers a key sign-in from `address` with `body`, made to the server as `reached` (the
+    /// request's Host): the identity's account and a game token for the game, or why not. The
+    /// account's name is returned for the log when it signed in.
+    ///
+    /// The signature must be the identity's over `crosscom_identity::login_message` for this
+    /// server's name as the request reached it, at a time within a few minutes of now and later
+    /// than the account's last key sign-in: a signature made for another server, or seen once,
+    /// signs no one in. Only the identity's holder learns whether it has an account here.
+    pub fn key_login(&self, address: IpAddr, reached: Option<&str>, body: &[u8]) -> (Answer, Option<String>) {
+        let refused = || (error("401 Unauthorized", "signing in with this identity didn't work"), None);
+        let Ok(login) = serde_json::from_slice::<KeyLogin>(body) else {
+            return (error("400 Bad Request", "expected {\"global_id\", \"time\", \"host\", \"signature\"}"), None);
         };
-        // A name no account can have is refused before it's counted, so it can't fill the limits.
-        if !accounts::valid_name(&login.name) {
-            return wrong();
+        // Not an identity: refused before it's counted, so it can't fill the limits.
+        if !crosscom_identity::is_global_id(&login.global_id) {
+            return refused();
         }
-        // Counted as failed from here unless it matches (see `rate_limit`), so requests at once
-        // can't all try before any has failed.
-        let Some(attempt) = self.failed.try_begin(address, &login.name, Instant::now()) else {
+        let Some(attempt) = self.failed.try_begin(address, &login.global_id, Instant::now()) else {
             return (error("429 Too Many Requests", "too many failed sign-ins; try again later"), None);
         };
-        // The password only: a game token can't be turned into more of them.
-        match self.accounts.verify_password(&login.name, &login.password) {
-            Ok(Some(pid)) => {
+        if !crosscom_identity::fresh(login.time, crosscom_identity::now()) {
+            return (error("400 Bad Request", "the signature's time is off: check this PC's clock"), None);
+        }
+        if reached.is_none_or(|host| crosscom_identity::host_key(host) != crosscom_identity::host_key(&login.host)) {
+            return refused();
+        }
+        let message = crosscom_identity::login_message(&login.host, login.time);
+        if !crosscom_identity::verify(&login.global_id, &message, &login.signature) {
+            return refused();
+        }
+        let account = match self.accounts.by_identity(&login.global_id) {
+            Ok(Some(account)) => account,
+            // Not a failed sign-in: a player new here, who signs up next.
+            Ok(None) => {
                 self.failed.succeeded(attempt);
-                // The game's own sign-in uses this token, not the password (see `accounts`).
-                match self.accounts.issue_token(pid) {
-                    Ok(token) => (("200 OK", json!({ "pid": pid, "token": token }).to_string()), Some(login.name)),
-                    Err(_) => (error("500 Internal Server Error", "couldn't make a game token"), None),
-                }
+                return (error("404 Not Found", "this identity has no account here"), None);
             }
-            Ok(None) => wrong(),
-            Err(_) => (error("500 Internal Server Error", "couldn't check the account"), None),
+            Err(_) => return (error("500 Internal Server Error", "couldn't check the account"), None),
+        };
+        let (pid, name) = account;
+        match self.accounts.use_key_login(pid, login.time) {
+            Ok(true) => {}
+            Ok(false) => return refused(),
+            Err(_) => return (error("500 Internal Server Error", "couldn't check the account"), None),
+        }
+        self.failed.succeeded(attempt);
+        // The game's own sign-in uses this token (see `accounts`).
+        match self.accounts.issue_token(pid) {
+            Ok(token) => (("200 OK", json!({ "pid": pid, "name": name, "token": token }).to_string()), Some(name)),
+            Err(_) => (error("500 Internal Server Error", "couldn't make a game token"), None),
         }
     }
 }
@@ -171,13 +195,15 @@ pub(crate) mod tests {
     pub(crate) fn api() -> (Api, Arc<Online>) {
         let accounts = Arc::new(Accounts::open(std::path::Path::new(":memory:")).unwrap());
         accounts.add("Kozak", "hunter2").unwrap();
+        accounts.add_identity("Ghost", &ghost().global_id()).unwrap();
         let online = Arc::new(Online::default());
         let api = Api::new(accounts, Arc::default(), "/nonexistent/news.toml".into(), Arc::clone(&online));
         (api, online)
     }
 
-    fn login(name: &str, password: &str) -> Vec<u8> {
-        json!({ "name": name, "password": password }).to_string().into_bytes()
+    /// The identity whose account "Ghost" is, in [`api`].
+    pub(crate) fn ghost() -> crosscom_identity::Identity {
+        crosscom_identity::Identity::from_secret(&[7; 32])
     }
 
     #[test]
@@ -210,58 +236,68 @@ pub(crate) mod tests {
         assert_eq!(api.leaderboard("mode=tdm").0, "400 Bad Request");
     }
 
+    /// A key sign-in for `id` at `host`, signed at `time`.
+    pub(crate) fn key_login_body(id: &crosscom_identity::Identity, host: &str, time: i64) -> Vec<u8> {
+        json!({ "global_id": id.global_id(), "time": time, "host": host, "signature": id.sign_login(host, time) })
+            .to_string()
+            .into_bytes()
+    }
+
     #[test]
-    fn login_with_the_right_password_only() {
+    fn an_identity_signs_in_to_its_account_once_per_signature() {
         let (api, _) = api();
         let here: IpAddr = "203.0.113.7".parse().unwrap();
-        let ((status, json), name) = api.login(here, &login("kozak", "hunter2"));
-        assert_eq!(status, "200 OK");
+        let id = crosscom_identity::Identity::generate();
+        let now = crosscom_identity::now();
+        let host = "play.example.org";
+        // No account yet: only the holder learns that.
+        assert_eq!(api.key_login(here, Some(host), &key_login_body(&id, host, now)).0 .0, "404 Not Found");
+        let pid = api.accounts.add_identity("Pepper", &id.global_id()).unwrap();
+        let ((status, json), name) = api.key_login(here, Some(host), &key_login_body(&id, host, now + 1));
+        assert_eq!((status, name.as_deref()), ("200 OK", Some("Pepper")));
         let answer: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(answer["pid"], 1_048_576);
-        let token = answer["token"].as_str().unwrap();
-        assert!(accounts::is_token(token), "{token}");
-        assert_eq!(name.as_deref(), Some("kozak"));
-        let ((status, _), _) = api.login(here, &login("kozak", token));
-        assert_eq!(status, "401 Unauthorized", "a token can't sign the launcher in");
-        let ((status, json), name) = api.login(here, &login("Kozak", "wrong"));
-        assert_eq!((status, json.as_str()), ("401 Unauthorized", r#"{"error":"wrong name or password"}"#));
-        assert_eq!(name, None);
-        assert_eq!(api.login(here, &login("Nobody", "hunter2")).0 .0, "401 Unauthorized");
-        assert_eq!(api.login(here, &login("not a name", "x")).0 .0, "401 Unauthorized");
-        assert_eq!(api.login(here, b"{oops").0 .0, "400 Bad Request");
-        assert_eq!(api.login(here, br#"{"name":"Kozak","password":"hunter2","admin":true}"#).0 .0, "400 Bad Request");
+        assert_eq!(answer["pid"], pid);
+        assert!(crate::accounts::is_token(answer["token"].as_str().unwrap()));
+        // The same signature again (seen on the wire, or replayed by a server it was sent to).
+        assert_eq!(api.key_login(here, Some(host), &key_login_body(&id, host, now + 1)).0 .0, "401 Unauthorized");
+        // Signed for another server, or sent to this one by another name.
+        assert_eq!(api.key_login(here, Some(host), &key_login_body(&id, "evil.example.org", now + 2)).0 .0, "401 Unauthorized");
+        assert_eq!(api.key_login(here, Some("other.example.org"), &key_login_body(&id, host, now + 3)).0 .0, "401 Unauthorized");
+        assert_eq!(api.key_login(here, None, &key_login_body(&id, host, now + 4)).0 .0, "401 Unauthorized");
+        // Port and case don't matter.
+        assert_eq!(api.key_login(here, Some("Play.Example.org:443"), &key_login_body(&id, host, now + 5)).0 .0, "200 OK");
+        // An old time, someone else's key, nonsense.
+        assert_eq!(api.key_login(here, Some(host), &key_login_body(&id, host, now - 3600)).0 .0, "400 Bad Request");
+        let other = crosscom_identity::Identity::generate();
+        let mut forged: serde_json::Value = serde_json::from_slice(&key_login_body(&other, host, now + 6)).unwrap();
+        forged["global_id"] = id.global_id().into();
+        assert_eq!(api.key_login(here, Some(host), forged.to_string().as_bytes()).0 .0, "401 Unauthorized");
+        assert_eq!(api.key_login(here, Some(host), b"{oops").0 .0, "400 Bad Request");
     }
 
     #[test]
-    fn logins_at_once_cant_pass_the_limit_together() {
-        let (api, _) = api();
-        let api = Arc::new(api);
-        let barrier = Arc::new(std::sync::Barrier::new(30));
-        let threads: Vec<_> = (0..30)
-            .map(|i| {
-                let (api, barrier) = (Arc::clone(&api), Arc::clone(&barrier));
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    api.login("198.51.100.1".parse().unwrap(), &login("Kozak", &format!("guess{i}"))).0 .0
-                })
-            })
-            .collect();
-        let statuses: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-        assert_eq!(statuses.iter().filter(|s| **s == "401 Unauthorized").count(), 10, "{statuses:?}");
-        assert_eq!(statuses.iter().filter(|s| **s == "429 Too Many Requests").count(), 20);
-    }
-
-    #[test]
-    fn login_stops_guessing() {
+    fn key_logins_stop_guessing() {
         let (api, _) = api();
         let guesser: IpAddr = "198.51.100.1".parse().unwrap();
+        let id = crosscom_identity::Identity::generate();
+        api.accounts.add_identity("Pepper", &id.global_id()).unwrap();
+        let other = crosscom_identity::Identity::generate();
+        let now = crosscom_identity::now();
         let mut tries = 0;
-        while api.login(guesser, &login("Kozak", &format!("guess{tries}"))).0 .0 == "401 Unauthorized" {
+        loop {
+            let mut forged: serde_json::Value = serde_json::from_slice(&key_login_body(&other, "h", now + tries)).unwrap();
+            forged["global_id"] = id.global_id().into();
+            if api.key_login(guesser, Some("h"), forged.to_string().as_bytes()).0 .0 != "401 Unauthorized" {
+                break;
+            }
             tries += 1;
             assert!(tries < 100, "never stopped");
         }
         assert_eq!(tries, 10);
-        assert_eq!(api.login(guesser, &login("Kozak", "hunter2")).0 .0, "429 Too Many Requests", "even the right one, for now");
-        assert_eq!(api.login(guesser, &login("Pepper", "x")).0 .0, "429 Too Many Requests", "any name from that address");
+        assert_eq!(
+            api.key_login(guesser, Some("h"), &key_login_body(&id, "h", now + 50)).0 .0,
+            "429 Too Many Requests",
+            "even the right one, for now"
+        );
     }
 }

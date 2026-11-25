@@ -357,7 +357,7 @@ enum Route {
     OnlineConfig,
     SignUp,
     Info,
-    Login,
+    KeyLogin,
     Leaderboard,
     Logs,
     Forward,
@@ -375,7 +375,7 @@ fn route(request_line: &str) -> Route {
         ("GET", PATH) => Route::OnlineConfig,
         ("GET", crate::api::INFO_PATH) => Route::Info,
         ("GET", crate::leaderboard::PATH) => Route::Leaderboard,
-        ("POST", crate::api::LOGIN_PATH) => Route::Login,
+        ("POST", crate::api::KEY_LOGIN_PATH) => Route::KeyLogin,
         ("POST", crate::logs::PATH) => Route::Logs,
         ("POST", crate::reach::FORWARD_PATH) => Route::Forward,
         ("POST", crate::reach::REACH_PATH) => Route::Reach,
@@ -402,9 +402,9 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
     let connected_from = peer.ip().to_canonical();
     let peer = client.address;
     let route = route(line);
-    if matches!(route, Route::Login | Route::SignUp) && !client.may_send_passwords() {
-        warn!(logger, "{peer}: password sent through the proxy without HTTPS, refused");
-        return Some(crate::signup::error("403 Forbidden", "this server takes passwords over HTTPS only"));
+    if matches!(route, Route::KeyLogin | Route::SignUp) && !client.may_send_passwords() {
+        warn!(logger, "{peer}: a sign-in or sign-up through the proxy without HTTPS, refused");
+        return Some(crate::signup::error("403 Forbidden", "this server signs players in over HTTPS only"));
     }
     // What players' clients send about them (logs, their routers) goes over HTTPS too, where the
     // server has it: through the proxy, only over HTTPS.
@@ -479,10 +479,10 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             None => too_big(),
             Some(body) => http.reach.reach(peer, body),
         },
-        Route::Login => match body(crate::api::MAX_BODY) {
+        Route::KeyLogin => match body(crate::api::MAX_BODY) {
             None => too_big(),
             Some(body) => {
-                let ((status, json), name) = http.api.login(peer, body);
+                let ((status, json), name) = http.api.key_login(peer, header(&head, "host"), body);
                 match name {
                     Some(name) => info!(logger, "{peer} signed in to the launcher as {name}"),
                     None => info!(logger, "{peer}: launcher sign-in refused, {status}"),
@@ -492,7 +492,7 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
         },
         Route::SignUp if http.signup.is_some() => match (body(crate::signup::MAX_BODY), http.signup.as_ref()) {
             (Some(body), Some(signup)) => {
-                let ((status, json), made) = signup.handle(peer, body);
+                let ((status, json), made) = signup.handle(peer, header(&head, "host"), body);
                 match made {
                     Some(name) => info!(logger, "{peer} signed up as {name}"),
                     None => info!(logger, "{peer}: sign-up refused, {status}"),
@@ -533,7 +533,7 @@ fn content_length(head: &str) -> Option<usize> {
 /// and one to the JSON routes that isn't `application/json` too (`415`). Logs are `text/plain`,
 /// but need `X-Crosscom-Account`, a header a page can't add without asking either.
 fn from_a_web_page(route: &Route, head: &str) -> Option<crate::signup::Answer> {
-    if !matches!(route, Route::Login | Route::SignUp | Route::Forward | Route::Reach | Route::Logs) {
+    if !matches!(route, Route::KeyLogin | Route::SignUp | Route::Forward | Route::Reach | Route::Logs) {
         return None;
     }
     let site = header(head, "sec-fetch-site").map(str::to_ascii_lowercase);
@@ -613,8 +613,9 @@ mod tests {
         assert_eq!(route("GET /api/info HTTP/1.1"), Route::Info);
         assert_eq!(route("GET /api/info?x=1 HTTP/1.1"), Route::Info);
         assert_eq!(route("POST /api/info HTTP/1.1"), Route::Other);
-        assert_eq!(route("POST /api/login HTTP/1.1"), Route::Login);
-        assert_eq!(route("GET /api/login HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /api/key-login HTTP/1.1"), Route::KeyLogin);
+        assert_eq!(route("GET /api/key-login HTTP/1.1"), Route::Other);
+        assert_eq!(route("POST /api/login HTTP/1.1"), Route::Other, "no password sign-in");
         assert_eq!(route("POST /api/logs HTTP/1.1"), Route::Logs);
         assert_eq!(route("GET /api/logs HTTP/1.1"), Route::Other, "never served back");
         assert_eq!(route("GET /api/logs/20261115-123456-ab12cd HTTP/1.1"), Route::Other);
@@ -666,6 +667,30 @@ mod tests {
         respond(&logger, http, peer, request.as_bytes())
     }
 
+    /// The identity whose account "Ghost" is (`api::tests::api`, which [`server`] uses).
+    fn pepper() -> crosscom_identity::Identity {
+        crate::api::tests::ghost()
+    }
+
+    /// Pepper's key sign-in, signed for "x" (the Host the tests' requests carry).
+    fn pepper_login(time: i64) -> String {
+        String::from_utf8(crate::api::tests::key_login_body(&pepper(), "x", time)).unwrap()
+    }
+
+    /// Someone else's signature in Pepper's name.
+    fn forged_login(time: i64) -> String {
+        let mut forged: serde_json::Value = serde_json::from_slice(&crate::api::tests::key_login_body(&crosscom_identity::Identity::generate(), "x", time)).unwrap();
+        forged["global_id"] = pepper().global_id().into();
+        forged.to_string()
+    }
+
+    /// A sign-up by a new identity, signed for "x".
+    fn signup_body(name: &str) -> String {
+        let id = crosscom_identity::Identity::generate();
+        let time = crosscom_identity::now();
+        serde_json::json!({ "name": name, "global_id": id.global_id(), "time": time, "host": "x", "signature": id.sign_signup("x", name, time) }).to_string()
+    }
+
     fn post(path: &str, body: &str) -> String {
         format!(
             "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -682,20 +707,23 @@ mod tests {
         assert_eq!(json["players_online"], 0);
         assert!(json["news"].is_array());
 
-        let (status, json) = ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"hunter2"}"#)).unwrap();
-        assert_eq!((status, json.starts_with(r#"{"pid":1048576,"token":"cct_"#)), ("200 OK", true), "{json}");
-        assert_eq!(ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"nope"}"#)).unwrap().0, "401 Unauthorized");
-        let big = format!(r#"{{"name":"Kozak","password":"{}"}}"#, "x".repeat(2000));
-        assert_eq!(ask(&http, &post("/api/login", &big)).unwrap().0, "413 Content Too Large");
-        let cut_short = "POST /api/login HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{}";
+        let now = crosscom_identity::now();
+        let (status, json) = ask(&http, &post("/api/key-login", &pepper_login(now))).unwrap();
+        assert_eq!(status, "200 OK", "{json}");
+        assert!(json.contains(r#""name":"Ghost""#) && json.contains(r#""token":"cct_"#), "{json}");
+        assert_eq!(ask(&http, &post("/api/key-login", &forged_login(now + 1))).unwrap().0, "401 Unauthorized");
+        assert_eq!(
+            ask(&http, &post("/api/login", r#"{"name":"Kozak","password":"hunter2"}"#)).unwrap().0,
+            "404 Not Found",
+            "no password sign-in"
+        );
+        let big = format!(r#"{{"global_id":"{}"}}"#, "x".repeat(2000));
+        assert_eq!(ask(&http, &post("/api/key-login", &big)).unwrap().0, "413 Content Too Large");
+        let cut_short = "POST /api/key-login HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{}";
         assert_eq!(ask(&http, cut_short).unwrap().0, "413 Content Too Large");
 
-        assert_eq!(
-            ask(&http, &post("/accounts", r#"{"name":"New","password":"x"}"#)).unwrap().0,
-            "404 Not Found",
-            "sign-up off"
-        );
-        assert_eq!(ask(&server(true), &post("/accounts", r#"{"name":"New","password":"x"}"#)).unwrap().0, "201 Created");
+        assert_eq!(ask(&http, &post("/accounts", &signup_body("New"))).unwrap().0, "404 Not Found", "sign-up off");
+        assert_eq!(ask(&server(true), &post("/accounts", &signup_body("New"))).unwrap().0, "201 Created");
         assert_eq!(
             ask(&http, "GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n").unwrap(),
             ("200 OK", "[]".into())
@@ -714,26 +742,39 @@ mod tests {
     #[test]
     fn behind_the_proxy_limits_count_each_client() {
         let http = server(false);
-        // Guessing at another account, so only the address limit comes into it.
-        let wrong = r#"{"name":"Pepper","password":"nope"}"#;
-        // Ten failures from one client through the proxy stop that client only.
-        for _ in 0..10 {
-            let status = ask_from(&http, PROXY, &proxied("/api/login", wrong, "198.51.100.1", "https")).unwrap().0;
+        let now = crosscom_identity::now();
+        // Forged sign-ins in Pepper's name: ten failures from one client through the proxy stop
+        // that client only (and Pepper's identity, whose own limit is per name).
+        for i in 0..10 {
+            let status = ask_from(&http, PROXY, &proxied("/api/key-login", &forged_login(now + i), "198.51.100.1", "https"))
+                .unwrap()
+                .0;
             assert_eq!(status, "401 Unauthorized");
         }
-        let guesser = ask_from(&http, PROXY, &proxied("/api/login", wrong, "198.51.100.1", "https")).unwrap().0;
+        let guesser = ask_from(&http, PROXY, &proxied("/api/key-login", &forged_login(now + 20), "198.51.100.1", "https"))
+            .unwrap()
+            .0;
         assert_eq!(guesser, "429 Too Many Requests");
-        let right = r#"{"name":"Kozak","password":"hunter2"}"#;
-        let other = ask_from(&http, PROXY, &proxied("/api/login", right, "198.51.100.2", "https")).unwrap().0;
-        assert_eq!(other, "200 OK", "another client through the same proxy isn't held up");
+        // Another identity's sign-in from another client through the same proxy isn't held up
+        // (404: an identity new here, signed rightly).
+        let newcomer = crate::api::tests::key_login_body(&crosscom_identity::Identity::generate(), "x", now);
+        let other = ask_from(&http, PROXY, &proxied("/api/key-login", std::str::from_utf8(&newcomer).unwrap(), "198.51.100.2", "https"))
+            .unwrap()
+            .0;
+        assert_eq!(other, "404 Not Found", "another client through the same proxy isn't held up");
 
         // A client that isn't the proxy can't name another address to get round its limit.
         let http = server(false);
+        let newcomer = |n: i64| {
+            let mut forged: serde_json::Value = serde_json::from_slice(&crate::api::tests::key_login_body(&crosscom_identity::Identity::generate(), "x", now + n)).unwrap();
+            forged["signature"] = "AAAA".into();
+            forged.to_string()
+        };
         for i in 0..10 {
-            let spoofed = proxied("/api/login", wrong, &format!("198.51.100.{i}"), "https");
+            let spoofed = proxied("/api/key-login", &newcomer(i), &format!("198.51.100.{i}"), "https");
             assert_eq!(ask_from(&http, "203.0.113.9", &spoofed).unwrap().0, "401 Unauthorized");
         }
-        let spoofed = proxied("/api/login", right, "198.51.100.99", "https");
+        let spoofed = proxied("/api/key-login", &pepper_login(now + 30), "198.51.100.99", "https");
         assert_eq!(ask_from(&http, "203.0.113.9", &spoofed).unwrap().0, "429 Too Many Requests");
     }
 
@@ -827,16 +868,17 @@ mod tests {
     #[test]
     fn behind_the_proxy_passwords_need_https() {
         let http = server(true);
-        let login = r#"{"name":"Kozak","password":"hunter2"}"#;
-        let signup = r#"{"name":"New","password":"x"}"#;
-        let via = |path, body, proto| ask_from(&http, PROXY, &proxied(path, body, "198.51.100.1", proto)).unwrap();
-        let (status, json) = via("/api/login", login, "http");
+        let now = crosscom_identity::now();
+        let (login, signup) = (pepper_login(now), signup_body("New"));
+        let via = |path, body: &str, proto| ask_from(&http, PROXY, &proxied(path, body, "198.51.100.1", proto)).unwrap();
+        let (status, json) = via("/api/key-login", &login, "http");
         assert_eq!(status, "403 Forbidden");
         assert!(json.contains("HTTPS"), "{json}");
-        assert_eq!(via("/accounts", signup, "http").0, "403 Forbidden");
-        assert_eq!(via("/api/login", login, "https").0, "200 OK");
-        assert_eq!(via("/accounts", signup, "https").0, "201 Created");
-        let no_proto = format!("POST /api/login HTTP/1.1\r\nContent-Length: {}\r\n\r\n{login}", login.len());
+        assert_eq!(via("/accounts", &signup, "http").0, "403 Forbidden");
+        assert_eq!(via("/api/key-login", &login, "https").0, "200 OK");
+        assert_eq!(via("/accounts", &signup, "https").0, "201 Created");
+        let login = pepper_login(now + 1);
+        let no_proto = format!("POST /api/key-login HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{login}", login.len());
         assert_eq!(ask_from(&http, PROXY, &no_proto).unwrap().0, "403 Forbidden");
         // Clients' router reports and connection tests too.
         let report = r#"{"local":"192.168.1.20:2346","forward":null,"nat":"consistent"}"#;
@@ -848,7 +890,7 @@ mod tests {
         assert_eq!(get("/OnlineConfigService.svc/GetOnlineConfig"), "200 OK");
         assert_eq!(get("/api/info"), "200 OK");
         // Straight to the server, as on a LAN without a proxy, as before.
-        assert_eq!(ask(&http, &post("/api/login", login)).unwrap().0, "200 OK");
+        assert_eq!(ask(&http, &post("/api/key-login", &pepper_login(now + 2))).unwrap().0, "200 OK");
     }
 
     /// `body` POSTed to `path` with the extra `headers` (each ending `\r\n`).
@@ -859,20 +901,21 @@ mod tests {
     #[test]
     fn web_pages_cant_post_in_a_players_name() {
         let http = server(true);
-        let wrong = r#"{"name":"Kozak","password":"nope"}"#;
+        let wrong = forged_login(crosscom_identity::now());
+        let wrong = wrong.as_str();
         let report = r#"{"local":"192.168.1.20:2346","forward":null,"nat":"consistent"}"#;
         let status = |path: &str, headers: &str, body: &str| ask(&http, &post_with(path, headers, body)).unwrap().0;
         // A page's "simple" requests: a form, or a script's text/plain. None counts as a failed
         // sign-in, so the player's address isn't locked out of the game's sign-in.
         for _ in 0..20 {
-            assert_eq!(status("/api/login", "Content-Type: text/plain\r\n", wrong), "415 Unsupported Media Type");
+            assert_eq!(status("/api/key-login", "Content-Type: text/plain\r\n", wrong), "415 Unsupported Media Type");
             assert_eq!(
-                status("/api/login", "Content-Type: application/x-www-form-urlencoded\r\n", wrong),
+                status("/api/key-login", "Content-Type: application/x-www-form-urlencoded\r\n", wrong),
                 "415 Unsupported Media Type"
             );
-            assert_eq!(status("/api/login", "", wrong), "415 Unsupported Media Type", "no type at all");
+            assert_eq!(status("/api/key-login", "", wrong), "415 Unsupported Media Type", "no type at all");
         }
-        assert_eq!(status("/api/login", "Content-Type: application/json\r\n", wrong), "401 Unauthorized", "not locked out");
+        assert_eq!(status("/api/key-login", "Content-Type: application/json\r\n", wrong), "401 Unauthorized", "not locked out");
         for path in ["/api/forward", "/api/reach", "/accounts"] {
             assert_eq!(status(path, "Content-Type: text/plain;charset=UTF-8\r\n", report), "415 Unsupported Media Type", "{path}");
         }
@@ -912,8 +955,8 @@ mod tests {
         let report = r#"{"local":"192.168.1.20:2346","forward":null,"nat":"consistent"}"#;
         let json = "Content-Type: application/json\r\nUser-Agent: Cross-Com\r\n";
         assert_eq!(ask(&http, &post_with("/api/forward", json, report)).unwrap().0, "200 OK");
-        assert_eq!(ask(&http, &post_with("/api/login", json, r#"{"name":"Kozak","password":"hunter2"}"#)).unwrap().0, "200 OK");
-        assert_eq!(ask(&http, &post_with("/accounts", json, r#"{"name":"New","password":"x"}"#)).unwrap().0, "201 Created");
+        assert_eq!(ask(&http, &post_with("/api/key-login", json, &pepper_login(crosscom_identity::now()))).unwrap().0, "200 OK");
+        assert_eq!(ask(&http, &post_with("/accounts", json, &signup_body("New"))).unwrap().0, "201 Created");
         assert_eq!(ask_from(&http, PLAYER, &log_upload("Kozak", "a log\n", None)).unwrap().0, "201 Created");
     }
 

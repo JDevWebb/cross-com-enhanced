@@ -204,7 +204,7 @@ mod tests {
     }
 
     fn head(headers: &str) -> String {
-        format!("POST /api/login HTTP/1.1\r\nHost: play.example.org\r\n{headers}")
+        format!("POST /api/key-login HTTP/1.1\r\nHost: play.example.org\r\n{headers}")
     }
 
     #[test]
