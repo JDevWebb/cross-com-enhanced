@@ -68,31 +68,80 @@ pub fn ranked(board: u8, keys: &[u32], column: u8) -> bool {
     board == BOARD && matches!(keys, [key] if *key < FIRST_NOT_A_MODE) && [TIME, PLAYED, WON, KILLS, DEATHS, OBJECTIVES].contains(&column)
 }
 
-/// The most one write may add to a leaderboard column: [`MAX_MATCHES_PER_WRITE`] matches' worth.
+/// One match's worth of a leaderboard column.
 #[allow(clippy::cast_possible_wrap)] // the per-match limits are small
-fn max_growth(column: u8) -> i32 {
-    let per_match = match column {
+fn per_match(column: u8) -> i32 {
+    (match column {
         KILLS => MAX_KILLS_PER_MATCH,
         DEATHS => MAX_DEATHS_PER_MATCH,
         OBJECTIVES => MAX_OBJECTIVES_PER_MATCH,
         TIME => MAX_SECONDS_PER_MATCH,
         _ => 1,
-    };
-    MAX_MATCHES_PER_WRITE.saturating_mul(per_match as i32)
+    }) as i32
+}
+
+/// The most a column may grow in one go: [`MAX_MATCHES_PER_WRITE`] matches' worth.
+fn max_growth(column: u8) -> i32 {
+    MAX_MATCHES_PER_WRITE.saturating_mul(per_match(column))
+}
+
+/// How often a game can finish a match: one match's worth of a column comes back to a player's
+/// allowance this often.
+const MATCH_EVERY: Duration = Duration::from_secs(120);
+/// Allowances kept before the stale ones are dropped (a dropped one starts full again).
+const MAX_ALLOWANCES: usize = 200_000;
+
+/// How much each player's leaderboard columns may still grow: a bucket per player, mode and
+/// column holding up to [`max_growth`], refilling a match's worth every [`MATCH_EVERY`]. A game
+/// saves after each match, minutes apart; writing over and over can't add more than real
+/// matches could. Kept in memory: a restart fills them again, which is no more than a game
+/// catching up.
+#[derive(Default)]
+pub struct Growth {
+    allowances: Mutex<HashMap<AllowanceKey, Allowance>>,
+}
+
+/// Whose allowance: the player, the stored row's keys (its mode) and the column.
+type AllowanceKey = (u32, Vec<u8>, u8);
+/// What's left of it, and when it was last refilled.
+type Allowance = (i64, Instant);
+
+impl Growth {
+    /// Grants up to `wanted` growth of `column` for `pid` under `keys` (its mode), from what's
+    /// left of its allowance at `now`.
+    pub fn take(&self, pid: u32, keys: &[u8], column: u8, wanted: i32, now: Instant) -> i32 {
+        let cap = i64::from(max_growth(column));
+        let mut all = self.allowances.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if all.len() >= MAX_ALLOWANCES {
+            all.retain(|_, (_, at)| now.saturating_duration_since(*at) < MATCH_EVERY * 20);
+            if all.len() >= MAX_ALLOWANCES {
+                all.clear();
+            }
+        }
+        let (left, at) = all.entry((pid, keys.to_vec(), column)).or_insert((cap, now));
+        let matches = i64::try_from(now.saturating_duration_since(*at).as_secs() / MATCH_EVERY.as_secs()).unwrap_or(i64::MAX);
+        if matches > 0 {
+            *left = left.saturating_add(matches.saturating_mul(i64::from(per_match(column)))).min(cap);
+            *at = now;
+        }
+        let granted = i64::from(wanted.max(0)).min(*left);
+        *left -= granted;
+        i32::try_from(granted).unwrap_or(0)
+    }
 }
 
 /// A leaderboard number (see [`ranked`]) as it's kept when the game writes `new` (a little-endian
-/// i32) over `stored`: never negative, and at most [`max_growth`] more than what was stored. A
-/// first write is taken as it is (a player's numbers from before they were kept here).
+/// i32) over `stored`: never negative, and growing only by what `grant` allows of the growth
+/// asked for (see [`Growth`]). Nothing stored counts as zero: a new player's first write can't
+/// put them anywhere on the board.
 #[must_use]
-pub fn sane_write(column: u8, stored: Option<&[u8]>, new: &[u8]) -> Vec<u8> {
+pub fn sane_write(stored: Option<&[u8]>, new: &[u8], grant: impl FnOnce(i32) -> i32) -> Vec<u8> {
     let Ok(bytes) = <[u8; 4]>::try_from(new) else {
         return new.to_vec();
     };
-    let mut value = i32::from_le_bytes(bytes).max(0);
-    if let Some(old) = stored.and_then(|s| <[u8; 4]>::try_from(s).ok()).map(i32::from_le_bytes) {
-        value = value.min(old.max(0).saturating_add(max_growth(column)));
-    }
+    let value = i32::from_le_bytes(bytes).max(0);
+    let old = stored.and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| i32::from_le_bytes(s).max(0));
+    let value = if value > old { old.saturating_add(grant(value - old).min(value - old)) } else { value };
     value.to_le_bytes().to_vec()
 }
 
@@ -308,17 +357,24 @@ mod tests {
         assert_eq!((p1.wins, p1.losses), (1, 0), "its other mode still counts");
     }
 
-    /// As they're written: never negative, and growing by a few matches' worth at most.
+    /// As they're written: never negative, growing only by what the allowance grants, a first
+    /// write counting from zero; and the allowance refills only with time.
     #[test]
     fn leaderboard_numbers_are_kept_sane_as_written() {
         let v = |n: i32| n.to_le_bytes().to_vec();
-        assert_eq!(sane_write(PLAYED, None, &v(-5)), v(0));
-        assert_eq!(sane_write(PLAYED, None, &v(300)), v(300), "a first write as it is");
-        assert_eq!(sane_write(PLAYED, Some(&v(300)), &v(301)), v(301));
-        assert_eq!(sane_write(WON, Some(&v(10)), &v(1_000_000)), v(10 + MAX_MATCHES_PER_WRITE));
-        assert_eq!(sane_write(KILLS, Some(&v(10)), &v(40)), v(40));
-        assert_eq!(sane_write(PLAYED, Some(&v(10)), &v(3)), v(3), "lower: as written");
-        assert_eq!(sane_write(PLAYED, Some(&v(10)), &[1, 2]), vec![1, 2], "not a 32-bit value: as it is");
+        let all = |g: i32| g;
+        assert_eq!(sane_write(None, &v(-5), all), v(0));
+        assert_eq!(sane_write(None, &v(300), |g| g.min(20)), v(20), "a first write counts from zero");
+        assert_eq!(sane_write(Some(&v(300)), &v(301), all), v(301));
+        assert_eq!(sane_write(Some(&v(10)), &v(3), |_| 0), v(3), "lower: as written");
+        assert_eq!(sane_write(Some(&v(10)), &[1, 2], all), vec![1, 2], "not a 32-bit value: as it is");
+        let growth = Growth::default();
+        let start = Instant::now();
+        let keys = [2u8, 0, 0, 0];
+        assert_eq!(growth.take(1, &keys, WON, 1_000_000, start), MAX_MATCHES_PER_WRITE, "a full allowance");
+        assert_eq!(growth.take(1, &keys, WON, 5, start), 0, "used up: writing again adds nothing");
+        assert_eq!(growth.take(1, &keys, WON, 5, start + MATCH_EVERY * 3), 3, "a match's worth comes back per MATCH_EVERY");
+        assert_eq!(growth.take(2, &keys, WON, 5, start), 5, "another player's own");
         assert!(ranked(BOARD, &[2], WON) && !ranked(BOARD, &[12], WON) && !ranked(BOARD, &[2], 4) && !ranked(3, &[2], WON));
     }
 

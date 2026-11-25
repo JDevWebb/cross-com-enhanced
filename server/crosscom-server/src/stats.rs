@@ -232,6 +232,8 @@ fn keys_from_blob(blob: &[u8]) -> Vec<u32> {
 /// Every player's statistics, in the server's database.
 pub struct Store {
     db: Mutex<Connection>,
+    /// How much each player's leaderboard numbers may still grow (see `leaderboard::Growth`).
+    growth: crate::leaderboard::Growth,
 }
 
 /// The most stored numbers a read of one board for everyone takes (the leaderboard's: a few
@@ -280,7 +282,10 @@ impl Store {
                 PRIMARY KEY (pid, type, board, keys, col)
             ) WITHOUT ROWID;",
         )?;
-        Ok(Self { db: Mutex::new(db) })
+        Ok(Self {
+            db: Mutex::new(db),
+            growth: crate::leaderboard::Growth::default(),
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -317,7 +322,7 @@ impl Store {
                         value.clone()
                     };
                     let value = if ranked {
-                        crate::leaderboard::sane_write(*column, stored.as_deref(), &value)
+                        crate::leaderboard::sane_write(stored.as_deref(), &value, |wanted| self.growth.take(pid, &keys, *column, wanted, std::time::Instant::now()))
                     } else {
                         value
                     };
@@ -870,7 +875,8 @@ mod tests {
     }
 
     /// The leaderboard's numbers, written as the game does (op 2): kept as written within reason,
-    /// never negative, and growing a few matches' worth at most; other boards as written.
+    /// never negative, and growing only by the player's allowance (20 matches' worth, refilled
+    /// with time); other boards as written.
     #[test]
     fn leaderboard_numbers_are_kept_sane() {
         let store = Store::in_memory().unwrap();
@@ -882,7 +888,9 @@ mod tests {
             .unwrap();
         store.write(1, SEND_INT32, &send(11, vec![(3, v(-7), OP_SET)])).unwrap();
         let got: Vec<(u8, Vec<u8>)> = store.rows(1, SEND_INT32, 10).unwrap().into_iter().map(|(_, c, v)| (c, v)).collect();
-        assert_eq!(got, vec![(2, v(41)), (3, v(20)), (7, v(9))]);
+        // Column 2: 20 of the first 40 (a full allowance from zero), then none left at once.
+        // Column 3: nothing for -7, then 20 of a million.
+        assert_eq!(got, vec![(2, v(20)), (3, v(20)), (7, v(9))]);
         assert_eq!(store.rows(1, SEND_INT32, 11).unwrap()[0].2, v(-7), "another board: as written");
     }
 

@@ -38,6 +38,11 @@ const RESERVED: usize = 8;
 /// connection comes from the proxy, so there the cap is on the client it names, once the
 /// headers say which; the proxy itself may hold up to `MAX_CONNECTIONS`.
 const PER_CLIENT: usize = 4;
+/// Connections one address may hold open before its requests are read (a direct client; behind
+/// a proxy the proxy's are counted): more than [`PER_CLIENT`], so a household whose launchers are
+/// busy can still have its games fetch their online config, which is answered whoever asks.
+/// Requests other than the online config are then held to `PER_CLIENT` per client.
+const ACCEPTED_PER_CLIENT: usize = 12;
 
 #[derive(Serialize)]
 struct Item {
@@ -121,7 +126,7 @@ fn allowed(proxies: &crate::proxy::Trusted, peer: IpAddr) -> usize {
     if proxies.trusts(peer) {
         MAX_CONNECTIONS
     } else {
-        PER_CLIENT
+        ACCEPTED_PER_CLIENT
     }
 }
 
@@ -134,16 +139,19 @@ struct Gate {
 #[derive(Default)]
 struct Open {
     total: usize,
-    /// Per client address (as `address_key` counts them): the connections' own, and through a
-    /// proxy the clients it names.
+    /// Connections per address (as `address_key` counts them).
     by_address: HashMap<IpAddr, usize>,
+    /// Requests other than the online config being answered, per client (named by a proxy, or
+    /// the connection's own address): at most [`PER_CLIENT`].
+    requests: HashMap<IpAddr, usize>,
 }
 
 /// A connection let in by the [`Gate`], or a proxied client's place: given back when dropped.
 struct Pass {
     gate: Arc<Gate>,
     address: IpAddr,
-    /// Whether it counts in the total (a connection) or only for its address (a proxied client).
+    /// Whether it's a connection (counted in the total and per address) or a request (counted
+    /// per client in `requests`).
     connection: bool,
 }
 
@@ -171,12 +179,12 @@ impl Gate {
         Some((pass, reserve))
     }
 
-    /// One more connection for `client`, named by a trusted proxy (whose own connection is
-    /// counted already): none when it has [`PER_CLIENT`] open.
+    /// One more request (other than the online config) for `client`, direct or named by a
+    /// trusted proxy: none when it has [`PER_CLIENT`] being answered.
     fn client(self: &Arc<Self>, client: IpAddr) -> Option<Pass> {
         let address = address_key(client);
         let mut open = self.open();
-        let count = open.by_address.entry(address).or_default();
+        let count = open.requests.entry(address).or_default();
         if *count >= PER_CLIENT {
             return None;
         }
@@ -192,13 +200,17 @@ impl Gate {
 impl Drop for Pass {
     fn drop(&mut self) {
         let mut open = self.gate.open();
-        if self.connection {
+        let open = &mut *open;
+        let table = if self.connection {
             open.total = open.total.saturating_sub(1);
-        }
-        if let Some(count) = open.by_address.get_mut(&self.address) {
+            &mut open.by_address
+        } else {
+            &mut open.requests
+        };
+        if let Some(count) = table.get_mut(&self.address) {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                open.by_address.remove(&self.address);
+                table.remove(&self.address);
             }
         }
     }
@@ -247,10 +259,11 @@ fn answer(logger: &Logger, mut stream: TcpStream, http: &Http, conn: &Conn) -> s
         let (status, body) = crate::signup::error("503 Service Unavailable", "busy; try again in a moment");
         return send(&mut stream, status, &body);
     }
-    // Through a trusted proxy, the client it names may only have so many open, as if it had
-    // come straight here. The online config is answered at once, whoever asks.
+    // A client (direct, or named by a trusted proxy) may only have so many requests answered at
+    // once. The online config is answered at once, whoever asks.
     let client = crate::proxy::client(peer.ip(), &head, &http.proxies);
-    let _client_pass = if client.proxied && client.address != peer.ip() && route != Route::OnlineConfig {
+    let proxy_unnamed = client.proxied && client.address == peer.ip();
+    let _client_pass = if !proxy_unnamed && route != Route::OnlineConfig {
         let Some(pass) = conn.gate.client(client.address) else {
             info!(logger, "{}: too many connections at once, refused", client.address);
             let (status, body) = crate::signup::error("429 Too Many Requests", "too many requests at once from here");
@@ -427,14 +440,15 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             Some(body) => {
                 let (answer, matched) = http.reach.forward(peer, body);
                 if let Some(m) = matched {
-                    // As it came, quoted: it's the client's word, newlines and all.
-                    let report = String::from_utf8_lossy(body);
+                    // As it came, quoted (it's the client's word, newlines and all), with any game
+                    // token taken out: a token in the log would let whoever reads it sign in.
+                    let report = without_tokens(&String::from_utf8_lossy(body));
                     if m.announced {
                         info!(logger, "{peer}: {:#x}'s client reported its router: {report:?}", m.pid);
                     } else {
                         warn!(
                             logger,
-                            "{peer}: {:#x}'s client reported its router for a socket its game didn't announce (another adapter's address, or not its own report); not kept: {report:?}",
+                            "{peer}: {:#x}'s client reported its router for a socket its game didn't announce (another adapter's address, or not its own report: kept only with the player's game token): {report:?}",
                             m.pid
                         );
                     }
@@ -535,9 +549,41 @@ fn from_a_web_page(route: &Route, head: &str) -> Option<crate::signup::Answer> {
     None
 }
 
+/// `text` with every game token in it (`cct_` and 28 letters or digits) replaced by `<token>`,
+/// for the log.
+fn without_tokens(text: &str) -> String {
+    const PREFIX: &str = "cct_";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(PREFIX) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + PREFIX.len()..];
+        let len = after.bytes().take_while(u8::is_ascii_alphanumeric).count();
+        if len >= 8 {
+            out.push_str("<token>");
+            rest = &after[len..];
+        } else {
+            out.push_str(PREFIX);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_tokens_stay_out_of_the_log() {
+        let report = format!(r#"{{"account":"Kozak","token":"cct_{}","local":"192.168.1.20:2346"}}"#, "aB3".repeat(9) + "x");
+        let logged = without_tokens(&report);
+        assert!(!logged.contains("aB3aB3"), "{logged}");
+        assert!(logged.contains(r#""token":"<token>""#), "{logged}");
+        assert_eq!(without_tokens("cct_ short cct_"), "cct_ short cct_", "nothing that isn't one");
+        assert_eq!(without_tokens("broken cct_ABCDEFGHIJ"), "broken <token>", "unparsed text too");
+    }
 
     #[test]
     fn points_the_game_at_the_auth_server() {
@@ -896,15 +942,19 @@ mod tests {
         let gate = Arc::new(Gate::default());
         let player: IpAddr = "198.51.100.1".parse().unwrap();
         let proxies = crate::proxy::Trusted::parse(&[PROXY]).unwrap();
-        let held: Vec<Pass> = (0..PER_CLIENT).map(|_| gate.connect(player, allowed(&proxies, player)).unwrap().0).collect();
+        let held: Vec<Pass> = (0..ACCEPTED_PER_CLIENT).map(|_| gate.connect(player, allowed(&proxies, player)).unwrap().0).collect();
         assert!(gate.connect(player, allowed(&proxies, player)).is_none(), "one too many from one address");
+        // Of those, only so many requests other than the online config at once.
+        let requests: Vec<Pass> = (0..PER_CLIENT).map(|_| gate.client(player).unwrap()).collect();
+        assert!(gate.client(player).is_none(), "one request too many from one address");
         let neighbour: IpAddr = "2001:db8:1:2::9".parse().unwrap();
-        let _v6: Vec<(Pass, bool)> = (0..PER_CLIENT)
-            .map(|i| gate.connect(format!("2001:db8:1:2::{}", i + 1).parse().unwrap(), PER_CLIENT).unwrap())
+        let _v6: Vec<(Pass, bool)> = (0..ACCEPTED_PER_CLIENT)
+            .map(|i| gate.connect(format!("2001:db8:1:2::{}", i + 1).parse().unwrap(), ACCEPTED_PER_CLIENT).unwrap())
             .collect();
-        assert!(gate.connect(neighbour, PER_CLIENT).is_none(), "IPv6 by the /64");
-        drop(held);
-        assert!(gate.connect(player, PER_CLIENT).is_some(), "given back");
+        assert!(gate.connect(neighbour, ACCEPTED_PER_CLIENT).is_none(), "IPv6 by the /64");
+        drop((held, requests));
+        assert!(gate.connect(player, ACCEPTED_PER_CLIENT).is_some(), "given back");
+        assert!(gate.client(player).is_some(), "given back");
 
         // The proxy may hold many; the clients it names are capped each, once their headers say.
         let gate = Arc::new(Gate::default());
@@ -919,14 +969,15 @@ mod tests {
         drop((through, clients, reserve));
         assert_eq!(gate.open().total, 0);
         assert!(gate.open().by_address.is_empty());
+        assert!(gate.open().requests.is_empty());
     }
 
-    /// Clients holding connections open slowly don't stop the game getting its online config,
-    /// and one client's can't take the server.
+    /// Clients holding connections open slowly don't stop the game getting its online config
+    /// (even from the same address, a household's), and one address's can't take the server.
     #[test]
     fn slow_clients_dont_keep_the_game_out() {
         let addr = serving(server(false));
-        // Four connections from here that send half a request and wait.
+        // Connections from here that send half a request and wait.
         let slow: Vec<TcpStream> = (0..PER_CLIENT)
             .map(|_| {
                 let mut s = TcpStream::connect(addr).unwrap();
@@ -935,12 +986,16 @@ mod tests {
             })
             .collect();
         std::thread::sleep(Duration::from_millis(200));
+        let answer = talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n");
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "the game's config from the same address: {answer}");
+        let more: Vec<TcpStream> = (PER_CLIENT..ACCEPTED_PER_CLIENT).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        std::thread::sleep(Duration::from_millis(200));
         assert_eq!(
             talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n"),
             "",
-            "a fifth from here is turned away"
+            "past what one address may hold, turned away"
         );
-        drop(slow);
+        drop((slow, more));
         std::thread::sleep(Duration::from_millis(200));
         let answer = talk(addr, b"GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n");
         assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
