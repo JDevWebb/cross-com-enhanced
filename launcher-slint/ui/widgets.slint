@@ -535,3 +535,115 @@ export component Choice inherits Rectangle {
         }
     }
 }
+
+// An on/off switch (a setting in Settings, or an option in Setup).
+export component Switch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled(bool);
+    forward-focus: fs;
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: checked ? Theme.accent-dim : Theme.control;
+    border-width: 1px;
+    border-color: checked ? Theme.accent : ta.has-hover && enabled ? Theme.accent-dim : Theme.control-line;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: Theme.quick; }
+    accessible-role: switch;
+    accessible-label: label;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { toggle(); }
+    function toggle() {
+        if !enabled { return; }
+        checked = !checked;
+        toggled(checked);
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { toggle(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { toggle(); } }
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 4px : 4px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: root.checked ? Theme.accent : Theme.muted;
+        animate x { duration: Theme.quick; easing: ease-out; }
+    }
+    Ring { on: fs.has-focus; radius: 11px; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A switch with what it does beside it: its name, and a line under that (Setup's options).
+export component SwitchLine inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> sub;
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    spacing: 14px;
+    VerticalLayout {
+        alignment: start;
+        padding-top: 1px;
+        Switch { checked <=> root.checked; enabled: root.enabled; label: root.text; toggled(on) => { root.toggled(on); } }
+    }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 2px;
+        Text { text: root.text; color: Theme.fg; wrap: word-wrap; }
+        if root.sub != "": Text { text: root.sub; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+    }
+}
+
+// One setting in Settings: its name and what it does on the left, its control (the children) on
+// the right, and a line under it.
+export component SettingRow inherits VerticalLayout {
+    in property <string> title;
+    in property <string> sub;
+    // The line under the name in the game's folder's type.
+    in property <bool> mono;
+    padding-top: 15px;
+    spacing: 15px;
+    HorizontalLayout {
+        spacing: 24px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text { text: root.title; color: Theme.fg; font-weight: 600; wrap: word-wrap; }
+            if root.sub != "": Text {
+                text: root.sub;
+                color: Theme.soft;
+                font-family: root.mono ? Type.mono : Type.sans;
+                font-size: root.mono ? 12.5px : Type.small;
+                wrap: root.mono ? char-wrap : word-wrap;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.line; }
+}
+
+// A small heading over a group of rows ("UNDO", "CHANGE SERVER").
+export component GroupLabel inherits VerticalLayout {
+    in property <string> text;
+    padding-top: 26px;
+    padding-bottom: 2px;
+    spacing: 8px;
+    Caps { text: root.text.to-uppercase(); }
+    Rectangle { height: 1px; background: Theme.line; }
+}

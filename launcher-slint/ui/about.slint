@@ -1,4 +1,5 @@
-// About: what Cross-Com Enhanced is and its release, who makes it, the work it's built on, how
+// About (Settings' last section): what Cross-Com Enhanced is and its release, running the setup
+// again, who makes it, the work it's built on, how
 // to help pay for the community servers, and the small print with Slint's own attribution (its
 // royalty-free licence asks for it on the About screen).
 
@@ -94,17 +95,29 @@ export component AboutScreen inherits Rectangle {
     callback check();
     // Opens one of About's links, by its id (see `core::about_link`).
     callback link(string);
+    // Settings' section: its own heading in place of the kicker.
+    in property <bool> embedded;
+    // Runs the setup again (it changes nothing until its last step, and can be cancelled).
+    callback rerun();
 
     ScrollView {
         VerticalLayout {
-            padding-left: 40px;
-            padding-right: 40px;
-            padding-top: 30px;
+            padding-left: root.embedded ? 44px : 40px;
+            padding-right: root.embedded ? 44px : 40px;
+            padding-top: root.embedded ? 40px : 30px;
             padding-bottom: 28px;
             spacing: 14px;
             alignment: start;
 
-            Caps { text: "ABOUT"; color: Theme.accent; }
+            if !root.embedded: Caps { text: "ABOUT"; color: Theme.accent; }
+            if root.embedded: Text {
+                text: "ABOUT";
+                font-family: Type.cond;
+                font-weight: 700;
+                font-size: 30px;
+                color: Theme.fg;
+                accessible-role: AccessibleRole.text;
+            }
 
             // Its head: the mark, what it is, its release, and where it's made.
             Card {
@@ -150,6 +163,10 @@ export component AboutScreen inherits Rectangle {
                             Btn { text: "Release notes"; kind: "ghost"; clicked => { root.link("releases"); } }
                             Btn { text: "Report a problem"; kind: "ghost"; clicked => { root.link("issues"); } }
                             Btn { text: root.checking ? "Checking…" : "Check for updates"; kind: "ghost"; busy: root.checking; enabled: !root.checking; clicked => { root.check(); } }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Btn { text: "Run the setup again"; kind: "ghost"; clicked => { root.rerun(); } }
                         }
                         if root.checked != "": Text { text: root.checked; color: Theme.soft; wrap: word-wrap; }
                     }

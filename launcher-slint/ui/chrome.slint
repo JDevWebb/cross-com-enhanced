@@ -1,5 +1,6 @@
 // The window round the screens: its own title bar (the mark, the name, the release, the window's
-// buttons), the side menu, and the note that comes up after something's done.
+// buttons), the side menu, the status bar along the bottom, and the note that comes up after
+// something's done.
 
 import { Theme, Type } from "theme.slint";
 import { CrossMark } from "brand.slint";
@@ -8,7 +9,7 @@ import { Btn, Spinner } from "widgets.slint";
 // The menu's icons (24 by 24, stroked).
 export global Icons {
     out property <string> play: "M7 4.5v15l12-7.5z";
-    out property <string> setup: "M4 7h10 M4 17h6 M18 7h2 M14 17h6 M18 7a2 2 0 1 1-4 0a2 2 0 1 1 4 0z M14 17a2 2 0 1 1-4 0a2 2 0 1 1 4 0z";
+    out property <string> news: "M5 4h14v16H5z M8.5 9h7 M8.5 13h7 M8.5 17h4";
     out property <string> settings: "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M12 3v3 M12 18v3 M3 12h3 M18 12h3 M5.6 5.6l2.1 2.1 M16.3 16.3l2.1 2.1 M5.6 18.4l2.1-2.1 M16.3 7.7l2.1-2.1";
     out property <string> refresh: "M20 12a8 8 0 1 1-2.3-5.6 M20 4v4.5h-4.5";
     out property <string> about: "M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0z M12 11v6 M12 7.5v.01";
@@ -108,24 +109,29 @@ component MenuItem inherits Rectangle {
     in property <string> label;
     in property <string> icon;
     in property <bool> on;
+    // Locked while the first setup shows (Play and News need everything set up).
+    in property <bool> enabled: true;
     callback clicked();
     forward-focus: fs;
     width: 60px;
     height: 54px;
     border-radius: 8px;
-    background: on ? Theme.selected : ta.has-hover ? Theme.control : transparent;
+    opacity: enabled ? 1 : 0.35;
+    background: on ? Theme.selected : ta.has-hover && enabled ? Theme.control : transparent;
     animate background { duration: Theme.quick; }
     accessible-role: button;
     accessible-label: label;
     accessible-checked: on;
-    accessible-action-default => { clicked(); }
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { clicked(); } }
     fs := FocusScope {
+        enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
     }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { root.clicked(); } }
     // The current screen: the accent edge.
     Rectangle {
         x: 0;
@@ -161,20 +167,34 @@ component MenuItem inherits Rectangle {
     }
 }
 
+// The side menu: the mark, Play and its News, and Settings at the foot with the release under it.
+// While the first setup shows, Play and News are locked.
 export component SideMenu inherits Rectangle {
     in property <string> current;
+    // Play's side panel shows its news (News lights up instead of Play).
+    in property <bool> news;
+    in property <bool> locked;
+    in property <string> release;
     callback go(string);
-    width: 76px;
+    width: 80px;
     background: Theme.rail;
     VerticalLayout {
         padding-top: 14px;
         padding-bottom: 12px;
         spacing: 6px;
-        HorizontalLayout { alignment: center; MenuItem { label: "Play"; icon: Icons.play; on: current == "play"; clicked => { root.go("play"); } } }
-        HorizontalLayout { alignment: center; MenuItem { label: "Set up"; icon: Icons.setup; on: current == "setup"; clicked => { root.go("setup"); } } }
+        HorizontalLayout { alignment: center; padding-bottom: 10px; CrossMark { size: 40px; } }
+        HorizontalLayout { alignment: center; MenuItem { label: "Play"; icon: Icons.play; enabled: !root.locked; on: current == "play" && !root.news; clicked => { root.go("play"); } } }
+        HorizontalLayout { alignment: center; MenuItem { label: "News"; icon: Icons.news; enabled: !root.locked; on: current == "play" && root.news; clicked => { root.go("news"); } } }
         Rectangle { vertical-stretch: 1; }
-        HorizontalLayout { alignment: center; MenuItem { label: "About"; icon: Icons.about; on: current == "about"; clicked => { root.go("about"); } } }
         HorizontalLayout { alignment: center; MenuItem { label: "Settings"; icon: Icons.settings; on: current == "settings"; clicked => { root.go("settings"); } } }
+        Text {
+            text: root.release;
+            horizontal-alignment: center;
+            font-family: Type.mono;
+            font-size: 10.5px;
+            color: Theme.muted;
+            overflow: elide;
+        }
     }
     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
 }
@@ -295,5 +315,40 @@ export component UpdateBar inherits Rectangle {
             clicked => { root.update(); }
         }
         if root.state != "updating": Btn { text: "Later"; kind: "ghost"; clicked => { root.later(); } }
+    }
+}
+
+// Along the window's foot: how things stand in one line (signed in, the game starting, what went
+// wrong), with its dot. `tone` is "good", "warn", "bad" or "busy".
+export component StatusBar inherits Rectangle {
+    in property <string> text;
+    in property <string> tone: "good";
+    height: 40px;
+    background: Theme.rail;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    Rectangle { y: 0; height: 1px; background: Theme.accent-dim; }
+    HorizontalLayout {
+        padding-left: 28px;
+        padding-right: 20px;
+        spacing: 12px;
+        if root.tone == "busy": VerticalLayout { alignment: center; Spinner { size: 12px; } }
+        if root.tone != "busy": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.tone == "good" ? Theme.good : root.tone == "bad" ? Theme.bad : Theme.warn;
+            }
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: root.tone == "bad" ? Theme.bad : Theme.fg;
+            font-size: 14px;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
     }
 }

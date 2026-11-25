@@ -1,45 +1,99 @@
-// The main screen once set up: where you'll play and as whom, how the server is (asked each time
-// the screen opens), its news, and Play, which brings the client up to date first when this
-// launcher carries a newer one.
+// The main screen once set up, laid out as 5th Echelon's: the game's name over a dark stage, the
+// player's name and identity at the top, the server (asked each time the screen opens) beside
+// Play, which brings the client up to date first when this launcher carries a newer one; and a
+// side panel with the status (the server, the client, the firewall, the port forward, the last
+// game's connection) and the server's news.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
-import { CrossMark } from "brand.slint";
-import { Btn, Caps, Tag, Dot, Card, Spinner } from "widgets.slint";
+import { Btn, Caps, Tag, Dot, Spinner } from "widgets.slint";
 import { Icon, Icons } from "chrome.slint";
 import { InfoView, NewsRow, CheckRow } from "types.slint";
 import { DlcNotice } from "dlc.slint";
 
-// A card of the status row: its label, its value, and a line under it.
-component StatusCard inherits Card {
+// A text button in the accent ("All news", "Test my connection").
+component LinkText inherits Text {
+    callback clicked();
+    color: lta.has-hover ? Theme.accent.brighter(15%) : Theme.accent;
+    font-size: 14px;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-action-default => { clicked(); }
+    lta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// One line of the status panel: what's checked and how it stands, a line under it, and the button
+// that fixes it when the launcher can.
+component StatusLine inherits Rectangle {
     in property <string> label;
     in property <string> value;
+    // "good", "warn", "bad" or "muted".
+    in property <string> tone;
     in property <string> detail;
-    in property <color> value-color: Theme.fg;
-    // Under the value ("Community test network").
-    in property <string> tag;
-    // A button at the bottom ("" for none).
     in property <string> action;
     callback act();
     min-height: lay.preferred-height;
+    property <color> tint: tone == "good" ? Theme.good : tone == "warn" ? Theme.warn : tone == "bad" ? Theme.bad : Theme.control-line;
+    Rectangle { x: 0; width: 2px; background: root.tint; }
     lay := VerticalLayout {
-        alignment: start;
-        padding: 14px;
-        padding-left: 18px;
-        padding-right: 18px;
-        spacing: 6px;
-        @children
-        Text { text: root.value; color: root.value-color; font-weight: 600; font-size: 16px; wrap: word-wrap; }
-        if root.tag != "": HorizontalLayout { alignment: start; Tag { text: root.tag; } }
-        if root.detail != "": Text { text: root.detail; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+        padding-left: 14px;
+        padding-top: 8px;
+        padding-bottom: 9px;
+        spacing: 3px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: root.label; color: Theme.fg; font-weight: 600; font-size: 14.5px; horizontal-stretch: 1; overflow: elide; }
+            Text {
+                text: root.value;
+                color: root.tone == "muted" ? Theme.muted : root.tint;
+                font-size: 13px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                max-width: 170px;
+            }
+        }
+        if root.detail != "": Text { text: root.detail; color: Theme.soft; font-size: 13px; wrap: word-wrap; }
         if root.action != "": HorizontalLayout { alignment: start; padding-top: 4px; Btn { text: root.action; clicked => { root.act(); } } }
     }
+}
+
+// The panel's tabs: Status and News.
+component PanelTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    callback clicked();
+    forward-focus: fs;
+    accessible-role: tab;
+    accessible-label: text;
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: root.text;
+        font-family: Type.mono;
+        font-size: Type.caps;
+        letter-spacing: 2px;
+        color: root.on ? Theme.fg : ta.has-hover ? Theme.soft : Theme.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle { y: parent.height - 2px; height: 2px; background: root.on ? Theme.accent : transparent; }
+    Rectangle { border-width: fs.has-focus ? 2px : 0px; border-color: Theme.accent; }
 }
 
 export component PlayScreen inherits Rectangle {
     in property <InfoView> info;
     in property <string> community-name;
     in property <string> community-status;
+    // The player's identity, short ("ABCD-EFGH"), for the name at the top.
+    in property <string> identity;
     // The server: "asking", "up" or "down", and the line under it.
     in property <string> server-state;
     in property <string> server-detail;
@@ -50,99 +104,187 @@ export component PlayScreen inherits Rectangle {
     // it's being looked at).
     in property <[CheckRow]> checks;
     in property <bool> starting;
-    in property <string> said;
-    in property <bool> failed;
+    // The side panel: "status" or "news".
+    in-out property <string> tab: "status";
     callback play();
     callback refresh();
-    // A checklist card's button, by its label ("Firewall").
+    // A status line's button, by its label ("Firewall").
     callback check-action(string);
+    // To Settings, at a section ("server", "identity", "network").
+    callback settings(string);
 
-    // The accent's light from the top right.
-    Rectangle {
-        background: @radial-gradient(circle, Theme.accent-glow 0%, transparent 60%);
-        x: parent.width * 0.35;
-        y: -parent.height * 0.6;
-        width: parent.width * 1.1;
-        height: parent.height * 1.1;
-    }
+    property <length> panel: 340px;
 
-    ScrollView {
+    // The stage: the game's name over a dark scene, lit in the accent from the right.
+    stage := Rectangle {
+        x: 0;
+        width: root.width - root.panel;
+        clip: true;
+        background: @linear-gradient(180deg, #0b1216 0%, #0a161b 55%, #0b1216 100%);
+        Rectangle {
+            x: parent.width * 0.2;
+            y: -parent.height * 0.15;
+            width: parent.width * 1.1;
+            height: parent.height * 1.1;
+            background: @radial-gradient(circle, Theme.accent-glow 0%, transparent 60%);
+        }
         VerticalLayout {
             padding-left: 40px;
-            padding-right: 40px;
-            padding-top: 36px;
-            padding-bottom: 28px;
+            padding-right: 36px;
+            padding-top: 30px;
+            padding-bottom: 24px;
             spacing: 0px;
-            alignment: start;
 
-            // The hero: the mark, the game, the title.
+            // Field ops, and who's playing.
             HorizontalLayout {
-                spacing: 26px;
-                padding-bottom: 30px;
-                VerticalLayout { alignment: center; CrossMark { size: 112px; glow: true; } }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 4px;
-                    Caps { text: "GHOST RECON: FUTURE SOLDIER"; color: Theme.accent; }
-                    Text {
-                        text: "READY FOR DEPLOYMENT";
-                        font-family: Type.cond;
-                        font-weight: 700;
-                        font-size: 50px;
-                        color: Theme.fg;
-                        accessible-role: AccessibleRole.text;
-                    }
-                    Text {
-                        text: "Multiplayer on a Cross-Com server: every mode (Conflict, Decoy, Saboteur, Siege, Stockade, Takeover), Guerrilla and co-op.";
-                        color: Theme.soft;
-                        wrap: word-wrap;
-                    }
-                }
-            }
-
-            // Where, as whom, and the client.
-            HorizontalLayout {
-                spacing: 14px;
-                StatusCard {
-                    label: "Server";
-                    // The three take equal shares of the row, between the page's sides and the gaps.
-                    width: (root.width - 108px) / 3;
-                    value: root.info.server;
-                    detail: root.server-detail;
-                    tag: !root.info.community ? "" : root.community-status != "" ? root.community-name + " · " + root.community-status : root.community-name;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Caps { text: "SERVER"; horizontal-stretch: 1; }
-                        VerticalLayout { alignment: center; Dot { tone: root.server-state; } }
-                        Caps {
-                            text: root.server-state == "up" ? "ONLINE" : root.server-state == "down" ? "OFFLINE" : "CHECKING";
-                            color: root.server-state == "up" ? Theme.good : root.server-state == "down" ? Theme.bad : Theme.muted;
+                Caps { text: "FIELD OPS"; vertical-alignment: center; horizontal-stretch: 1; }
+                who := Rectangle {
+                    width: wl.preferred-width;
+                    height: wl.preferred-height;
+                    border-radius: 6px;
+                    background: wta.has-hover ? Theme.control : Theme.surface.with-alpha(0.8);
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    accessible-role: button;
+                    accessible-label: "Signed in as " + root.info.account + ": your identity, in Settings";
+                    accessible-action-default => { root.settings("identity"); }
+                    wta := TouchArea { mouse-cursor: pointer; clicked => { root.settings("identity"); } }
+                    wl := HorizontalLayout {
+                        padding: 8px;
+                        padding-left: 10px;
+                        padding-right: 16px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 38px;
+                            height: 38px;
+                            border-radius: 19px;
+                            border-width: 1.5px;
+                            border-color: Theme.accent;
+                            Text {
+                                text: root.info.initial;
+                                color: Theme.accent;
+                                font-weight: 600;
+                                font-size: 16px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                x: parent.width - 10px;
+                                y: parent.height - 11px;
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: root.server-state == "up" ? Theme.good : root.server-state == "down" ? Theme.bad : Theme.muted;
+                                border-width: 2px;
+                                border-color: Theme.surface;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            Text { text: root.info.account; color: Theme.fg; font-weight: 600; }
+                            if root.identity != "": Text { text: "ID " + root.identity; font-family: Type.mono; font-size: 11px; letter-spacing: 1px; color: Theme.muted; }
                         }
                     }
                 }
-                StatusCard {
-                    label: "Signed in as";
-                    width: (root.width - 108px) / 3;
-                    value: root.info.account;
-                    Caps { text: "SIGNED IN AS"; }
-                }
-                StatusCard {
-                    label: "Client";
-                    width: (root.width - 108px) / 3;
-                    value: root.info.client == "yes" ? "Installed" : root.info.client == "update" ? "Update ready: installed when you press Play" : root.info.client == "no" ? "Not installed" : "—";
-                    value-color: root.info.client == "update" ? Theme.warn : Theme.fg;
-                    Caps { text: "CLIENT"; }
-                }
             }
 
-            // Play.
+            Rectangle { vertical-stretch: 1; min-height: 20px; }
+
+            // The game.
+            Caps { text: "TOM CLANCY'S"; color: Theme.accent; }
+            VerticalLayout {
+                padding-top: 8px;
+                padding-bottom: 12px;
+                // The two lines set close, as one title.
+                spacing: -min(74px, stage.width / 10.5) * 0.22;
+                Text {
+                    text: "GHOST RECON";
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: min(74px, stage.width / 10.5);
+                    color: Theme.fg;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "Ghost Recon: Future Soldier";
+                }
+                Text {
+                    text: "FUTURE SOLDIER";
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: min(74px, stage.width / 10.5);
+                    color: Theme.accent;
+                    accessible-role: none;
+                }
+            }
+            Text {
+                text: "Every multiplayer mode, Guerrilla and co-op, on a community server. Open source, and run by its players.";
+                color: Theme.soft;
+                font-size: 16px;
+                wrap: word-wrap;
+            }
+
+            // The server, and Play.
             HorizontalLayout {
-                padding-top: 30px;
-                spacing: 22px;
-                alignment: start;
+                padding-top: 24px;
+                spacing: 18px;
+                server := Rectangle {
+                    horizontal-stretch: 1;
+                    max-width: 380px;
+                    min-height: sl.preferred-height;
+                    border-radius: 5px;
+                    background: sta.has-hover ? Theme.control : Theme.surface.with-alpha(0.9);
+                    border-width: 1px;
+                    border-color: sta.has-hover ? Theme.accent-dim : Theme.control-line;
+                    accessible-role: button;
+                    accessible-label: "Server: " + root.info.server + ", in Settings";
+                    accessible-action-default => { root.settings("server"); }
+                    sta := TouchArea { mouse-cursor: pointer; clicked => { root.settings("server"); } }
+                    sl := HorizontalLayout {
+                        padding: 12px;
+                        padding-left: 16px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 3px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Caps { text: "SERVER"; vertical-alignment: center; }
+                                VerticalLayout { alignment: center; Dot { tone: root.server-state; } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            Text {
+                                text: root.info.community ? root.community-name : root.info.server;
+                                color: Theme.fg;
+                                font-weight: 600;
+                                font-size: 16px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.server-detail;
+                                color: root.server-state == "down" ? Theme.bad : Theme.muted;
+                                font-size: 12.5px;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Path {
+                                width: 10px;
+                                height: 6px;
+                                viewbox-width: 10;
+                                viewbox-height: 6;
+                                commands: "M 1 1 L 5 5 L 9 1";
+                                stroke: Theme.soft;
+                                stroke-width: 1.5px;
+                                fill: transparent;
+                            }
+                        }
+                    }
+                }
                 play-button := Rectangle {
-                    width: 200px;
-                    height: 60px;
+                    width: 260px;
+                    min-height: 64px;
                     border-radius: 4px;
                     background: pta.has-hover && !root.starting ? Theme.accent.brighter(7%) : Theme.accent;
                     opacity: root.starting ? 0.6 : 1;
@@ -161,29 +303,28 @@ export component PlayScreen inherits Rectangle {
                         }
                     }
                     pta := TouchArea { enabled: !root.starting; mouse-cursor: pointer; clicked => { root.play(); } }
-                    HorizontalLayout {
+                    VerticalLayout {
                         alignment: center;
-                        spacing: 12px;
-                        if root.starting: VerticalLayout { alignment: center; Spinner { size: 18px; } }
-                        if !root.starting: VerticalLayout {
+                        spacing: 2px;
+                        HorizontalLayout {
                             alignment: center;
-                            Path {
-                                width: 18px;
-                                height: 18px;
-                                viewbox-width: 24;
-                                viewbox-height: 24;
-                                commands: Icons.play;
-                                fill: Theme.on-accent;
+                            spacing: 10px;
+                            if root.starting: VerticalLayout { alignment: center; Spinner { size: 16px; } }
+                            Text {
+                                text: root.starting ? "STARTING" : "PLAY";
+                                font-family: Type.mono;
+                                font-size: 22px;
+                                letter-spacing: 6px;
+                                color: Theme.on-accent;
                             }
                         }
                         Text {
-                            text: root.starting ? "STARTING" : "PLAY";
-                            vertical-alignment: center;
-                            font-family: Type.cond;
-                            font-weight: 700;
-                            font-size: 22px;
-                            letter-spacing: 1.8px;
-                            color: Theme.on-accent;
+                            text: root.info.client == "update" ? "The client is brought up to date first"
+                                : (root.info.dx9 ? "DirectX 9" : "DirectX 11") + (root.info.skip-intro ? " · intro videos skipped" : "");
+                            horizontal-alignment: center;
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.on-accent.with-alpha(0.75);
                         }
                     }
                     Rectangle {
@@ -196,98 +337,121 @@ export component PlayScreen inherits Rectangle {
                         border-color: Theme.fg;
                     }
                 }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 4px;
-                    Text {
-                        text: (root.info.dx9 ? "DirectX 9" : "DirectX 11") + (root.info.skip-intro ? " · intro videos skipped" : "");
-                        color: Theme.muted;
-                    }
-                    if root.said != "": Text { text: root.said; color: root.failed ? Theme.bad : Theme.fg; wrap: word-wrap; }
-                }
-            }
-
-            // The checklist: what decides whether other players can reach your game.
-            if root.checks.length > 0: HorizontalLayout {
-                padding-top: 26px;
-                spacing: 14px;
-                for check in root.checks: StatusCard {
-                    width: (root.width - 108px) / 3;
-                    value: check.value;
-                    value-color: check.tone == "good" ? Theme.good : check.tone == "warn" ? Theme.warn : check.tone == "bad" ? Theme.bad : Theme.fg;
-                    detail: check.detail;
-                    action: check.action;
-                    act => { root.check-action(check.label); }
-                    Caps { text: check.label.to-uppercase(); }
-                }
             }
 
             // Missing or incomplete DLC packs, checked again as Play is pressed: a warning only.
-            if root.info.dlc-note != "": DlcNotice { text: root.info.dlc-note; }
+            if root.info.dlc-note != "": VerticalLayout { padding-top: 14px; DlcNotice { text: root.info.dlc-note; } }
 
-            // The server's news.
+            // The latest news, in a line.
+            if root.news.length > 0: HorizontalLayout {
+                padding-top: 18px;
+                spacing: 16px;
+                Caps { text: "INTEL"; color: Theme.accent; vertical-alignment: center; }
+                Text { text: root.news[0].title; color: Theme.fg; font-size: 14.5px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                LinkText { text: "All news"; vertical-alignment: center; clicked => { root.tab = "news"; } }
+            }
+        }
+    }
+
+    // The side panel: Status and News.
+    Rectangle {
+        x: root.width - root.panel;
+        width: root.panel;
+        background: Theme.surface;
+        Rectangle { x: 0; width: 1px; background: Theme.line; }
+        VerticalLayout {
             HorizontalLayout {
-                padding-top: 34px;
-                padding-bottom: 12px;
-                spacing: 10px;
-                alignment: start;
-                Text {
-                    text: "NEWS";
-                    font-family: Type.cond;
-                    font-weight: 700;
-                    font-size: 18px;
-                    letter-spacing: 0.4px;
-                    color: Theme.fg;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    width: 30px;
-                    height: 30px;
-                    border-radius: 6px;
-                    background: rta.has-hover && !root.news-loading ? Theme.control : transparent;
-                    accessible-role: button;
-                    accessible-label: "Refresh the news";
-                    accessible-action-default => { if !root.news-loading { root.refresh(); } }
-                    rta := TouchArea { enabled: !root.news-loading; mouse-cursor: pointer; clicked => { root.refresh(); } }
-                    Icon {
-                        size: 16px;
-                        commands: Icons.refresh;
-                        color: rta.has-hover ? Theme.fg : Theme.muted;
-                        transform-rotation: root.news-loading && !Theme.reduced-motion ? 360deg * Math.mod(animation-tick() / 800ms, 1) : 0deg;
+                height: 52px;
+                PanelTab { horizontal-stretch: 1; text: "STATUS"; on: root.tab == "status"; clicked => { root.tab = "status"; } }
+                PanelTab { horizontal-stretch: 1; text: root.news.length > 0 ? "NEWS · " + root.news.length : "NEWS"; on: root.tab == "news"; clicked => { root.tab = "news"; } }
+            }
+            Rectangle { height: 1px; background: Theme.line; }
+            if root.tab == "status": ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding: 16px;
+                    padding-top: 18px;
+                    spacing: 8px;
+                    alignment: start;
+                    StatusLine {
+                        label: "Server";
+                        value: root.server-state == "up" ? "Online" : root.server-state == "down" ? "Offline" : "Checking";
+                        tone: root.server-state == "up" ? "good" : root.server-state == "down" ? "bad" : "muted";
+                        detail: root.info.server + (root.info.community && root.community-status != "" ? " · " + root.community-status : "");
+                    }
+                    StatusLine {
+                        label: "Client";
+                        value: root.info.client == "yes" ? "Installed" : root.info.client == "update" ? "Update ready" : "Not installed";
+                        tone: root.info.client == "yes" ? "good" : root.info.client == "update" ? "warn" : "bad";
+                        detail: root.info.client == "update" ? "Installed when you press Play." : "";
+                    }
+                    for check in root.checks: StatusLine {
+                        label: check.label;
+                        value: check.value;
+                        tone: check.tone;
+                        detail: check.detail;
+                        action: check.action;
+                        act => { root.check-action(check.label); }
+                    }
+                    if root.checks.length == 0: HorizontalLayout {
+                        padding-left: 14px;
+                        spacing: 8px;
+                        VerticalLayout { alignment: center; Spinner { size: 12px; } }
+                        Text { text: "Looking at the firewall and your last game…"; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                    }
+                    HorizontalLayout {
+                        padding-top: 8px;
+                        padding-left: 14px;
+                        LinkText { text: "Test my connection ›"; clicked => { root.settings("network"); } }
                     }
                 }
             }
-            if root.news.length == 0: Text { text: root.news-note; color: Theme.muted; wrap: word-wrap; }
-            VerticalLayout {
-                spacing: 10px;
-                for item in root.news: Card {
-                    min-height: nl.preferred-height;
-                    Rectangle { x: 0; width: 2px; background: Theme.accent-dim; border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-                    nl := VerticalLayout {
-                        padding: 14px;
-                        padding-left: 18px;
-                        padding-right: 18px;
-                        spacing: 4px;
-                        HorizontalLayout {
-                            spacing: 10px;
-                            alignment: start;
-                            Caps { text: item.date; vertical-alignment: center; }
-                            if item.tag != "": Tag { text: item.tag; }
+            if root.tab == "news": ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding: 16px;
+                    padding-top: 14px;
+                    spacing: 10px;
+                    alignment: start;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Caps { text: "FROM THE SERVER"; vertical-alignment: center; horizontal-stretch: 1; }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            background: rta.has-hover && !root.news-loading ? Theme.control : transparent;
+                            accessible-role: button;
+                            accessible-label: "Refresh the news";
+                            accessible-action-default => { if !root.news-loading { root.refresh(); } }
+                            rta := TouchArea { enabled: !root.news-loading; mouse-cursor: pointer; clicked => { root.refresh(); } }
+                            Icon {
+                                size: 15px;
+                                commands: Icons.refresh;
+                                color: rta.has-hover ? Theme.fg : Theme.muted;
+                                transform-rotation: root.news-loading && !Theme.reduced-motion ? 360deg * Math.mod(animation-tick() / 800ms, 1) : 0deg;
+                            }
                         }
-                        Text { text: item.title; color: Theme.fg; font-weight: 600; font-size: 16px; wrap: word-wrap; }
-                        Text { text: item.body; color: Theme.soft; wrap: word-wrap; }
                     }
-                }
-            }
-
-            VerticalLayout {
-                padding-top: 34px;
-                Text {
-                    text: root.info.game-dir;
-                    font-family: Type.mono;
-                    font-size: 11.5px;
-                    color: Theme.muted;
-                    overflow: elide;
+                    if root.news.length == 0: Text { text: root.news-note; color: Theme.muted; font-size: 13.5px; wrap: word-wrap; }
+                    for item in root.news: Rectangle {
+                        min-height: nl.preferred-height;
+                        Rectangle { x: 0; width: 2px; background: Theme.control-line; }
+                        nl := VerticalLayout {
+                            padding-left: 14px;
+                            padding-top: 6px;
+                            padding-bottom: 8px;
+                            spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Caps { text: item.date; vertical-alignment: center; }
+                                if item.tag != "": Tag { text: item.tag; }
+                            }
+                            Text { text: item.title; color: Theme.fg; font-weight: 600; font-size: 14.5px; wrap: word-wrap; }
+                            Text { text: item.body; color: Theme.soft; font-size: 13.5px; wrap: word-wrap; }
+                        }
+                    }
                 }
             }
         }

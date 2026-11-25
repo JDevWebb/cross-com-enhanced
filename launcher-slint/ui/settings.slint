@@ -1,18 +1,92 @@
-// The game options (with the in-game overlay and its key), sending the game's logs, the server
-// (changing it, or going back to the community test network), the account and the identity that
-// signs the player in to it (copied to move it to another PC, or another PC's used here), the
-// connection test and port forwarding, and taking Cross-Com out of the game.
+// Settings, as 5th Echelon's: a menu of sections down the side, and one setting a row. Game (the
+// game's folder, moved here; the video options, the overlay and its key; putting the game's own
+// files back), Server (switching server here, with the check Setup makes), Identity (the key that
+// signs the player in: copied to another PC, or another PC's used here), Network (the connection
+// test, port forwarding), Logs, and About. Changes are saved as they're made.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
-import { Btn, Caps, Tag, Card, CardHead, Para, Check, Choice, Field } from "widgets.slint";
+import { Btn, Caps, Tag, Para, Field, LabelledField, Option, Choice, Tabs, Spinner, Switch, SettingRow, GroupLabel } from "widgets.slint";
+import { DlcList, DlcNotice } from "dlc.slint";
 import { InfoView } from "types.slint";
+import { AboutScreen } from "about.slint";
+
+// A section in the menu: its name, and what's in it under that.
+component SectionItem inherits Rectangle {
+    in property <string> label;
+    in property <string> sub;
+    in property <bool> on;
+    callback clicked();
+    forward-focus: fs;
+    min-height: lay.preferred-height;
+    background: on ? Theme.selected : ta.has-hover ? Theme.control : transparent;
+    animate background { duration: Theme.quick; }
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-description: sub;
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if root.on: Rectangle { x: 0; y: 6px; width: 2px; height: parent.height - 12px; background: Theme.accent; }
+    lay := VerticalLayout {
+        padding-left: 24px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 1px;
+        Text { text: root.label; color: root.on ? Theme.accent : Theme.soft; font-weight: root.on ? 600 : 400; }
+        Text { text: root.sub; color: Theme.muted; font-size: 12px; overflow: elide; }
+    }
+    Rectangle { border-width: fs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+}
+
+// A line of what came of something, under its row: green or red, or the soft grey.
+component Said inherits Text {
+    in property <bool> failed;
+    in property <bool> good;
+    color: failed ? Theme.bad : good ? Theme.good : Theme.soft;
+    font-size: Type.small;
+    wrap: word-wrap;
+}
+
+// A box asking before something that can't be taken back: what it does, and the two answers.
+component Confirm inherits Rectangle {
+    in property <string> text;
+    in property <string> yes;
+    in property <string> no;
+    callback answered(bool);
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.warn;
+    background: Theme.warn.with-alpha(0.06);
+    min-height: cl.preferred-height;
+    cl := VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+        Text { text: root.text; color: Theme.soft; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Btn { text: root.yes; kind: "primary"; clicked => { root.answered(true); } }
+            Btn { text: root.no; clicked => { root.answered(false); } }
+        }
+    }
+}
 
 export component SettingsScreen inherits Rectangle {
     in property <InfoView> info;
     in property <string> release;
+    in property <string> community-host;
     in property <string> community-name;
     in property <string> community-status;
+    // The section shown: "game", "server", "identity", "network", "logs" or "about".
+    in-out property <string> section: "game";
     // The options as shown; changed => saved at once.
     in-out property <bool> skip-intro;
     in-out property <bool> dx9;
@@ -20,8 +94,28 @@ export component SettingsScreen inherits Rectangle {
     in-out property <int> overlay-key;
     in-out property <bool> send-logs;
     in-out property <bool> port-forwarding;
+    // The fewest players a Quick Match starts with, as an index from 2.
+    in-out property <int> min-players;
     in property <string> options-said;
     in property <bool> options-failed;
+    // Moving the game's folder, or switching server: Setup's own work (its server check and its
+    // account), run from here.
+    in property <bool> busy;
+    in property <string> moved-said;
+    in property <bool> moved-failed;
+    in-out property <bool> community: true;
+    in-out property <string> server-typed;
+    // The server chosen, as the launcher will use it ("" until there's one).
+    in property <string> server-chosen;
+    in property <string> server-ok;
+    in property <bool> server-checking;
+    in property <string> server-error;
+    in property <string> account;
+    in-out property <string> name;
+    in-out property <string> code;
+    in property <bool> account-done;
+    in property <string> switch-said;
+    in property <bool> switch-failed;
     // The player's identity: its short form ("ABCD-EFGH"), or why it can't be read; the text
     // pasted from another PC, and (when using it would replace a different one) what to confirm.
     in property <string> identity;
@@ -45,303 +139,437 @@ export component SettingsScreen inherits Rectangle {
     in-out property <bool> confirming;
     in property <string> restore-said;
     in property <bool> restore-failed;
+    // About's Check for updates: looking, and what it found.
+    in property <bool> update-checking;
+    in property <string> update-checked;
     callback options-changed();
+    callback move-game();
+    callback check-server();
+    callback server-changed();
+    callback switch-server();
     // The identity as text, to copy ("" when there's none to copy).
     callback identity-export() -> string;
     // Uses the identity pasted; `true` once replacing a different one is confirmed.
     callback identity-use(bool);
-    // To Setup with the community test network chosen (true), or another server.
-    callback change-server(bool);
     callback send-logs-now();
     callback open-logs();
     callback restore();
     callback test-connection();
+    callback check-update();
+    callback open-link(string);
+    callback run-setup();
 
-    ScrollView {
-        VerticalLayout {
-            padding-left: 40px;
-            padding-right: 40px;
-            padding-top: 30px;
-            padding-bottom: 28px;
-            spacing: 0px;
-            alignment: start;
+    property <[{id: string, label: string, sub: string}]> sections: [
+        { id: "game", label: "Game", sub: "Folder, video, overlay" },
+        { id: "server", label: "Server", sub: "Where you play" },
+        { id: "identity", label: "Identity", sub: "Your sign-in" },
+        { id: "network", label: "Network", sub: "Connection, router" },
+        { id: "logs", label: "Logs", sub: "Game logs to the server" },
+        { id: "about", label: "About", sub: "Version, credits, setup" },
+    ];
+    // The server chosen is the one set up already.
+    property <bool> same-server: root.server-chosen != "" && root.server-chosen == root.info.server;
 
-            Caps { text: "SETTINGS"; color: Theme.accent; }
-            Text {
-                text: "SETTINGS";
-                font-family: Type.cond;
-                font-weight: 700;
-                font-size: 40px;
-                color: Theme.fg;
-                accessible-role: AccessibleRole.text;
-            }
-
-            HorizontalLayout {
-                padding-top: 18px;
-                spacing: 14px;
-                // The game, its logs and its files.
-                VerticalLayout {
-                    spacing: 14px;
-                    // Two equal columns, between the page's sides (40 px) and the gap.
-                    width: (root.width - 94px) / 2;
-                    alignment: start;
-                    Card {
-                        min-height: gl.preferred-height;
-                        gl := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
-                            spacing: 8px;
-                            CardHead { title: "Game"; }
-                            Check { text: "Skip the intro videos"; checked <=> root.skip-intro; toggled => { root.options-changed(); } }
-                            Check { text: "Use DirectX 9 (for older graphics cards)"; checked <=> root.dx9; toggled => { root.options-changed(); } }
-                            Check { text: "In-game overlay"; checked <=> root.overlay; toggled => { root.options-changed(); } }
-                            HorizontalLayout {
-                                padding-left: 28px;
-                                spacing: 10px;
-                                alignment: start;
-                                opacity: root.overlay ? 1 : 0.5;
-                                Text { text: "Opens with"; color: Theme.soft; vertical-alignment: center; }
-                                Choice {
-                                    label: "The key that opens the overlay";
-                                    model: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
-                                    current <=> root.overlay-key;
-                                    enabled: root.overlay;
-                                    chosen => { root.options-changed(); }
-                                }
-                            }
-                            if root.options-said != "": Text {
-                                text: root.options-said;
-                                color: root.options-failed ? Theme.bad : Theme.muted;
-                                font-size: Type.small;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                    Card {
-                        min-height: ll.preferred-height;
-                        ll := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
-                            spacing: 10px;
-                            CardHead { title: "Logs"; }
-                            Check {
-                                text: "Send game logs to the server after each game (helps fix problems; your Windows user name and the game's sign-in token are removed)";
-                                checked <=> root.send-logs;
-                                toggled => { root.options-changed(); }
-                            }
-                            Text { text: root.logs-last; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                Btn {
-                                    text: "Send logs now";
-                                    busy: root.logs-sending;
-                                    enabled: root.send-logs && root.info.game-dir != "" && !root.logs-sending;
-                                    clicked => { root.send-logs-now(); }
-                                }
-                                Btn { text: "Open logs folder"; enabled: root.info.game-dir != ""; clicked => { root.open-logs(); } }
-                            }
-                            if root.logs-said != "": Text { text: root.logs-said; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
-                            Text {
-                                text: "The server only takes logs from a PC its account has played online from in the last day. They help whoever runs it see what went wrong; each game's log stays in the game's logs folder.";
-                                color: Theme.muted;
-                                font-size: Type.small;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                    Card {
-                        min-height: fl.preferred-height;
-                        fl := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
-                            spacing: 10px;
-                            CardHead { title: "The game's files"; }
-                            Text {
-                                text: root.info.game-dir != "" ? root.info.game-dir : "No game set up.";
-                                font-family: Type.mono;
-                                font-size: 12.5px;
-                                color: Theme.soft;
-                                wrap: char-wrap;
-                            }
-                            Para { text: "Cross-Com replaces two of the game's files and keeps the originals. Putting them back leaves the game as it was installed."; }
-                            if !root.confirming: HorizontalLayout {
-                                alignment: start;
-                                Btn {
-                                    text: "Restore the game's own files";
-                                    enabled: root.info.game-dir != "" && root.info.client != "no";
-                                    clicked => { root.confirming = true; }
-                                }
-                            }
-                            if root.confirming: HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                Btn { text: "Restore them"; kind: "primary"; clicked => { root.confirming = false; root.restore(); } }
-                                Btn { text: "Keep Cross-Com"; clicked => { root.confirming = false; } }
-                            }
-                            if root.restore-said != "": Para { text: root.restore-said; color: root.restore-failed ? Theme.bad : Theme.soft; }
-                        }
+    HorizontalLayout {
+        // The menu.
+        Rectangle {
+            width: 220px;
+            VerticalLayout {
+                padding-top: 34px;
+                spacing: 2px;
+                alignment: start;
+                HorizontalLayout { padding-left: 24px; Caps { text: "LOADOUT"; color: Theme.accent; } }
+                HorizontalLayout {
+                    padding-left: 24px;
+                    padding-bottom: 16px;
+                    Text {
+                        text: "SETTINGS";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: 32px;
+                        color: Theme.fg;
+                        accessible-role: AccessibleRole.text;
                     }
                 }
-                // The server and the account.
-                VerticalLayout {
-                    spacing: 14px;
-                    // Two equal columns, between the page's sides (40 px) and the gap.
-                    width: (root.width - 94px) / 2;
-                    alignment: start;
-                    Card {
-                        min-height: al.preferred-height;
-                        al := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
-                            spacing: 10px;
-                            CardHead { title: "Server and account"; }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                Text {
-                                    text: root.info.server != "" ? root.info.server : "No server set up";
-                                    color: Theme.fg;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
+                for s in root.sections: SectionItem {
+                    label: s.label;
+                    sub: s.sub;
+                    on: root.section == s.id;
+                    clicked => { root.section = s.id; }
+                }
+            }
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+        }
+
+        // The section.
+        if root.section == "about": AboutScreen {
+            horizontal-stretch: 1;
+            embedded: true;
+            release: root.release;
+            checking: root.update-checking;
+            checked: root.update-checked;
+            check => { root.check-update(); }
+            link(id) => { root.open-link(id); }
+            rerun => { root.run-setup(); }
+        }
+        if root.section != "about": ScrollView {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 44px;
+                padding-right: 44px;
+                padding-top: 40px;
+                padding-bottom: 32px;
+                spacing: 0px;
+                alignment: start;
+
+                HorizontalLayout {
+                    padding-bottom: 14px;
+                    Text {
+                        text: root.section == "game" ? "GAME" : root.section == "server" ? "SERVER" : root.section == "identity" ? "IDENTITY" : root.section == "network" ? "NETWORK" : "LOGS";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: 30px;
+                        color: Theme.fg;
+                        horizontal-stretch: 1;
+                        accessible-role: AccessibleRole.text;
+                    }
+                    Caps {
+                        // Only where the switches are: Server and Identity act on a button.
+                        text: (root.section == "game" || root.section == "network" || root.section == "logs") && !(root.options-said != "" && root.options-failed) ? "SAVED AS YOU CHANGE IT" : "";
+                        vertical-alignment: bottom;
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+
+                // The game.
+                if root.section == "game": VerticalLayout {
+                    SettingRow {
+                        title: "The game's folder";
+                        sub: root.info.game-dir != "" ? root.info.game-dir : "No game set up.";
+                        mono: root.info.game-dir != "";
+                        Btn { text: "Change"; busy: root.busy; enabled: !root.busy; clicked => { root.move-game(); } }
+                    }
+                    if root.moved-said != "": VerticalLayout { padding-top: 8px; Said { text: root.moved-said; failed: root.moved-failed; good: !root.moved-failed; } }
+                    if root.info.dlc.length > 0: VerticalLayout {
+                        padding-top: 14px;
+                        padding-bottom: 14px;
+                        spacing: 10px;
+                        DlcList { packs: root.info.dlc; }
+                        if root.info.dlc-note != "": DlcNotice { text: root.info.dlc-note; }
+                        Rectangle { height: 1px; background: Theme.line; }
+                    }
+                    SettingRow {
+                        title: "Skip the intro videos";
+                        sub: "Straight to the main menu.";
+                        Switch { label: "Skip the intro videos"; checked <=> root.skip-intro; toggled => { root.options-changed(); } }
+                    }
+                    SettingRow {
+                        title: "Renderer";
+                        sub: "DirectX 9 only for older graphics cards.";
+                        Tabs {
+                            model: ["DirectX 11", "DirectX 9"];
+                            current: root.dx9 ? 1 : 0;
+                            chosen(i) => { root.dx9 = i == 1; root.options-changed(); }
+                        }
+                    }
+                    SettingRow {
+                        title: "In-game overlay";
+                        sub: "The server, your connection and who's online, over the game.";
+                        Switch { label: "In-game overlay"; checked <=> root.overlay; toggled => { root.options-changed(); } }
+                    }
+                    SettingRow {
+                        title: "Overlay key";
+                        sub: "Opens the overlay in the game.";
+                        Choice {
+                            label: "The key that opens the overlay";
+                            model: ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+                            current <=> root.overlay-key;
+                            enabled: root.overlay;
+                            chosen => { root.options-changed(); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Fewest players to start a match";
+                        sub: "A Quick Match starts with this many; a squad match with half that a side. The game's own 8 is rarely reached on a small server.";
+                        Choice {
+                            label: "The fewest players to start a match";
+                            model: ["2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
+                            current <=> root.min-players;
+                            chosen => { root.options-changed(); }
+                        }
+                    }
+                    if root.options-said != "" && root.options-failed: VerticalLayout { padding-top: 8px; Said { text: root.options-said; failed: true; } }
+                    GroupLabel { text: "Undo"; }
+                    SettingRow {
+                        title: "Restore the game's own files";
+                        sub: "Takes Cross-Com out of the game and puts back the two files it replaced. Play then shows the setup, to put it back.";
+                        if !root.confirming: Btn {
+                            text: "Restore";
+                            enabled: root.info.game-dir != "" && root.info.client != "no";
+                            clicked => { root.confirming = true; }
+                        }
+                    }
+                    if root.confirming: VerticalLayout {
+                        padding-top: 12px;
+                        Confirm {
+                            text: "Cross-Com comes out of the game, and the game's own two files go back. Your account and identity stay.";
+                            yes: "Restore them";
+                            no: "Keep Cross-Com";
+                            answered(yes) => {
+                                root.confirming = false;
+                                if yes { root.restore(); }
+                            }
+                        }
+                    }
+                    if root.restore-said != "": VerticalLayout { padding-top: 8px; Said { text: root.restore-said; failed: root.restore-failed; } }
+                }
+
+                // The server.
+                if root.section == "server": VerticalLayout {
+                    SettingRow {
+                        title: root.info.server != "" ? root.info.server : "No server set up";
+                        sub: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account here yet.";
+                        if root.info.community: Tag { text: root.community-name; }
+                        if root.info.community && root.community-status != "": Tag { text: root.community-status; tint: Theme.warn; }
+                    }
+                    GroupLabel { text: "Change server"; }
+                    VerticalLayout {
+                        padding-top: 12px;
+                        spacing: 10px;
+                        Option {
+                            title: root.community-name;
+                            tag: root.community-status;
+                            sub: root.community-host + " · open to everyone testing Cross-Com." + (root.info.community ? " You're on it now." : "");
+                            on: root.community;
+                            clicked => {
+                                if !root.community {
+                                    root.community = true;
+                                    root.server-changed();
+                                    root.check-server();
                                 }
-                                if root.info.community: VerticalLayout { alignment: center; Tag { text: root.community-name; } }
-                                if root.info.community && root.community-status != "": VerticalLayout { alignment: center; Tag { text: root.community-status; tint: Theme.warn; } }
                             }
-                            Text {
-                                text: root.info.account != "" ? "Signed in as " + root.info.account + "." : "No account here yet: Setup makes one.";
-                                color: Theme.soft;
-                            }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                Btn { text: "Change server"; clicked => { root.change-server(false); } }
-                                if !root.info.community: Btn { text: "Use the " + root.community-name.to-lowercase(); kind: "ghost"; clicked => { root.change-server(true); } }
-                            }
-                            // The identity that signs the player in: no password.
-                            Rectangle { height: 1px; background: Theme.line; }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                Text { text: "Your identity"; color: Theme.soft; vertical-alignment: center; }
-                                if root.identity != "": Text {
-                                    text: root.identity;
-                                    font-family: Type.mono;
-                                    font-size: 14px;
-                                    color: Theme.fg;
-                                    vertical-alignment: center;
+                        }
+                        Option {
+                            title: "Another server";
+                            sub: "A group's own server, or one on your network. Your identity signs you in there too.";
+                            on: !root.community;
+                            clicked => {
+                                if root.community {
+                                    root.community = false;
+                                    root.server-changed();
+                                    if root.server-typed != "" { root.check-server(); }
                                 }
                             }
-                            if root.identity-error != "": Para { text: root.identity-error; color: Theme.bad; }
-                            Para {
-                                text: "It signs you in to your accounts, so there's no password. The launcher keeps it on this PC. Whoever has it can sign in as you: keep the copy private.";
-                                font-size: Type.small;
-                            }
-                            HorizontalLayout {
-                                alignment: start;
-                                // The copy goes through a hidden text field, to Slint's own clipboard.
-                                clip := TextInput { width: 0px; height: 0px; visible: false; read-only: true; single-line: true; }
-                                Btn {
-                                    text: "Copy to move it to another PC";
-                                    enabled: root.identity != "" && !root.identity-busy;
-                                    clicked => {
-                                        clip.text = root.identity-export();
-                                        clip.select-all();
-                                        clip.copy();
-                                        clip.text = "";
-                                    }
-                                }
-                            }
-                            Caps { text: "USE AN IDENTITY FROM ANOTHER PC"; }
-                            HorizontalLayout {
+                            if !root.community: HorizontalLayout {
+                                padding-top: 8px;
                                 spacing: 10px;
                                 Field {
-                                    text <=> root.identity-paste;
-                                    label: "The identity copied on another PC";
-                                    placeholder: "Paste it here";
-                                    secret: true;
-                                    enabled: !root.identity-busy && root.identity-confirm == "";
-                                    accepted => { if root.identity-paste != "" { root.identity-use(false); } }
+                                    text <=> root.server-typed;
+                                    label: "The server's address";
+                                    placeholder: "play.example.org or 192.168.1.20";
+                                    mono: true;
+                                    enabled: !root.busy;
+                                    edited => { root.server-changed(); }
+                                    accepted => { root.check-server(); }
                                 }
                                 Btn {
-                                    text: "Use";
-                                    busy: root.identity-busy;
-                                    enabled: root.identity-paste != "" && !root.identity-busy && root.identity-confirm == "";
-                                    clicked => { root.identity-use(false); }
+                                    text: "Check";
+                                    busy: root.server-checking;
+                                    enabled: root.server-typed != "" && !root.busy;
+                                    clicked => { root.check-server(); }
                                 }
-                            }
-                            if root.identity-confirm != "": Rectangle {
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: Theme.warn;
-                                background: Theme.warn.with-alpha(0.06);
-                                min-height: rl.preferred-height;
-                                rl := VerticalLayout {
-                                    padding: 14px;
-                                    spacing: 10px;
-                                    Text { text: root.identity-confirm; color: Theme.soft; wrap: word-wrap; }
-                                    HorizontalLayout {
-                                        spacing: 10px;
-                                        alignment: start;
-                                        Btn { text: "Replace it"; kind: "primary"; clicked => { root.identity-confirm = ""; root.identity-use(true); } }
-                                        Btn { text: "Keep mine"; clicked => { root.identity-confirm = ""; } }
-                                    }
-                                }
-                            }
-                            if root.identity-said != "": Text {
-                                text: root.identity-said;
-                                color: root.identity-failed ? Theme.bad : Theme.good;
-                                font-size: Type.small;
-                                wrap: word-wrap;
                             }
                         }
-                    }
-                    Card {
-                        min-height: cl.preferred-height;
-                        cl := VerticalLayout {
-                            padding: 18px;
-                            padding-left: 20px;
+                        if root.server-checking: HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Spinner {} }
+                            Text { text: "Asking the server…"; color: Theme.muted; }
+                        }
+                        if !root.server-checking && root.server-error != "": Para { text: root.server-error; color: Theme.bad; }
+                        if !root.server-checking && root.server-ok != "" && root.same-server: Para { text: "That's the server you're on."; }
+                        if !root.server-checking && root.server-ok != "" && !root.same-server && root.account != "": Text {
+                            text: "It answered, and your identity has an account there: " + root.account + ".";
+                            color: Theme.good;
+                            wrap: word-wrap;
+                        }
+                        if !root.server-checking && root.server-ok != "" && !root.same-server && root.account == "": VerticalLayout {
                             spacing: 10px;
-                            CardHead { title: "Connection"; }
-                            Para { text: "How well other players can reach your game, from the server you've set up. It takes a few seconds."; }
+                            Para { text: "It answered. You have no account there yet: choose the name other players see there."; }
                             HorizontalLayout {
-                                alignment: start;
-                                Btn {
-                                    text: "Test my connection";
-                                    busy: root.connection-testing;
-                                    enabled: root.info.server != "" && root.info.game-dir != "" && !root.connection-testing;
-                                    clicked => { root.test-connection(); }
+                                spacing: 12px;
+                                LabelledField {
+                                    label: "Name";
+                                    text <=> root.name;
+                                    enabled: !root.busy;
+                                    edited => { root.server-changed(); }
+                                }
+                                LabelledField {
+                                    label: "Sign-up code";
+                                    hint: "(if the server has one)";
+                                    text <=> root.code;
+                                    enabled: !root.busy;
+                                    edited => { root.server-changed(); }
                                 }
                             }
-                            if root.connection-summary != "": Text {
-                                text: root.connection-summary;
-                                color: root.connection-tone == "good" ? Theme.good : root.connection-tone == "bad" ? Theme.bad : Theme.warn;
-                                font-weight: 600;
-                                wrap: word-wrap;
-                            }
-                            for line in root.connection-details: Text {
-                                text: line;
-                                color: Theme.soft;
-                                font-size: Type.small;
-                                wrap: word-wrap;
-                            }
-                            Check {
-                                text: "Ask my router to forward the game's port while it runs (UPnP, PCP or NAT-PMP), so other players reach me directly";
-                                checked <=> root.port-forwarding;
-                                toggled => { root.options-changed(); }
+                        }
+                        if !root.server-checking && root.server-ok != "" && !root.same-server: HorizontalLayout {
+                            alignment: start;
+                            padding-top: 4px;
+                            Btn {
+                                text: root.busy ? "Switching…" : "Switch to this server";
+                                kind: "primary";
+                                busy: root.busy;
+                                enabled: root.account-done && !root.busy;
+                                clicked => { root.switch-server(); }
                             }
                         }
+                        if root.switch-said != "": Said { text: root.switch-said; failed: root.switch-failed; good: !root.switch-failed; }
                     }
                 }
-            }
 
-            VerticalLayout {
-                padding-top: 18px;
-                Text {
-                    text: "Cross-Com Enhanced " + root.release + " · an open-source community server for Ghost Recon: Future Soldier. The launcher is made with Slint.";
-                    color: Theme.muted;
-                    font-size: Type.small;
-                    wrap: word-wrap;
+                // The identity.
+                if root.section == "identity": VerticalLayout {
+                    SettingRow {
+                        title: "Your identity";
+                        sub: "It signs you in on every server, so there's no password. The launcher keeps it on this PC, encrypted for your Windows user.";
+                        if root.identity != "": Rectangle {
+                            width: idt.preferred-width + 24px;
+                            height: 36px;
+                            border-radius: 4px;
+                            background: Theme.sunken;
+                            border-width: 1px;
+                            border-color: Theme.control-line;
+                            idt := Text {
+                                text: root.identity;
+                                font-family: Type.mono;
+                                font-size: 17px;
+                                letter-spacing: 2px;
+                                color: Theme.fg;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    if root.identity-error != "": VerticalLayout { padding-top: 8px; Said { text: root.identity-error; failed: true; } }
+                    SettingRow {
+                        title: "Move it to another PC";
+                        sub: "Copies it, to paste on the other PC. Whoever has it can sign in as you: keep the copy private.";
+                        // The copy goes through a hidden text field, to Slint's own clipboard.
+                        clip := TextInput { width: 0px; height: 0px; visible: false; read-only: true; single-line: true; }
+                        Btn {
+                            text: "Copy";
+                            enabled: root.identity != "" && !root.identity-busy;
+                            clicked => {
+                                clip.text = root.identity-export();
+                                clip.select-all();
+                                clip.copy();
+                                clip.text = "";
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        padding-top: 15px;
+                        padding-bottom: 15px;
+                        spacing: 10px;
+                        Text { text: "Use an identity from another PC"; color: Theme.fg; font-weight: 600; }
+                        Text {
+                            text: "Signs you in here with that PC's accounts. This PC's own identity is kept in the launcher's folder, so you can go back.";
+                            color: Theme.soft;
+                            font-size: Type.small;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Field {
+                                text <=> root.identity-paste;
+                                label: "The identity copied on another PC";
+                                placeholder: "Paste it here";
+                                secret: true;
+                                enabled: !root.identity-busy && root.identity-confirm == "";
+                                accepted => { if root.identity-paste != "" { root.identity-use(false); } }
+                            }
+                            Btn {
+                                text: "Use";
+                                busy: root.identity-busy;
+                                enabled: root.identity-paste != "" && !root.identity-busy && root.identity-confirm == "";
+                                clicked => { root.identity-use(false); }
+                            }
+                        }
+                        if root.identity-confirm != "": Confirm {
+                            text: root.identity-confirm;
+                            yes: "Replace it";
+                            no: "Keep mine";
+                            answered(yes) => {
+                                root.identity-confirm = "";
+                                if yes { root.identity-use(true); }
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    if root.identity-said != "": VerticalLayout { padding-top: 10px; Said { text: root.identity-said; failed: root.identity-failed; good: !root.identity-failed; } }
+                }
+
+                // The network.
+                if root.section == "network": VerticalLayout {
+                    SettingRow {
+                        title: "How other players reach you";
+                        sub: "Tests your connection from the server you've set up. It takes a few seconds.";
+                        Btn {
+                            text: root.connection-summary != "" ? "Test again" : "Test my connection";
+                            busy: root.connection-testing;
+                            enabled: root.info.server != "" && root.info.game-dir != "" && !root.connection-testing;
+                            clicked => { root.test-connection(); }
+                        }
+                    }
+                    if root.connection-summary != "": VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 14px;
+                        spacing: 6px;
+                        Text {
+                            text: root.connection-summary;
+                            color: root.connection-tone == "good" ? Theme.good : root.connection-tone == "bad" ? Theme.bad : Theme.warn;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        for line in root.connection-details: Text { text: line; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+                        Rectangle { height: 1px; background: Theme.line; }
+                    }
+                    SettingRow {
+                        title: "Ask my router to forward the game's port";
+                        sub: "UPnP, PCP or NAT-PMP, only while the game runs, so other players reach you directly.";
+                        Switch { label: "Ask my router to forward the game's port"; checked <=> root.port-forwarding; toggled => { root.options-changed(); } }
+                    }
+                }
+
+                // The logs.
+                if root.section == "logs": VerticalLayout {
+                    SettingRow {
+                        title: "Send game logs after each game";
+                        sub: "Helps fix problems. Your Windows user name and the game's sign-in token are removed.";
+                        Switch { label: "Send game logs after each game"; checked <=> root.send-logs; toggled => { root.options-changed(); } }
+                    }
+                    SettingRow {
+                        title: "Last sent";
+                        sub: root.logs-last;
+                        Btn {
+                            text: "Send now";
+                            busy: root.logs-sending;
+                            enabled: root.send-logs && root.info.game-dir != "" && !root.logs-sending;
+                            clicked => { root.send-logs-now(); }
+                        }
+                        Btn { text: "Open logs folder"; enabled: root.info.game-dir != ""; clicked => { root.open-logs(); } }
+                    }
+                    if root.logs-said != "": VerticalLayout { padding-top: 10px; Said { text: root.logs-said; } }
+                    VerticalLayout {
+                        padding-top: 14px;
+                        Text {
+                            text: "The server only takes logs from a PC its account has played online from in the last day. They help whoever runs it see what went wrong; each game's log stays in the game's logs folder.";
+                            color: Theme.muted;
+                            font-size: Type.small;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
             }
         }

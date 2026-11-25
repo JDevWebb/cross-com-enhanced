@@ -85,6 +85,10 @@ pub enum ClientState {
     Update,
 }
 
+/// The fewest players a Quick Match starts with unless the player chooses otherwise (the game's own
+/// 8, or 6, is rarely reached on a small community's server): 2, and squad matches 1 a side.
+pub const DEFAULT_MIN_PLAYERS: u8 = 2;
+
 /// How things stand, for every screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
@@ -103,6 +107,8 @@ pub struct Info {
     pub send_logs: bool,
     /// Ask the router to forward the game's port while it runs.
     pub port_forwarding: bool,
+    /// The fewest players a Quick Match starts with (2 to 12); a squad match, half that a side.
+    pub min_players: u8,
     /// The DLC packs, and how each stands in the game's folder (empty with no game).
     pub dlc: Vec<(dlc::Pack, dlc::State)>,
 }
@@ -126,6 +132,11 @@ pub struct Setup {
     pub code: String,
     pub skip_intro: bool,
     pub dx9: bool,
+    /// The in-game overlay, sending the game's logs, and asking the router to forward the game's
+    /// port (each on unless the player turns it off).
+    pub overlay: bool,
+    pub send_logs: bool,
+    pub port_forwarding: bool,
 }
 
 /// What using an identity from another PC came to.
@@ -146,6 +157,7 @@ pub struct Options {
     pub overlay_key: String,
     pub send_logs: bool,
     pub port_forwarding: bool,
+    pub min_players: u8,
 }
 
 /// How the logs stand, for Settings.
@@ -296,6 +308,7 @@ impl Launcher {
             overlay_key: overlay.key,
             send_logs: config.send_logs,
             port_forwarding: config.port_forwarding,
+            min_players: config.quick_match_min_players.unwrap_or(DEFAULT_MIN_PLAYERS),
             dlc,
         }
     }
@@ -378,7 +391,10 @@ impl Launcher {
         let (account, made) = account(&host, &identity, &setup.name, &setup.code)?;
         let name = account.name.clone();
         let old = settings::client(&dir);
-        let overlay = settings::overlay(&dir);
+        let overlay = settings::Overlay {
+            on: setup.overlay,
+            ..settings::overlay(&dir)
+        };
         let config = Config {
             server: Some(host),
             username: account.name,
@@ -386,6 +402,9 @@ impl Launcher {
             password: account.token,
             cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key.clone() },
             skip_intro_videos: setup.skip_intro,
+            send_logs: setup.send_logs,
+            port_forwarding: setup.port_forwarding,
+            quick_match_min_players: Some(old.quick_match_min_players.unwrap_or(DEFAULT_MIN_PLAYERS)),
             ..old
         };
         game::install(&dir, &files)?;
@@ -413,6 +432,7 @@ impl Launcher {
                 config.skip_intro_videos = options.skip_intro;
                 config.send_logs = options.send_logs;
                 config.port_forwarding = options.port_forwarding;
+                config.quick_match_min_players = Some(options.min_players.clamp(crosscom_client_common::config::MIN_QUICK_MATCH_PLAYERS, 12));
                 let overlay = settings::Overlay {
                     on: options.overlay,
                     key: options.overlay_key,
@@ -430,6 +450,15 @@ impl Launcher {
         let prefs = self.prefs();
         let dir = prefs.game_dir.clone().filter(|d| game::is_game_dir(d)).ok_or("Set the game up first.")?;
         let exe = dir.join(if prefs.dx9 { game::EXE_DX9 } else { game::EXE_DX11 });
+        // A game set up by an older launcher has no minimum: it gets the default before it starts.
+        let config = settings::client(&dir);
+        if config.quick_match_min_players.is_none() && !config.username.is_empty() {
+            let config = Config {
+                quick_match_min_players: Some(DEFAULT_MIN_PLAYERS),
+                ..config
+            };
+            settings::save_client(&dir, &config, &settings::overlay(&dir))?;
+        }
         let mut updated = false;
         if let Some(files) = client::files() {
             if game::installed(&dir, &files) != Installed::Yes {
@@ -470,7 +499,7 @@ impl Launcher {
     pub fn restore(&self) -> Result<String, String> {
         let dir = self.game_dir().ok_or("No game set up.")?;
         game::restore(&dir)?;
-        Ok("The game's own files are back. Set up again to play on Cross-Com.".into())
+        Ok("The game's own files are back. To play on Cross-Com again, go to Play: the setup shows there.".into())
     }
 }
 
@@ -563,7 +592,7 @@ pub fn checklist(dir: &Path, port_forwarding: bool, now: u64) -> Vec<Check> {
             label: "Port forwarding",
             value: "Off".into(),
             tone: "muted",
-            detail: "Turned off in Settings › Connection.".into(),
+            detail: "Turned off in Settings › Network.".into(),
             action: "",
         }
     };
@@ -689,6 +718,7 @@ mod tests {
             dx9: false,
             overlay: true,
             overlay_key: "F5".into(),
+            min_players: DEFAULT_MIN_PLAYERS,
             send_logs: true,
             port_forwarding: true,
             dlc: Vec::new(),

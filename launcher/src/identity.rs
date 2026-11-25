@@ -49,7 +49,7 @@ fn load_at(path: &Path) -> Result<Option<Identity>, String> {
     let secret = match text.strip_prefix(DPAPI_PREFIX) {
         Some(blob) => protect::unprotect(blob).ok_or_else(|| {
             format!(
-                "your identity ({}) is encrypted for another Windows user or PC: use it again from where you copied it (Settings › Server and account)",
+                "your identity ({}) is encrypted for another Windows user or PC: use it again from where you copied it (Settings › Identity)",
                 path.display()
             )
         })?,

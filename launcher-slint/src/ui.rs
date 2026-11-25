@@ -25,6 +25,9 @@ use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
 
+/// The fewest-players list in Settings starts at this many.
+const MIN_PLAYERS_FROM: u8 = crosscom_client_common::config::MIN_QUICK_MATCH_PLAYERS;
+
 /// How long a note stays in the corner.
 const TOAST: Duration = Duration::from_secs(5);
 
@@ -60,16 +63,23 @@ pub fn info_view(info: &core::Info) -> InfoView {
         server: s(info.server.as_deref().unwrap_or_default()),
         community: info.server.as_deref().is_some_and(server::is_community),
         account: s(info.account.as_deref().unwrap_or_default()),
+        initial: s(initial(info.account.as_deref())),
         skip_intro: info.skip_intro,
         dx9: info.dx9,
         overlay: info.overlay,
         overlay_key: key_index(&info.overlay_key),
         send_logs: info.send_logs,
         port_forwarding: info.port_forwarding,
+        min_players: i32::from(info.min_players),
         dlc: dlc_rows(&info.dlc),
         dlc_note: s(dlc::warning(&info.dlc).unwrap_or_default()),
         ready: info.ready(),
     }
+}
+
+/// The account's first letter, in capitals, for the circle beside its name ("?" for none).
+fn initial(account: Option<&str>) -> String {
+    account.and_then(|a| a.chars().next()).map_or_else(|| "?".to_owned(), |c| c.to_uppercase().collect())
 }
 
 /// The packs as the screens list them.
@@ -171,13 +181,17 @@ fn toast(w: &AppWindow, said: &str) {
     });
 }
 
-/// Opens a screen ("play", "setup" or "settings"); Play is the setup until everything's set.
+/// Opens a screen ("play", "setup" or "settings"). Play is the setup until everything's set (the
+/// first launch); "setup" is the setup run again, from Settings › About.
 fn open(w: &AppWindow, l: &Arc<Launcher>, screen: &str) {
     w.set_screen(s(screen));
     let info = refresh_info(w, l);
     match screen {
-        "play" if info.ready() => load_news(w, l),
-        "play" | "setup" => open_setup(w, l, &info, None),
+        "play" if info.ready() => {
+            show_identity(w, l);
+            load_news(w, l);
+        }
+        "play" | "setup" => open_setup(w, l, &info),
         "settings" => open_settings(w, l, &info),
         _ => {}
     }
@@ -252,17 +266,15 @@ fn setup_host(w: &AppWindow) -> String {
     }
 }
 
-/// Setup, filled in from what's set up now. `community`: the server choice to start from
-/// (Settings' Change server and its way back to the community network); otherwise the community
-/// test network unless another server is set up.
-fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info, community: Option<bool>) {
+/// Setup's fields, filled in from what's set up now: the server set up (the community test
+/// network when there's none, or it's that), nothing checked yet. Settings' Server section
+/// switches server with them too.
+fn prepare_setup(w: &AppWindow, info: &core::Info) {
     let first = !info.ready();
-    let changing_server = community.is_some();
     let set_up = info.server.as_deref().filter(|h| !server::is_community(h));
-    let community = community.unwrap_or(set_up.is_none());
     w.set_setup_game_dir(s(info.game_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default()));
     w.set_setup_game_error(s(""));
-    w.set_setup_community(community);
+    w.set_setup_community(set_up.is_none());
     w.set_setup_server_typed(s(set_up.unwrap_or_default()));
     w.set_setup_server_ok(s(""));
     w.set_setup_server_error(s(""));
@@ -271,14 +283,22 @@ fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info, community: Op
     w.set_setup_code(s(""));
     w.set_setup_skip_intro(first || info.skip_intro);
     w.set_setup_dx9(info.dx9);
+    w.set_setup_overlay(info.overlay);
+    w.set_setup_send_logs(info.send_logs);
+    w.set_setup_port_forwarding(info.port_forwarding);
     w.set_setup_busy(false);
     w.set_setup_error(s(""));
-    // Changing server starts at the server; a setup from the start, at the game.
-    w.set_setup_step(i32::from(changing_server && info.game_dir.is_some()));
+    w.set_setup_step(0);
     w.set_setup_firewall_note(s(""));
     CHECKED.with(|c| c.borrow_mut().clear());
     w.set_setup_server_checking(false);
     setup_changed(w);
+}
+
+/// Setup, from the start: filled in from what's set up now, the game looked for when there's
+/// none, and the server asked.
+fn open_setup(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
+    prepare_setup(w, info);
     if info.game_dir.is_none() && !w.get_setup_game_finding() {
         w.set_setup_game_finding(true);
         background(w, core::find_game, |w, found| {
@@ -304,6 +324,7 @@ fn setup_changed(w: &AppWindow) {
     w.set_setup_dlc(dlc_rows(&scan));
     w.set_setup_dlc_note(s(dlc::warning(&scan).unwrap_or_default()));
     let host = setup_host(w);
+    w.set_setup_host(s(&host));
     // A server changed since it was checked: checked again before it's trusted.
     if CHECKED.with(|c| *c.borrow() != host) {
         w.set_setup_server_ok(s(""));
@@ -369,26 +390,66 @@ fn check_server(w: &AppWindow, l: &Arc<Launcher>) {
     );
 }
 
-/// Asks the player for the game's folder (Windows' own picker).
+/// Asks the player for the game's folder (Windows' own picker), for Setup's first step.
 fn choose_game(w: &AppWindow) {
+    pick_game(w, |w, picked| {
+        match picked {
+            Ok(dir) => {
+                w.set_setup_game_dir(s(dir.display().to_string()));
+                w.set_setup_game_error(s(""));
+            }
+            Err(e) => w.set_setup_game_error(s(e)),
+        }
+        setup_changed(w);
+    });
+}
+
+/// Settings' Change for the game's folder: the folder picked, then set up there as it is now
+/// (the server and account set up, the options as they are): the client goes into the new
+/// folder.
+fn move_game(w: &AppWindow, l: &Arc<Launcher>) {
+    let l = l.clone();
+    w.set_moved_said(s(""));
+    pick_game(w, move |w, picked| {
+        let dir = match picked {
+            Ok(dir) => dir,
+            Err(e) => {
+                w.set_moved_said(s(e));
+                w.set_moved_failed(true);
+                return;
+            }
+        };
+        let info = l.info();
+        let setup = core::Setup {
+            game_dir: dir,
+            server: info.server.clone().unwrap_or_default(),
+            name: String::new(),
+            code: String::new(),
+            skip_intro: info.skip_intro,
+            dx9: info.dx9,
+            overlay: info.overlay,
+            send_logs: info.send_logs,
+            port_forwarding: info.port_forwarding,
+        };
+        run_setup_with(w, &l, setup, After::Moved);
+    });
+}
+
+/// Windows' folder picker, then the folder checked for the game; `done` with it (`Err` for one
+/// without the game). Nothing when the player cancels.
+fn pick_game(w: &AppWindow, done: impl FnOnce(&AppWindow, Result<PathBuf, String>) + Send + 'static) {
     #[cfg(windows)]
     background(
         w,
         || rfd::FileDialog::new().set_title("The folder with \"Future Soldier DX11.exe\"").pick_folder(),
-        |w, dir: Option<PathBuf>| {
+        move |w, dir: Option<PathBuf>| {
             let Some(dir) = dir else { return };
-            match core::check_game(&dir) {
-                Ok(()) => {
-                    w.set_setup_game_dir(s(dir.display().to_string()));
-                    w.set_setup_game_error(s(""));
-                }
-                Err(e) => w.set_setup_game_error(s(e)),
-            }
-            setup_changed(w);
+            let checked = core::check_game(&dir).map(|()| dir);
+            done(w, checked);
         },
     );
     #[cfg(not(windows))]
-    w.set_setup_game_error(s("Choosing a folder needs Windows."));
+    done(w, Err("Choosing a folder needs Windows.".into()));
 }
 
 /// On Setup's last step, before the press that brings Windows' permission prompt (the firewall
@@ -464,16 +525,43 @@ fn setup_step_entered(w: &AppWindow, step: i32) {
     );
 }
 
-/// Sets it all up, from Setup's last step (which said whether Windows will ask, and why).
-fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
-    let setup = core::Setup {
+/// What a setup was run for: the setup screen's, Settings' switch of server, or its move of the
+/// game's folder (each says how it went in its own place).
+#[derive(Clone, Copy)]
+enum After {
+    Setup,
+    Switched,
+    Moved,
+}
+
+/// What Setup's fields (and Settings' Server section, which uses them) set up.
+fn setup_from_window(w: &AppWindow) -> core::Setup {
+    core::Setup {
         game_dir: PathBuf::from(w.get_setup_game_dir().as_str()),
         server: setup_host(w),
         name: w.get_setup_name().into(),
         code: w.get_setup_code().into(),
         skip_intro: w.get_setup_skip_intro(),
         dx9: w.get_setup_dx9(),
-    };
+        overlay: w.get_setup_overlay(),
+        send_logs: w.get_setup_send_logs(),
+        port_forwarding: w.get_setup_port_forwarding(),
+    }
+}
+
+/// Sets it all up, from Setup's last step (which said whether Windows will ask, and why).
+fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
+    run_setup_with(w, l, setup_from_window(w), After::Setup);
+}
+
+/// Settings' Switch to this server: the setup again with the server chosen there, the game and
+/// options as they are.
+fn switch_server(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_switch_said(s(""));
+    run_setup_with(w, l, setup_from_window(w), After::Switched);
+}
+
+fn run_setup_with(w: &AppWindow, l: &Arc<Launcher>, setup: core::Setup, after: After) {
     w.set_setup_busy(true);
     w.set_setup_error(s(""));
     let worker = l.clone();
@@ -483,15 +571,34 @@ fn run_setup(w: &AppWindow, l: &Arc<Launcher>) {
         move || worker.setup(setup),
         move |w, done| {
             w.set_setup_busy(false);
-            match done {
-                Ok(said) => {
-                    // The server may be another: its card asks afresh.
-                    w.set_server_state(s("asking"));
-                    w.set_news(ModelRc::default());
+            if done.is_ok() {
+                // The server may be another: Play asks afresh.
+                w.set_server_state(s("asking"));
+                w.set_news(ModelRc::default());
+            }
+            match (after, done) {
+                (After::Setup, Ok(said)) => {
+                    w.set_play_tab(s("status"));
                     open(w, &l, "play");
                     toast(w, &said);
                 }
-                Err(e) => w.set_setup_error(s(e)),
+                (After::Setup, Err(e)) => w.set_setup_error(s(e)),
+                (After::Switched | After::Moved, done) => {
+                    let failed = done.is_err();
+                    let said = done.unwrap_or_else(|e| e);
+                    let info = refresh_info(w, &l);
+                    if !failed {
+                        // Settings shows what's set up now: the new server, nothing to switch to.
+                        prepare_setup(w, &info);
+                    }
+                    if matches!(after, After::Switched) {
+                        w.set_switch_said(s(said));
+                        w.set_switch_failed(failed);
+                    } else {
+                        w.set_moved_said(s(said));
+                        w.set_moved_failed(failed);
+                    }
+                }
             }
         },
     );
@@ -506,6 +613,7 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_opt_overlay_key(view.overlay_key);
     w.set_opt_send_logs(view.send_logs);
     w.set_opt_port_forwarding(view.port_forwarding);
+    w.set_opt_min_players(view.min_players - i32::from(MIN_PLAYERS_FROM));
     w.set_options_said(s(""));
     show_identity(w, l);
     w.set_id_paste(s(""));
@@ -513,6 +621,12 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
     w.set_id_said(s(""));
     w.set_restore_confirming(false);
     w.set_restore_said(s(""));
+    w.set_moved_said(s(""));
+    w.set_switch_said(s(""));
+    // The Server section switches server with Setup's own fields and check.
+    if !w.get_setup_busy() {
+        prepare_setup(w, info);
+    }
     show_logs(w, l);
 }
 
@@ -600,6 +714,7 @@ fn save_options(w: &AppWindow, l: &Arc<Launcher>) {
         overlay_key: key.into(),
         send_logs: w.get_opt_send_logs(),
         port_forwarding: w.get_opt_port_forwarding(),
+        min_players: u8::try_from(w.get_opt_min_players()).map_or(core::DEFAULT_MIN_PLAYERS, |i| i.saturating_add(MIN_PLAYERS_FROM)),
     };
     match l.set_options(options) {
         Ok(()) => {
@@ -807,16 +922,8 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
             }
         });
     }
-    {
-        let (weak, l) = (weak.clone(), l.clone());
-        w.on_change_server(move |community| {
-            if let Some(w) = weak.upgrade() {
-                w.set_screen(s("setup"));
-                let info = refresh_info(&w, &l);
-                open_setup(&w, &l, &info, Some(community));
-            }
-        });
-    }
+    w.on_move_game(on(move_game));
+    w.on_switch_server(on(switch_server));
     {
         let weak = weak.clone();
         w.on_open_link(move |id| {
@@ -881,14 +988,89 @@ pub fn run() -> Result<(), slint::PlatformError> {
     w.set_loaded(true);
     crate::update::start(&w);
     // Logs left from earlier games (one that crashed, or was started without the launcher) go
-    // as the launcher starts.
-    send_logs(&w, &l, None);
-    w.run()
+    // as the launcher starts; with no game yet there are none.
+    if l.game_dir().is_some() {
+        send_logs(&w, &l, None);
+    }
+    w.show()?;
+    // Once the event loop has made the window and Windows has placed it.
+    let weak = w.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(50), move || {
+        if let Some(w) = weak.upgrade() {
+            fit_to_screen(&w);
+        }
+    });
+    slint::run_event_loop()?;
+    w.hide()
+}
+
+/// Room left under the window for the taskbar, and round it.
+const TASKBAR: f64 = 64.0;
+const EDGE: f64 = 16.0;
+
+/// Fits the window to the screen it opened on: smaller when the screen is (a laptop at 150 %
+/// scaling has 720 points of height), and moved up when Windows placed it running under the
+/// taskbar; otherwise Play and the status bar are hidden there.
+fn fit_to_screen(w: &AppWindow) {
+    use slint::winit_030::WinitWindowAccessor as _;
+    let fit = w.window().with_winit_window(|win| {
+        let monitor = win.current_monitor()?;
+        let scale = monitor.scale_factor();
+        let screen = monitor.size().to_logical::<f64>(scale);
+        let at = monitor.position().to_logical::<f64>(scale);
+        let size = win.outer_size().to_logical::<f64>(scale);
+        let now = win.outer_position().ok()?.to_logical::<f64>(scale);
+        let resized = fitted((size.width, size.height), (screen.width, screen.height));
+        let (width, height) = resized.unwrap_or((size.width, size.height));
+        let below = now.y + height > at.y + screen.height - TASKBAR;
+        let beside = now.x + width > at.x + screen.width;
+        if resized.is_none() && !below && !beside {
+            return None;
+        }
+        let x = at.x + ((screen.width - width) / 2.0).max(0.0);
+        let y = at.y + ((screen.height - TASKBAR - height) / 2.0).max(0.0);
+        Some((width, height, x, y))
+    });
+    if let Some(Some((width, height, x, y))) = fit {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            w.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+            w.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+        }
+    }
+}
+
+/// The window's size fitted to a screen's (in points), keeping clear of the taskbar and the
+/// edges; `None` when it fits already. Never below the window's least (940 by 600).
+fn fitted((width, height): (f64, f64), (screen_width, screen_height): (f64, f64)) -> Option<(f64, f64)> {
+    let room = (screen_width - 2.0 * EDGE, screen_height - TASKBAR - EDGE);
+    if width <= room.0 && height <= room.1 {
+        return None;
+    }
+    Some((width.min(room.0).max(940.0), height.min(room.1).max(600.0)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fits_the_window_to_a_small_screen() {
+        // A 1920 by 1080 screen at 100 %: room to spare.
+        assert_eq!(fitted((1180.0, 780.0), (1920.0, 1080.0)), None);
+        // At 150 %, 1280 by 720 points: shorter, as wide.
+        assert_eq!(fitted((1180.0, 780.0), (1280.0, 720.0)), Some((1180.0, 640.0)));
+        // The Surface at 200 %, 1024 by 768: both, never below the least.
+        assert_eq!(fitted((1180.0, 780.0), (1024.0, 768.0)), Some((992.0, 688.0)));
+        assert_eq!(fitted((1180.0, 780.0), (800.0, 600.0)), Some((940.0, 600.0)));
+    }
+
+    #[test]
+    fn takes_the_accounts_initial() {
+        assert_eq!(initial(Some("kozak")), "K");
+        assert_eq!(initial(Some("Ébène")), "É");
+        assert_eq!(initial(None), "?");
+    }
 
     #[test]
     fn says_when_in_utc() {
