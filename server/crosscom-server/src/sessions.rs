@@ -100,8 +100,10 @@ pub const SIZE: u32 = 114;
 pub const MATCH_TYPE: u32 = 101;
 pub const SQUAD_MATCH: u32 = 3;
 /// A squad match lobby's squad (its host's squad id), and the squad it's matched against (0 none
-/// yet). A squad match search sends its own squad as `OPPONENT`, meaning "against another squad",
-/// and two more values (110 and 111, a range of some kind: 5 and 0 seen) not checked here.
+/// yet). A squad match search sends its own squad as `OPPONENT`, meaning "against another squad".
+/// It also sends 110 = 5 and 111 = 0, always: the game's one squad search (AI library 0x10475a72,
+/// through exe binding 0xc04 to 0xa5abe0) passes them as constants, and no session ever has them,
+/// so they're matchmaking hints for the server that made them, not attributes to compare.
 pub const SQUAD: u32 = 106;
 pub const OPPONENT: u32 = 108;
 const SQUAD_SEARCH_RANGE: [u32; 2] = [110, 111];
