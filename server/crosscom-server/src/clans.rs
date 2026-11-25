@@ -789,12 +789,29 @@ struct Room {
     session: Vec<u8>,
 }
 
-/// The squads' rooms, by squad and room number. Shared with NAT traversal, which lets a room's
-/// host be probed for its squadmates (`nat.rs`).
+/// The squads' rooms, by squad and room number, and the room each player is in now (hosting or
+/// joined), which goes out with the squad's members (the party list's "Squad Members in
+/// Party"). Shared with NAT traversal, which lets a room's host be probed for its squadmates
+/// (`nat.rs`).
 #[derive(Default)]
-pub struct Rooms(Mutex<HashMap<(u32, u8), Room>>);
+pub struct Rooms(Mutex<HashMap<(u32, u8), Room>>, Mutex<HashMap<u32, u8>>);
 
 impl Rooms {
+    /// The room `pid` says it's in (0: none).
+    fn joined(&self, pid: u32, room: u8) {
+        let mut members = self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if room == 0 {
+            members.remove(&pid);
+        } else {
+            members.insert(pid, room);
+        }
+    }
+
+    /// The room `pid` is in (0: none).
+    fn room_of(&self, pid: u32) -> u8 {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&pid).copied().unwrap_or(0)
+    }
+
     /// The squad whose room `host` hosts, if any.
     pub fn hosted_by(&self, host: u32) -> Option<u32> {
         self.lock().iter().find(|(_, r)| r.host == host).map(|((clan, _), _)| *clan)
@@ -814,8 +831,12 @@ impl Rooms {
             }
         }
         rooms.retain(|_, r| r.host != host);
-        if !session.is_empty() {
-            rooms.insert((clan, room), Room { host, state, session });
+        drop(rooms);
+        if session.is_empty() {
+            self.joined(host, 0);
+        } else {
+            self.lock().insert((clan, room), Room { host, state, session });
+            self.joined(host, room);
         }
         true
     }
@@ -897,6 +918,7 @@ impl Clans {
             })(),
             17 => p.u8().map(|room| {
                 info!(logger, "{pid:#x} joins squad room {room}");
+                self.rooms.joined(pid, room);
                 Vec::new()
             }),
             18 => (|| {
@@ -982,7 +1004,8 @@ impl Clans {
                     put_time(&mut out, m.joined);
                     put_time(&mut out, m.joined);
                     put_str(&mut out, &self.name(m.pid));
-                    out.push(0);
+                    // The room the member is in now, while online.
+                    out.push(if self.online.is_online(m.pid) { self.rooms.room_of(m.pid) } else { 0 });
                 }
             }
             19 => {
@@ -1165,6 +1188,11 @@ mod tests {
         assert_eq!(listed[0].1.state, 1);
         assert_eq!(rooms.hosted_by(0x100003), Some(7), "the host's squad, for its probes");
         assert_eq!(rooms.hosted_by(0x100004), None);
+        assert_eq!(rooms.room_of(0x100003), 2, "a host is in its room");
+        rooms.joined(0x100005, 2);
+        assert_eq!(rooms.room_of(0x100005), 2, "and so is whoever joins it");
+        rooms.joined(0x100005, 0);
+        assert_eq!(rooms.room_of(0x100005), 0);
 
         // The host moves to room 1: room 0 is free again.
         assert!(rooms.set(7, 1, 0x100001, 1, b"session-a2".to_vec(), there));
