@@ -3,7 +3,7 @@
 //!
 //! On 32-bit Windows rustc can't export a symbol whose name starts with `?` (the linker doesn't
 //! find it), so `src/orbit.rs` gives each method a plain C name and the linker exports it again
-//! under the name the game imports.
+//! under the name the game imports. scripts/check-exports.py checks the built DLL has them all.
 
 /// (the name the game imports, the function in `src/orbit.rs`)
 const EXPORTS: &[(&str, &str)] = &[
@@ -49,7 +49,13 @@ fn main() {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if os == "windows" && arch == "x86" {
         for (mangled, function) in EXPORTS {
-            println!("cargo:rustc-cdylib-link-arg=/EXPORT:{mangled}={function}");
+            // Exported under the C++ name alone, the way MSVC's own compiler asks for its C++
+            // exports, and that name stands for the C function (`_` + its name: a 32-bit C
+            // symbol). Microsoft's link.exe cuts `/EXPORT:mangled=function` short at the first
+            // `@`, which lld-link doesn't, so the release build (link.exe) exported `?Close` and
+            // the game couldn't start.
+            println!("cargo:rustc-cdylib-link-arg=/EXPORT:{mangled}");
+            println!("cargo:rustc-cdylib-link-arg=/ALTERNATENAME:{mangled}=_{function}");
         }
     }
     if os == "windows" {
