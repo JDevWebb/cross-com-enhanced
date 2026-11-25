@@ -89,7 +89,10 @@ pem=$(carried_key)
 grep -qF -- "$(printf '%s\n' "$pem" | sed -n 2p)" docs/releasing.md ||
   die "docs/releasing.md doesn't give the release key verify-release.sh carries; not signing"
 # gh checks each download's build provenance below; one too old for that can't vouch for them.
-gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref' && gh attestation verify --help | grep -q -- '--signer-workflow' ||
+# The help is read whole first: `gh ... | grep -q` under pipefail fails when grep stops reading
+# early and gh dies of SIGPIPE, as a newer gh's longer help made it.
+attest_help=$(gh attestation verify --help 2>/dev/null || true)
+grep -q -- '--source-ref' <<<"$attest_help" && grep -q -- '--signer-workflow' <<<"$attest_help" ||
   die "this gh can't check build provenance (gh attestation verify --source-ref --signer-workflow); update it"
 # By digest, so Docker checks what it fetches.
 docker image inspect "$SIGN_IMAGE" >/dev/null 2>&1 || docker pull -q "$SIGN_IMAGE" >/dev/null ||
@@ -116,7 +119,7 @@ rm -f "$work/release/SHA256SUMS.sig" "$work/release/IMAGE" "$work/release/IMAGE.
 # only a warning, so the check below would pass a line a looser reader could take.
 sums="$work/release/SHA256SUMS"
 [ -f "$sums" ] || die "the release has no SHA256SUMS"
-if LC_ALL=C grep -Evx '[0-9a-f]{64}  [A-Za-z0-9._-]+' "$sums" | grep -q .; then
+if LC_ALL=C grep -Evxq '[0-9a-f]{64}  [A-Za-z0-9._-]+' "$sums"; then
   die "SHA256SUMS has a line that isn't \"<sha256>  <file>\"; not signing it"
 fi
 if LC_ALL=C grep -q "$(printf '\r')" "$sums"; then die "SHA256SUMS has Windows line endings; not signing it"; fi
