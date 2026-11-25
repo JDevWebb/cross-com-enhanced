@@ -75,10 +75,14 @@ if [ "$(git rev-parse HEAD)" != "$remote" ]; then
   say "Pushing main and waiting for CI"
   git push "$PUSH_URL" HEAD:refs/heads/main
 fi
-# CI skips pushes that only change release.toml or release notes (ci.yml): what it checked is the
-# newest commit on main's own line (merges included: CI runs on what was pushed) that changed
-# anything else.
-tested=$(git log -1 --first-parent --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
+# CI runs on the newest commit a push brings, unless the push only changes release.toml or release
+# notes (ci.yml's paths-ignore): then what it checked is the newest commit on main's own line
+# (merges included) that changed anything else, pushed before.
+if [ -z "$remote" ] || ! git diff --quiet "$remote" HEAD -- . ':(exclude)release.toml' ':(exclude)docs/releases'; then
+  tested=$(git rev-parse HEAD)
+else
+  tested=$(git log -1 --first-parent --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
+fi
 wait_for CI "$tested"
 
 say "Tagging $TAG"
