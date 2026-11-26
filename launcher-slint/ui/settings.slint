@@ -8,7 +8,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
 import { Btn, Caps, Tag, Para, Field, LabelledField, Option, Choice, Tabs, Spinner, Switch, SettingRow, GroupLabel } from "widgets.slint";
 import { DlcList, DlcNotice } from "dlc.slint";
-import { InfoView } from "types.slint";
+import { InfoView, ProfileRow } from "types.slint";
 import { AboutScreen } from "about.slint";
 
 // A section in the menu: its name, and what's in it under that.
@@ -85,7 +85,7 @@ export component SettingsScreen inherits Rectangle {
     in property <string> community-host;
     in property <string> community-name;
     in property <string> community-status;
-    // The section shown: "game", "server", "identity", "network", "logs" or "about".
+    // The section shown: "game", "server", "identity", "network", "saves", "logs" or "about".
     in-out property <string> section: "game";
     // The options as shown; changed => saved at once.
     in-out property <bool> skip-intro;
@@ -139,6 +139,13 @@ export component SettingsScreen inherits Rectangle {
     in-out property <bool> confirming;
     in property <string> restore-said;
     in property <bool> restore-failed;
+    // The game's profiles, and what the last action on them said.
+    in property <[ProfileRow]> profiles;
+    in property <string> saves-said;
+    in property <bool> saves-failed;
+    in property <bool> saves-busy;
+    // The game is running: profiles aren't changed under it.
+    in property <bool> playing;
     // About's Check for updates: looking, and what it found.
     in property <bool> update-checking;
     in property <string> update-checked;
@@ -158,12 +165,17 @@ export component SettingsScreen inherits Rectangle {
     callback check-update();
     callback open-link(string);
     callback run-setup();
+    callback saves-backup();
+    callback saves-restore();
+    callback saves-open();
+    callback saves-use(string);
 
     property <[{id: string, label: string, sub: string}]> sections: [
         { id: "game", label: "Game", sub: "Folder, video, overlay" },
         { id: "server", label: "Server", sub: "Where you play" },
         { id: "identity", label: "Identity", sub: "Your sign-in" },
         { id: "network", label: "Network", sub: "Connection, router" },
+        { id: "saves", label: "Saves", sub: "Game profiles, backups" },
         { id: "logs", label: "Logs", sub: "Game logs to the server" },
         { id: "about", label: "About", sub: "Version, credits, setup" },
     ];
@@ -225,7 +237,7 @@ export component SettingsScreen inherits Rectangle {
                 HorizontalLayout {
                     padding-bottom: 14px;
                     Text {
-                        text: root.section == "game" ? "GAME" : root.section == "server" ? "SERVER" : root.section == "identity" ? "IDENTITY" : root.section == "network" ? "NETWORK" : "LOGS";
+                        text: root.section == "game" ? "GAME" : root.section == "server" ? "SERVER" : root.section == "identity" ? "IDENTITY" : root.section == "network" ? "NETWORK" : root.section == "saves" ? "SAVES" : "LOGS";
                         font-family: Type.cond;
                         font-weight: 700;
                         font-size: 30px;
@@ -539,6 +551,49 @@ export component SettingsScreen inherits Rectangle {
                         title: "Ask my router to forward the game's port";
                         sub: "UPnP, PCP or NAT-PMP, only while the game runs, so other players reach you directly.";
                         Switch { label: "Ask my router to forward the game's port"; checked <=> root.port-forwarding; toggled => { root.options-changed(); } }
+                    }
+                }
+
+                // The game's profiles.
+                if root.section == "saves": VerticalLayout {
+                    VerticalLayout {
+                        padding-top: 15px;
+                        Text {
+                            text: "The game keeps a profile for each account you play with: its options, key bindings and campaign. Cross-Com gives a new account a profile of its own, named after it, so the game doesn't ask for a name: a copy of the one you last played, or a new one. Your rank and unlocks are kept on each server.";
+                            color: Theme.soft;
+                            font-size: Type.small;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if root.profiles.length == 0: VerticalLayout {
+                        padding-top: 15px;
+                        Text { text: "No game profiles on this PC yet: the game makes one the first time you play."; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+                    }
+                    for p in root.profiles: SettingRow {
+                        title: p.name + (p.name != p.account ? "  (" + p.account + ")" : "");
+                        sub: p.played + (p.campaign ? " · campaign saves" : "");
+                        if p.current: Tag { text: "Plays now"; }
+                        if !p.current: Btn {
+                            text: "Use for my account";
+                            enabled: !root.playing && !root.saves-busy && root.info.account != "";
+                            clicked => { root.saves-use(p.account); }
+                        }
+                    }
+                    SettingRow {
+                        title: "Back up";
+                        sub: "Copies every profile, and Cross-Com's own saves, into a new folder where you choose (another drive, a USB stick, a synced folder).";
+                        Btn { text: "Back up…"; enabled: !root.saves-busy; busy: root.saves-busy; clicked => { root.saves-backup(); } }
+                    }
+                    SettingRow {
+                        title: "Restore";
+                        sub: "Puts back a backup: choose its \"Cross-Com saves …\" folder. What's there now is kept first, in the launcher's folder.";
+                        Btn { text: "Restore…"; enabled: !root.saves-busy && !root.playing; clicked => { root.saves-restore(); } }
+                        Btn { text: "Open folder"; clicked => { root.saves-open(); } }
+                    }
+                    if root.saves-said != "": VerticalLayout { padding-top: 10px; Said { text: root.saves-said; failed: root.saves-failed; } }
+                    if root.playing: VerticalLayout {
+                        padding-top: 10px;
+                        Text { text: "The game is running: close it to restore or switch profiles."; color: Theme.warn; font-size: Type.small; wrap: word-wrap; }
                     }
                 }
 

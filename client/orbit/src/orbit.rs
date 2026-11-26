@@ -100,10 +100,36 @@ pub unsafe extern "thiscall" fn OrbitClient_GetLoginDetails(_this: *mut c_void, 
     }
     let login = login();
     info!("Signing in as {:?}", login.username);
+    game_profile();
     crate::overlay::login_given();
     crate::logs::signing_in();
     unsafe {
         ((*(*listener).vtable).on_login_details)(listener, request_id, login.username.as_ptr(), login.password.as_ptr(), login.cd_key.as_ptr());
+    }
+}
+
+/// Gives the account a game profile before the game looks for one (it names the profile's
+/// folder after the account given here), so it doesn't ask for a name
+/// (`crosscom_client_common::profiles`). Once a run.
+fn game_profile() {
+    use crosscom_client_common::profiles;
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.set(()).is_err() {
+        return;
+    }
+    let account = &crate::config().username;
+    let Some(root) = profiles::root() else {
+        warn!("No Documents folder: the game asks for a profile name");
+        return;
+    };
+    if account.is_empty() {
+        return;
+    }
+    match profiles::ensure(&root, account) {
+        Ok(profiles::Ensured::Present) => {}
+        Ok(profiles::Ensured::Copied { from }) => info!("Game profile for {account}: the one {from} played, named {account}"),
+        Ok(profiles::Ensured::Made) => info!("Game profile for {account}: a new one, named {account}"),
+        Err(e) => warn!("Couldn't make a game profile for {account} (the game asks for a name): {e}"),
     }
 }
 

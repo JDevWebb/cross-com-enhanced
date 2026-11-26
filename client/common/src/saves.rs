@@ -1,8 +1,9 @@
 //! The game's saves, kept on this PC: what Orbit kept in Ubisoft's cloud.
 //!
-//! Future Soldier keeps one small save through Orbit (its profile: the name it asks for on the
-//! first start, and its settings). Each account has its own folder, so players sharing a PC keep
-//! their own profiles: `%APPDATA%\Cross-Com\Saves\<account>\<product>-<savegame>.sav`.
+//! Future Soldier keeps one small save through Orbit (its session's settings, under the PC's
+//! name). Each account has its own folder: `%APPDATA%\Cross-Com\Saves\<account>\<product>-<savegame>.sav`.
+//! The game's profile itself (the name it asks for on the first start, its options and campaign)
+//! is in the Documents folder: see `profiles`.
 
 use std::fs;
 use std::io;

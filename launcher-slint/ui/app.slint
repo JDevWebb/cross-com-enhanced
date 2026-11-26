@@ -15,9 +15,9 @@ import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
 import { HostScreen } from "host.slint";
-import { InfoView, NewsRow, DlcRow, CheckRow, CodeRow } from "types.slint";
+import { InfoView, NewsRow, DlcRow, CheckRow, CodeRow, ProfileRow } from "types.slint";
 
-export { Theme, InfoView, NewsRow, DlcRow, CodeRow }
+export { Theme, InfoView, NewsRow, DlcRow, CodeRow, ProfileRow }
 
 export component AppWindow inherits Window {
     title: "Cross-Com Enhanced";
@@ -143,6 +143,11 @@ export component AppWindow inherits Window {
     in-out property <bool> restore-confirming;
     in property <string> restore-said;
     in property <bool> restore-failed;
+    // Settings › Saves.
+    in property <[ProfileRow]> profiles;
+    in property <string> saves-said;
+    in property <bool> saves-failed;
+    in property <bool> saves-busy;
 
     // Host.
     in property <string> host-state: "stopped";
@@ -200,6 +205,11 @@ export component AppWindow inherits Window {
     callback host-play-here();
     callback host-copied(string);
     callback host-access(bool);
+    // Settings › Saves.
+    callback saves-backup();
+    callback saves-restore();
+    callback saves-open();
+    callback saves-use(string);
 
     VerticalLayout {
         TitleBar {
@@ -350,6 +360,15 @@ export component AppWindow inherits Window {
                         restore-failed: root.restore-failed;
                         update-checking: root.update-checking;
                         update-checked: root.update-checked;
+                        profiles: root.profiles;
+                        saves-said: root.saves-said;
+                        saves-failed: root.saves-failed;
+                        saves-busy: root.saves-busy;
+                        playing: root.playing;
+                        saves-backup => { root.saves-backup(); }
+                        saves-restore => { root.saves-restore(); }
+                        saves-open => { root.saves-open(); }
+                        saves-use(account) => { root.saves-use(account); }
                         options-changed => { root.options-changed(); }
                         move-game => { root.move-game(); }
                         check-server => { root.setup-check-server(); }

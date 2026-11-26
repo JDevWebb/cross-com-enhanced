@@ -64,3 +64,13 @@ export struct CodeRow {
     place: string,
     code: string,
 }
+
+// A game profile, as Settings › Saves lists it: its name in the game, the account it's played
+// with, when it was last played, whether it has campaign saves, and whether the game plays it now.
+export struct ProfileRow {
+    account: string,
+    name: string,
+    played: string,
+    campaign: bool,
+    current: bool,
+}
