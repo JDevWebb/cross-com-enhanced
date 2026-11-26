@@ -25,6 +25,7 @@ use crate::CodeRow;
 use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
+use crate::ProfileRow;
 
 /// The fewest-players list in Settings starts at this many.
 const MIN_PLAYERS_FROM: u8 = crosscom_client_common::config::MIN_QUICK_MATCH_PLAYERS;
@@ -744,9 +745,77 @@ fn open_settings(w: &AppWindow, l: &Arc<Launcher>, info: &core::Info) {
         prepare_setup(w, info);
     }
     show_logs(w, l);
+    w.set_saves_said(s(""));
+    show_saves(w, l);
 }
 
-/// How the logs stand, in Settings.
+/// Settings › Saves: the game's profiles, looked at off the window's thread.
+fn show_saves(w: &AppWindow, l: &Arc<Launcher>) {
+    let l = l.clone();
+    background(
+        w,
+        move || l.profiles(),
+        |w, found: Result<Vec<core::ProfileView>, String>| {
+            let rows: Vec<ProfileRow> = match found {
+                Ok(found) => found
+                    .iter()
+                    .map(|p| ProfileRow {
+                        account: s(&p.account),
+                        name: s(&p.name),
+                        played: s(p.played.map_or_else(|| "Not played yet".to_owned(), |t| format!("Last played {}", when(t)))),
+                        campaign: p.campaign,
+                        current: p.current,
+                    })
+                    .collect(),
+                Err(e) => {
+                    w.set_saves_said(s(e));
+                    w.set_saves_failed(true);
+                    Vec::new()
+                }
+            };
+            w.set_profiles(ModelRc::new(VecModel::from(rows)));
+        },
+    );
+}
+
+/// A Saves action's outcome: said, and the list looked at again.
+fn saves_done(w: &AppWindow, l: &Arc<Launcher>, said: Result<String, String>) {
+    w.set_saves_busy(false);
+    match said {
+        Ok(said) => {
+            w.set_saves_said(s(said));
+            w.set_saves_failed(false);
+        }
+        Err(e) => {
+            w.set_saves_said(s(e));
+            w.set_saves_failed(true);
+        }
+    }
+    show_saves(w, l);
+}
+
+/// Saves' Back up and Restore: a folder picked, then `act` with it off the window's thread.
+fn saves_with_folder(w: &AppWindow, l: &Arc<Launcher>, title: &'static str, act: fn(&Launcher, &std::path::Path) -> Result<String, String>) {
+    #[cfg(windows)]
+    {
+        let l = l.clone();
+        background(
+            w,
+            move || rfd::FileDialog::new().set_title(title).pick_folder(),
+            move |w, dir: Option<PathBuf>| {
+                let Some(dir) = dir else { return };
+                w.set_saves_busy(true);
+                let acting = l.clone();
+                background(w, move || act(&acting, &dir), move |w, said| saves_done(w, &l, said));
+            },
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (title, act);
+        saves_done(w, l, Err("Choosing a folder needs Windows.".into()));
+    }
+}
 fn show_logs(w: &AppWindow, l: &Launcher) {
     let status = l.logs_status();
     w.set_logs_last(s(logs_last(&status)));
@@ -999,6 +1068,27 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
     w.on_host_start(on(host_start));
     w.on_host_stop(on(host_stop));
     w.on_host_play_here(on(host_play_here));
+    w.on_saves_backup(on(|w, l| saves_with_folder(w, l, "Where to put the backup", Launcher::back_up_saves)));
+    w.on_saves_restore(on(|w, l| {
+        saves_with_folder(w, l, "The \"Cross-Com saves …\" backup folder to restore", Launcher::restore_saves)
+    }));
+    w.on_saves_open(on(|w, l| {
+        if let Err(e) = l.open_profiles() {
+            w.set_saves_said(s(e));
+            w.set_saves_failed(true);
+        }
+    }));
+    {
+        let (weak, l) = (weak.clone(), l.clone());
+        w.on_saves_use(move |account| {
+            let Some(w) = weak.upgrade() else { return };
+            w.set_saves_busy(true);
+            let using = l.clone();
+            let account = account.to_string();
+            let after = l.clone();
+            background(&w, move || using.use_profile(&account), move |w, said| saves_done(w, &after, said));
+        });
+    }
     {
         let (weak, l) = (weak.clone(), l.clone());
         w.on_host_access(move |internet| {

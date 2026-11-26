@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 
 use crosscom_client_common::config::Config;
+use crosscom_client_common::profiles;
 use crosscom_launcher::client;
 use crosscom_launcher::dlc;
 use crosscom_launcher::game;
@@ -536,6 +537,72 @@ impl Launcher {
         Ok(said)
     }
 
+    /// The game's profiles on this PC (`crosscom_client_common::profiles`), the most recently
+    /// played first, with the one the game plays now marked.
+    pub fn profiles(&self) -> Result<Vec<ProfileView>, String> {
+        let root = profiles::root().ok_or("The game's profiles are in your Documents folder, which this needs Windows to find.")?;
+        let current = self.game_dir().map(|dir| settings::client(&dir).username).unwrap_or_default();
+        Ok(profiles::list(&root)
+            .into_iter()
+            .map(|p| ProfileView {
+                current: p.account == current,
+                played: p.last_played.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
+                campaign: p.campaign,
+                name: p.name.unwrap_or_else(|| p.account.clone()),
+                account: p.account,
+            })
+            .collect())
+    }
+
+    /// Makes the profile played as `from` the one the game plays now, named after the account (the
+    /// one it replaces kept in the launcher's folder). What to tell the player.
+    pub fn use_profile(&self, from: &str) -> Result<String, String> {
+        let root = profiles::root().ok_or("This needs Windows.")?;
+        let dir = self.game_dir().ok_or("Set the game up first.")?;
+        let account = settings::client(&dir).username;
+        if account.is_empty() {
+            return Err("Set the game up first: there's no account yet.".into());
+        }
+        profiles::use_for(&root, from, &account, &self.dir().join(PROFILE_BACKUPS)).map_err(|e| format!("Couldn't use that profile: {e}"))?;
+        Ok(format!(
+            "The game plays {from}'s profile now, as {account}. Its own was kept in the launcher's folder, in {PROFILE_BACKUPS}."
+        ))
+    }
+
+    /// Copies the game's profiles and the client's saves into a new folder in `to`. What to tell
+    /// the player.
+    pub fn back_up_saves(&self, to: &Path) -> Result<String, String> {
+        let root = profiles::root().ok_or("This needs Windows.")?;
+        let backup = to.join(format!("Cross-Com saves {}", profiles::stamp()));
+        copy_saves(&root, &self.dir().join(SAVES), &backup)?;
+        Ok(format!("Backed up to {}.", backup.display()))
+    }
+
+    /// Puts back a backup made by [`Launcher::back_up_saves`] (the profiles and saves there now
+    /// kept in the launcher's folder first). What to tell the player.
+    pub fn restore_saves(&self, from: &Path) -> Result<String, String> {
+        let root = profiles::root().ok_or("This needs Windows.")?;
+        if !from.join(BACKUP_PROFILES).is_dir() {
+            return Err(format!(
+                "That isn't a Cross-Com saves backup: choose the folder named \"Cross-Com saves …\" (it has a {BACKUP_PROFILES} folder in it)."
+            ));
+        }
+        let kept = self.dir().join(PROFILE_BACKUPS).join(format!("before restoring {}", profiles::stamp()));
+        copy_saves(&root, &self.dir().join(SAVES), &kept)?;
+        profiles::copy_dir(&from.join(BACKUP_PROFILES), &root).map_err(|e| format!("Couldn't put the profiles back: {e}"))?;
+        if from.join(BACKUP_SAVES).is_dir() {
+            profiles::copy_dir(&from.join(BACKUP_SAVES), &self.dir().join(SAVES)).map_err(|e| format!("Couldn't put the saves back: {e}"))?;
+        }
+        Ok(format!("Restored. What was there before is kept in the launcher's folder, in {PROFILE_BACKUPS}."))
+    }
+
+    /// Opens the game's profiles folder.
+    pub fn open_profiles(&self) -> Result<(), String> {
+        let root = profiles::root().ok_or("This needs Windows.")?;
+        std::fs::create_dir_all(&root).map_err(|e| format!("Couldn't make {}: {e}", root.display()))?;
+        open_folder(&root)
+    }
+
     /// Opens the folder the game's logs are kept in.
     pub fn open_logs(&self) -> Result<(), String> {
         let dir = self.game_dir().ok_or("No game set up.")?;
@@ -559,6 +626,52 @@ impl Launcher {
         game::restore(&dir)?;
         Ok("The game's own files are back. To play on Cross-Com again, go to Play: the setup shows there.".into())
     }
+}
+
+/// The client's saves (`crosscom_client_common::saves`), in the launcher's folder.
+const SAVES: &str = "Saves";
+/// Where profiles replaced or restored over are kept, in the launcher's folder.
+pub const PROFILE_BACKUPS: &str = "Profile backups";
+/// A backup's folders: the game's profiles, and the client's saves.
+const BACKUP_PROFILES: &str = "profiles";
+const BACKUP_SAVES: &str = "Cross-Com saves";
+
+/// A game profile, as Settings › Saves lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileView {
+    /// The account it was played with (its folder).
+    pub account: String,
+    /// Its name in the game.
+    pub name: String,
+    /// When it was last played (Unix time).
+    pub played: Option<u64>,
+    pub campaign: bool,
+    /// The game plays it now.
+    pub current: bool,
+}
+
+/// Copies the game's profiles in `profiles` and the client's saves in `saves` into `to`.
+fn copy_saves(profiles: &Path, saves: &Path, to: &Path) -> Result<(), String> {
+    if profiles.is_dir() {
+        profiles::copy_dir(profiles, &to.join(BACKUP_PROFILES)).map_err(|e| format!("Couldn't copy the profiles: {e}"))?;
+    }
+    if saves.is_dir() {
+        profiles::copy_dir(saves, &to.join(BACKUP_SAVES)).map_err(|e| format!("Couldn't copy the saves: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Opens `dir` in File Explorer.
+fn open_folder(dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    let opener = crosscom_launcher::windows_dirs::windows_program("explorer.exe")?;
+    #[cfg(not(windows))]
+    let opener = std::path::PathBuf::from("xdg-open");
+    std::process::Command::new(opener)
+        .arg(dir)
+        .spawn()
+        .map_err(|e| format!("Couldn't open {}: {e}", dir.display()))?;
+    Ok(())
 }
 
 fn client_state(dir: Option<&Path>) -> ClientState {

@@ -8,6 +8,7 @@ pub mod dlc;
 pub mod http;
 pub mod lobby_size;
 pub mod logging;
+pub mod profiles;
 pub mod quick_match;
 pub mod runs;
 pub mod saves;
