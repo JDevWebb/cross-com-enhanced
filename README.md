@@ -58,7 +58,7 @@ You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Win
 
 To play on another server instead (one your group runs, one on your own network, or one you [host yourself](#host-a-server)), choose **Another server** in the setup and enter its address, or paste the **join code** a friend hosting from their launcher sent you (it looks like `203.0.113.24:8080#5c1e0b7f…`). **Settings › Server** switches later: pick the community test network or another server, then **Switch to this server**.
 
-The setup shows only the first time. After that, everything it set is in **Settings**: the game's folder, the server, your identity, your connection and the game's options. **Settings › About › Run the setup again** goes through it once more, and changes nothing until its last step.
+The setup shows only the first time. After that, everything it set is in **Settings**: the game's folder, the server, your identity, your connection, the game's options and your game profiles (**Settings › Saves** backs them up). **Settings › About › Run the setup again** goes through it once more, and changes nothing until its last step.
 
 The launcher installs Cross-Com's client into the game and keeps the game's own files; **Settings › Game › Restore the game's own files** puts them back. It's a native Windows program with nothing else to install: no WebView2 or other runtime. When a new release is out, the launcher offers it in a bar under its title; **Update** installs it, with the client to match, and restarts the launcher.
 
@@ -93,11 +93,11 @@ Without a pack, you can still play every base-game map and mode. **Quick Match o
 <table>
 <tr>
 <td><img src="./docs/screenshots/launcher-setup.png" alt="The launcher's setup, at its account step: the game folder found and the community test network answering, then a name for a new account and the server's sign-up code, with no password"></td>
-<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: a menu of sections (Game, Server, Identity, Network, Logs, About) and the Network section open: the connection test's result and port forwarding"></td>
+<td><img src="./docs/screenshots/launcher-settings.png" alt="The launcher's settings: a menu of sections (Game, Server, Identity, Network, Saves, Logs, About) and the Network section open: the connection test's result and port forwarding"></td>
 </tr>
 <tr>
 <td align="center"><sub>The first launch's setup, a step at a time: your name, and no password</sub></td>
-<td align="center"><sub>Settings, a section at a time: the game, your server, identity and connection, the logs</sub></td>
+<td align="center"><sub>Settings, a section at a time: the game, your server, identity and connection, your saves, the logs</sub></td>
 </tr>
 </table>
 
