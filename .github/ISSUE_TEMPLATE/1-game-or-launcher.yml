@@ -79,7 +79,7 @@ body:
     attributes:
       label: Logs
       description: |
-        After each game you play online the launcher sends its log to the server you played on, and **Settings › Logs › Send logs now** sends it straight away: say when, and that's usually enough. The logs are also in the game's folder: `crosscom.log`, and the `logs` folder (**Open logs folder** in Settings).
+        After each game you play online the launcher sends its log to the server you played on, and **Settings › Logs › Send now** sends it straight away: say when, and that's usually enough. The logs are also in the game's folder: `crosscom.log`, and the `logs` folder (**Open logs folder** in Settings).
         **Read a log before pasting it here:** it can contain your PC's name and your internet address.
       render: text
   - type: checkboxes
@@ -91,4 +91,4 @@ body:
           required: true
         - label: I removed anything private from what I pasted (or only sent the logs from the launcher).
           required: true
-        - label: I sent the logs from the launcher (Settings › Logs › Send logs now).
+        - label: I sent the logs from the launcher (Settings › Logs › Send now).

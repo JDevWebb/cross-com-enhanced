@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         These are found by matching what your game saw with what the server saw at that moment, so **the time and the server matter most.**
-        The fastest way to get it looked at: right after it happens, send your logs from the launcher (**Settings › Logs › Send logs now**), and ask the others involved to do the same.
+        The fastest way to get it looked at: right after it happens, send your logs from the launcher (**Settings › Logs › Send now**), and ask the others involved to do the same.
   - type: input
     id: when
     attributes:
