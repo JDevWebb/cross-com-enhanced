@@ -76,10 +76,26 @@ pub fn content(public_ip: IpAddr, auth_port: u16) -> String {
     serde_json::to_string(&items).unwrap_or_default()
 }
 
+/// The online config's settings: the server's public address and its sign-in port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Content {
+    pub public_ip: IpAddr,
+    pub auth_port: u16,
+}
+
+impl Content {
+    /// The online config for the game at `client`: the server's address as it reaches it
+    /// (`here`), where its sign-in ticket is good.
+    #[must_use]
+    pub fn for_client(&self, client: IpAddr) -> String {
+        content(crate::here::server_as_reached(client, self.public_ip), self.auth_port)
+    }
+}
+
 /// What the HTTP server answers.
 pub struct Http {
     /// The online config (see [`content`]).
-    pub content: String,
+    pub content: Content,
     /// Sign-up, when the server's settings turn it on.
     pub signup: Option<SignUp>,
     pub api: Api,
@@ -89,6 +105,11 @@ pub struct Http {
     pub logs: crate::logs::Logs,
     /// Clients' reports of their routers, and their connection tests.
     pub reach: crate::reach::Reach,
+    /// Hosts' checks of their servers from outside.
+    pub check_host: crate::check_host::CheckHost,
+    /// HTTPS on this same port (`https_port` = `http_port`): connections starting with TLS go
+    /// to it.
+    pub tls: Option<Arc<crate::tls::Front>>,
 }
 
 /// Serves the online config, the launcher's API and sign-up if on, until the process ends.
@@ -112,13 +133,25 @@ pub fn serve(logger: &Logger, listen: SocketAddr, http: Http) -> std::io::Result
         let http = Arc::clone(&http);
         let conn = Conn { gate: Arc::clone(&gate), reserve };
         std::thread::spawn(move || {
-            if let Err(e) = answer(&logger, stream, &http, &conn) {
+            if let Some(front) = http.tls.as_ref().filter(|_| starts_with_tls(&stream)) {
+                if let Err(e) = front.relay(stream, peer) {
+                    slog::debug!(logger, "HTTPS request from {peer} failed: {e}");
+                }
+            } else if let Err(e) = answer(&logger, stream, &http, &conn) {
                 warn!(logger, "HTTP request failed: {e}");
             }
             drop(pass);
         });
     }
     Ok(())
+}
+
+/// Whether the connection starts with TLS's handshake (its first byte, looked at and left in
+/// place); a client that sends nothing in time is answered as HTTP (which then times out).
+fn starts_with_tls(stream: &TcpStream) -> bool {
+    let mut first = [0u8; 1];
+    let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
+    matches!(stream.peek(&mut first), Ok(1)) && first[0] == crate::tls::HANDSHAKE
 }
 
 /// How many connections `peer` may have open at once: a trusted proxy carries everyone's.
@@ -362,6 +395,7 @@ enum Route {
     Logs,
     Forward,
     Reach,
+    CheckHost,
     /// A connection that sends nothing, such as the container's health check.
     Nothing,
     Other,
@@ -379,6 +413,7 @@ fn route(request_line: &str) -> Route {
         ("POST", crate::logs::PATH) => Route::Logs,
         ("POST", crate::reach::FORWARD_PATH) => Route::Forward,
         ("POST", crate::reach::REACH_PATH) => Route::Reach,
+        ("POST", crate::check_host::PATH) => Route::CheckHost,
         ("POST", p) if p == crate::signup::PATH => Route::SignUp,
         _ => Route::Other,
     }
@@ -420,7 +455,7 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
         Route::Nothing => return None,
         Route::OnlineConfig => {
             info!(logger, "Online config for {peer}");
-            ("200 OK", http.content.clone())
+            ("200 OK", http.content.for_client(peer))
         }
         Route::Info => ("200 OK", http.api.info(logger)),
         // Read as it comes by `answer_logs`; here when the whole request is in hand (the tests).
@@ -445,6 +480,8 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
                     let report = without_tokens(&String::from_utf8_lossy(body));
                     if m.announced {
                         info!(logger, "{peer}: {:#x}'s client reported its router: {report:?}", m.pid);
+                    } else if m.waiting {
+                        slog::debug!(logger, "{peer}: {:#x}'s client is waiting for its game to be in Multiplayer: {report:?}", m.pid);
                     } else {
                         warn!(
                             logger,
@@ -479,12 +516,22 @@ fn respond(logger: &Logger, http: &Http, peer: SocketAddr, request: &[u8]) -> Op
             None => too_big(),
             Some(body) => http.reach.reach(peer, body),
         },
+        Route::CheckHost => match body(crate::check_host::MAX_BODY) {
+            None => too_big(),
+            Some(body) => {
+                let answer = http.check_host.handle(peer, body);
+                info!(logger, "{peer}: its server checked from outside: {} {}", answer.0, answer.1);
+                answer
+            }
+        },
         Route::KeyLogin => match body(crate::api::MAX_BODY) {
             None => too_big(),
             Some(body) => {
                 let ((status, json), name) = http.api.key_login(peer, header(&head, "host"), body);
                 match name {
                     Some(name) => info!(logger, "{peer} signed in to the launcher as {name}"),
+                    // The launcher tries its key first; 404 is how it learns to offer sign-up.
+                    None if status.starts_with("404") => info!(logger, "{peer}: a launcher with no account here yet"),
                     None => info!(logger, "{peer}: launcher sign-in refused, {status}"),
                 }
                 (status, json)
@@ -642,7 +689,12 @@ mod tests {
             keep_days: 30,
         };
         Http {
-            content: "[]".into(),
+            check_host: crate::check_host::CheckHost::default(),
+            tls: None,
+            content: Content {
+                public_ip: "203.0.114.7".parse().unwrap(),
+                auth_port: 21030,
+            },
             signup: signup.then(|| SignUp::new(Arc::clone(&accounts), None)),
             api,
             proxies: crate::proxy::Trusted::parse(&[PROXY]).unwrap(),
@@ -724,10 +776,15 @@ mod tests {
 
         assert_eq!(ask(&http, &post("/accounts", &signup_body("New"))).unwrap().0, "404 Not Found", "sign-up off");
         assert_eq!(ask(&server(true), &post("/accounts", &signup_body("New"))).unwrap().0, "201 Created");
-        assert_eq!(
-            ask(&http, "GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n").unwrap(),
-            ("200 OK", "[]".into())
-        );
+        // The online config: where to sign in, as each client reaches the server.
+        let config = |from: &str| ask_from(&http, from, "GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n\r\n").unwrap();
+        let sandbox = |answer: (&str, String)| {
+            assert_eq!(answer.0, "200 OK");
+            let items: serde_json::Value = serde_json::from_str(&answer.1).unwrap();
+            items[0]["Values"][0].as_str().unwrap().to_owned()
+        };
+        assert_eq!(sandbox(config("198.51.100.20")), "prudp:/address=203.0.114.7;port=21030", "from the internet");
+        assert_eq!(sandbox(config("127.0.0.1")), "prudp:/address=127.0.0.1;port=21030", "from this machine");
         assert_eq!(ask(&http, ""), None);
     }
 
@@ -845,6 +902,39 @@ mod tests {
         let mut answer = String::new();
         let _ = stream.read_to_string(&mut answer);
         answer
+    }
+
+    /// HTTPS on the HTTP port itself: a TLS connection is HTTPS, any other plain HTTP, both
+    /// answered by the same server.
+    #[test]
+    fn one_port_serves_http_and_https() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let identity = crate::tls::certificate(&dir.path().join("c.der"), &dir.path().join("k.der")).unwrap();
+        let pinned = identity.0.clone();
+        let mut http = server(false);
+        http.tls = Some(Arc::new(crate::tls::Front::new(port, identity).unwrap()));
+        http.proxies = crate::proxy::Trusted::parse(&[crate::tls::FRONT.to_string()]).unwrap();
+        std::thread::spawn(move || serve(&Logger::root(slog::Discard, slog::o!()), port, http));
+        std::thread::sleep(Duration::from_millis(200));
+
+        let plain = talk(port, b"GET /api/info HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(plain.starts_with("HTTP/1.1 200 OK") && plain.contains(crate::api::GAME), "{plain}");
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(pinned).unwrap();
+        let client = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("cross-com.invalid").unwrap();
+        let connection = rustls::ClientConnection::new(Arc::new(client), name).unwrap();
+        let mut tls = rustls::StreamOwned::new(connection, TcpStream::connect(port).unwrap());
+        tls.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut answer = String::new();
+        let _ = tls.read_to_string(&mut answer);
+        assert!(answer.starts_with("HTTP/1.1 200 OK") && answer.contains(crate::api::GAME), "{answer}");
     }
 
     #[test]

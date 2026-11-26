@@ -45,14 +45,25 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// A string value under `HKEY_LOCAL_MACHINE`.
+/// A string value under `HKEY_LOCAL_MACHINE`, from the registry's 64-bit view. The game is a
+/// 32-bit program, so its plain reads go to the 32-bit view (`WOW6432Node`), whose `ProductName`
+/// Windows 10 leaves at its install image's ("Windows 10 Enterprise" on a Pro machine). 32-bit
+/// Windows has only the one view, and a plain read is the fallback for anything refusing the flag.
 #[cfg(windows)]
 fn registry_string(key: &str, value: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::RRF_SUBKEY_WOW6464KEY;
+
+    let (key, value) = (wide(key), wide(value));
+    registry_read(&key, &value, RRF_SUBKEY_WOW6464KEY).or_else(|| registry_read(&key, &value, 0))
+}
+
+/// One `RegGetValueW` of a string, with `view` added to its flags.
+#[cfg(windows)]
+fn registry_read(key: &[u16], value: &[u16], view: u32) -> Option<String> {
     use windows_sys::Win32::System::Registry::RegGetValueW;
     use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
     use windows_sys::Win32::System::Registry::RRF_RT_REG_SZ;
 
-    let (key, value) = (wide(key), wide(value));
     let mut buf = [0u16; 256];
     let mut size = u32::try_from(std::mem::size_of_val(&buf)).ok()?;
     // SAFETY: NUL-terminated names, and the buffer with its size in bytes; the call writes at most that.
@@ -61,7 +72,7 @@ fn registry_string(key: &str, value: &str) -> Option<String> {
             HKEY_LOCAL_MACHINE,
             key.as_ptr(),
             value.as_ptr(),
-            RRF_RT_REG_SZ,
+            RRF_RT_REG_SZ | view,
             std::ptr::null_mut(),
             buf.as_mut_ptr().cast(),
             &mut size,

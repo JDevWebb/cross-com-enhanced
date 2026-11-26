@@ -72,7 +72,12 @@ pub struct Launcher {
     prefs: Mutex<Prefs>,
     /// What the last sending of logs said, and whether logs are being sent now.
     logs: Mutex<(Option<String>, bool)>,
+    /// The server hosted from here, for friends (Host).
+    pub host: crate::host::Host,
 }
+
+/// The address the host's own game plays on its own server at: this machine's.
+pub const HOSTED_HERE: &str = "127.0.0.1";
 
 /// Cross-Com's client in the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,10 +195,12 @@ impl Launcher {
         if prefs.game_dir.as_deref().is_none_or(|d| !game::is_game_dir(d)) {
             prefs.game_dir = game::find(&game::candidates());
         }
+        let host = crate::host::Host::new(prefs_path.parent().unwrap_or_else(|| Path::new(".")));
         Self {
             prefs_path,
             prefs: Mutex::new(prefs),
             logs: Mutex::new((None, false)),
+            host,
         }
     }
 
@@ -382,7 +389,9 @@ impl Launcher {
         if !game::is_game_dir(&dir) {
             return Err("That folder doesn't hold the game.".into());
         }
-        let host = server::host(&setup.server);
+        // A host's join code pins the server's own HTTPS certificate.
+        let (_, fingerprint) = server::join_code(&setup.server)?;
+        let host = server::chosen(&setup.server)?;
         if host.is_empty() {
             return Err("Enter the server's address.".into());
         }
@@ -397,6 +406,7 @@ impl Launcher {
         };
         let config = Config {
             server: Some(host),
+            server_certificate: fingerprint.as_ref().map(crosscom_client_common::http::fingerprint_text),
             username: account.name,
             // The game signs in with the game token, as its password.
             password: account.token,
@@ -476,6 +486,54 @@ impl Launcher {
             "The game is starting."
         };
         Ok((child, said.into()))
+    }
+
+    /// Whether the server hosted here lets anyone on the internet join (with a join code), or only
+    /// this PC's networks.
+    #[must_use]
+    pub fn host_internet(&self) -> bool {
+        self.prefs().host_internet
+    }
+
+    /// Chooses who can join the server hosted here (from its next start).
+    pub fn set_host_internet(&self, internet: bool) -> Result<(), String> {
+        let mut prefs = self.prefs();
+        prefs.host_internet = internet;
+        self.save(prefs)
+    }
+
+    /// Whether the game plays on the server hosted from here.
+    #[must_use]
+    pub fn plays_on_hosted(&self) -> bool {
+        self.game_dir().is_some_and(|dir| settings::client(&dir).server.as_deref() == Some(HOSTED_HERE))
+    }
+
+    /// Has the game play on the server hosted from here (at this machine's address, with the
+    /// server's own certificate), with the player's identity's account there, made with the
+    /// player's name when it has none yet. What to tell the player.
+    pub fn play_on_hosted(&self) -> Result<String, String> {
+        let dir = self.game_dir().ok_or("Set the game up first: Play opens the setup.")?;
+        let fingerprint = self.host.fingerprint().ok_or("Start the server first.")?;
+        crosscom_client_common::http::pin(HOSTED_HERE, Some(fingerprint));
+        let identity = self.identity()?;
+        let old = settings::client(&dir);
+        let name = if name_ok(&old.username) { old.username.clone() } else { "Host".to_owned() };
+        let (account, made) = account(HOSTED_HERE, &identity, &name, "")?;
+        let said = if made {
+            format!("Your game plays on your server now, as {} (a new account there).", account.name)
+        } else {
+            format!("Your game plays on your server now, as {}.", account.name)
+        };
+        let config = Config {
+            server: Some(HOSTED_HERE.into()),
+            server_certificate: Some(crosscom_client_common::http::fingerprint_text(&fingerprint)),
+            username: account.name,
+            password: account.token,
+            cd_key: if old.cd_key.is_empty() { NO_CD_KEY.into() } else { old.cd_key.clone() },
+            ..old
+        };
+        settings::save_client(&dir, &config, &settings::overlay(&dir))?;
+        Ok(said)
     }
 
     /// Opens the folder the game's logs are kept in.

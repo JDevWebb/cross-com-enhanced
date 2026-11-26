@@ -16,10 +16,11 @@ miniz_oxide = { workspace = true }
 num_enum = { workspace = true }
 quazal-macros = { path = "./quazal-macros" }
 rand = { workspace = true }
+# Sealing tickets (secretbox.rs): pure Rust, so the server builds for Windows too.
+crypto_secretbox = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 slog = { workspace = true }
 sloggers = { workspace = true }
-sodiumoxide = { workspace = true }
 toml = { workspace = true }

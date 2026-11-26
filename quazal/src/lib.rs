@@ -20,6 +20,7 @@ pub mod config;
 pub mod kerberos;
 pub mod prudp;
 pub mod rmc;
+pub mod secretbox;
 
 pub use crate::config::*;
 

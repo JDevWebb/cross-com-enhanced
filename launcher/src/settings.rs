@@ -19,6 +19,9 @@ pub struct Launcher {
     pub dx9: bool,
     /// The last logs the server took.
     pub last_logs: Option<LastLogs>,
+    /// Who can join the server hosted here: anyone on the internet with a join code too (the
+    /// router asked to forward its ports), or only this PC's networks (a LAN, a VPN).
+    pub host_internet: bool,
 }
 
 /// The last logs sent: the server's report ID, and when (Unix time).
@@ -182,6 +185,7 @@ mod tests {
                 id: "20261115-123456-ab12cd".into(),
                 at: 1_794_746_096,
             }),
+            host_internet: true,
         };
         mine.save(&path).unwrap();
         assert_eq!(Launcher::load(&path), mine);

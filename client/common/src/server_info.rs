@@ -29,6 +29,9 @@ pub struct ServerInfo {
     pub players_online: Option<u32>,
     /// The UDP ports the game signs in on (auth, then secure), which answer the address echo.
     pub udp_ports: Vec<u16>,
+    /// The server's public address, when a server on this network (hosted from a launcher at
+    /// home) has one: the game's port is forwarded for players on the internet then.
+    pub public_address: Option<String>,
     pub news: Vec<NewsItem>,
 }
 

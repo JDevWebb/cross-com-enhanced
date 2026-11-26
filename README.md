@@ -15,7 +15,8 @@
   <a href="#play">Play</a> ·
   <a href="#what-works">What works</a> ·
   <a href="#reporting-a-problem">Report a problem</a> ·
-  <a href="#run-your-own-server">Run your own</a> ·
+  <a href="#host-a-server">Host a server</a> ·
+  <a href="https://github.com/JDevWebb/cross-com-enhanced/wiki">Wiki</a> ·
   <a href="#documentation">Docs</a> ·
   <a href="#contributing">Contribute</a>
 </p>
@@ -55,7 +56,7 @@ You need **Ghost Recon: Future Soldier on PC** (Ubisoft Connect or Steam) on Win
 3. **Make an account**: choose the name other players will see. There's no password: your [identity](#your-identity) signs you in, and if it already has an account on the server, the launcher signs you in to it with nothing to type.
 4. **Press Play.** In the game, press <kbd>F5</kbd> for the overlay (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops, or choose another key in **Settings**).
 
-To play on another server instead (one your group runs, one on your own network, or one you [run yourself](#run-your-own-server)), choose **Another server** in the setup and enter its address. **Settings › Server** switches later: pick the community test network or another server, then **Switch to this server**.
+To play on another server instead (one your group runs, one on your own network, or one you [host yourself](#host-a-server)), choose **Another server** in the setup and enter its address, or paste the **join code** a friend hosting from their launcher sent you (it looks like `203.0.113.24:8080#5c1e0b7f…`). **Settings › Server** switches later: pick the community test network or another server, then **Switch to this server**.
 
 The setup shows only the first time. After that, everything it set is in **Settings**: the game's folder, the server, your identity, your connection and the game's options. **Settings › About › Run the setup again** goes through it once more, and changes nothing until its last step.
 
@@ -157,6 +158,8 @@ After each game you play online, the game's log from that run (`crosscom.log`, n
 
 The launcher asks GitHub for the latest release when it starts and every few hours, to offer updates. That question carries only the launcher's version (GitHub sees your internet address, as with any download), and an update installs only when you press **Update**: the launcher checks the release's signature first.
 
+When you [host a server](#host-a-server) for **anyone on the internet**, the launcher asks the community test network to check your server from outside: it sends only your server's port numbers, and the network sees your internet address (as for any connection) and tries those ports at it, once. Hosting for your network and VPN alone asks nothing.
+
 **Settings › Logs › Send game logs after each game** turns it off. The logs stay in the game's `logs` folder either way, so you can still attach them to a report.
 
 While you play online, the client also tells the server about your router: your PC's address on your home network, the port your router forwards to the game (if it does) and how it handles ports. The server gives the forwarded port to the players in your matches, the same way it already gives them your internet address. It also records how each join into a match went: how long the player stayed and both players' router details, by account and without addresses, kept for 90 days, so the server's host can see how often players can't reach each other. **Settings › Network** turns port forwarding off, and with it the router report. The connection test sends the same details, once, when you run it.
@@ -176,7 +179,8 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 <tr><td><b>Multiplayer Challenges</b></td><td>The Daily Friend Challenge and Beat Your Best, and daring a friend back.</td></tr>
 <tr><td><b>News</b></td><td>The server's own news in the main menu's Ghost Feed and on Community Messages.</td></tr>
 <tr><td><b>Leaderboards</b></td><td>The game's own Leaderboards screen can't be opened on PC, so the overlay has its own: every player on the server, by mode.</td></tr>
-<tr><td><b>Hosting</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too, and the client asks your router to forward the game's port when it can. If the host leaves, the match moves to another player. <a href="#your-connection">Settings › Network</a> tests how reachable you are.</td></tr>
+<tr><td><b>Your own server</b></td><td>One click in the launcher's <b>Host</b> screen runs a server on your PC for friends on your network, a VPN or the internet, with a join code to send them. Or run the server on its own, on Windows or Linux. See <a href="#host-a-server">Host a server</a>.</td></tr>
+<tr><td><b>Hosting matches</b></td><td>Players host their matches as they always did; the server introduces them, through home routers too, and the client asks your router to forward the game's port when it can. If the host leaves, the match moves to another player. <a href="#your-connection">Settings › Network</a> tests how reachable you are.</td></tr>
 </table>
 
 <table>
@@ -216,11 +220,26 @@ Tested end to end on real copies of the game, on Windows 11 and under Wine on Li
 
 Found a security problem? Please don't post it in a public issue: report it privately through the repository's **Security** tab. [SECURITY.md](SECURITY.md) says how, and what's in scope.
 
-## Run your own server
+## Host a server
 
-The server runs in Docker on any small Linux machine, or as a single program without it. One command starts it; you make the accounts, or let players make their own with a sign-up code you give them. Put Caddy in front of it for HTTPS with one more compose file, and one machine can host this server and a [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) server side by side.
+Your group can have a server of its own: its own accounts, stats, leaderboards and news. The matches still run on the players' PCs, so any PC will do.
 
-**[docs/hosting.md](docs/hosting.md)** has every step: ports, settings, accounts, news, HTTPS, players' logs and upgrades. A server on the internet needs HTTPS, which means a domain name: the launcher and the client only talk to it encrypted.
+**From the launcher, in one click.** The **Host** screen runs the server built into the launcher on your PC, while the launcher is open:
+
+1. Choose **who can join**: *My network and VPN* (nothing opened on your router), or *Anyone on the internet with a join code*.
+2. Press **Start server**. The launcher lets it through Windows Firewall (Windows asks once), and for the internet asks your router to forward its ports (UPnP, PCP or NAT-PMP), then has the community test network check it can be reached from outside.
+3. **Copy** a join code and send it to your friends: one for the internet, one for your network, one for your VPN (Tailscale). They paste it in their launcher's server box.
+4. **Play on my server** sets your own game up to play there too.
+
+<p align="center">
+  <img src="./docs/screenshots/launcher-host.png" width="720" alt="The launcher's Host screen: the server running with 3 players online, set for anyone on the internet; Reaching it lists Windows Firewall allowed, the web port forwarded on 8080, both UDP ports forwarded and Reachable from outside; then join codes for friends on the internet, on your network and on Tailscale">
+</p>
+
+A join code is the server's address, its port, and its own HTTPS certificate's fingerprint: no domain or certificate to buy, and your friends' launchers talk to your server and no other, encrypted. The port can be any your router gives (many won't forward port 80): Cross-Com's client sends the game there.
+
+**On its own.** `crosscom-server-windows-x86_64.exe` runs the server on a Windows PC without the launcher (at startup too, with Task Scheduler), and the server runs in Docker on any small Linux machine or VPS, or as a single program. With its own certificate, players join with a join code; with a domain, Caddy gives it HTTPS from Let's Encrypt in one more compose file, and one machine can host this server and a [5th Echelon Enhanced](https://github.com/JDevWebb/5th-echelon-enhanced) server side by side.
+
+**[The wiki's hosting pages](https://github.com/JDevWebb/cross-com-enhanced/wiki/Hosting-a-Server)** take you through each way: [from the launcher](https://github.com/JDevWebb/cross-com-enhanced/wiki/Hosting-from-the-Launcher), [join codes](https://github.com/JDevWebb/cross-com-enhanced/wiki/Join-Codes), [port forwarding and routers](https://github.com/JDevWebb/cross-com-enhanced/wiki/Port-Forwarding-and-Routers), [Windows](https://github.com/JDevWebb/cross-com-enhanced/wiki/Windows-Dedicated-Server), [Linux and Docker](https://github.com/JDevWebb/cross-com-enhanced/wiki/Linux-and-Docker-Server), [every setting](https://github.com/JDevWebb/cross-com-enhanced/wiki/Server-Settings) and [what to do when something's wrong](https://github.com/JDevWebb/cross-com-enhanced/wiki/Server-Troubleshooting). **[docs/hosting.md](docs/hosting.md)** has the server's reference: its API, players' logs and connection records.
 
 ## How it works
 
@@ -228,7 +247,7 @@ Future Soldier's PC version talks to Ubisoft's Quazal-based online services, the
 
 - **The server** speaks the game's online protocols: sign-in, profiles and stats, matchmaking and sessions, friends, squads, challenges, news and NAT traversal. Its HTTP side gives the game its online config, and the launcher and overlay their API.
 - **The client DLLs** replace the game's two Ubisoft libraries, so the game signs in to a Cross-Com server, and carry the in-game overlay.
-- **The launcher** finds the game, installs the client, signs you in and starts the game.
+- **The launcher** finds the game, installs the client, signs you in and starts the game, and can host a server for your friends.
 
 Matches themselves are still hosted by the players, as they always were.
 
@@ -236,11 +255,12 @@ Matches themselves are still hosted by the players, as they always were.
 
 | For | Where |
 |---|---|
-| **Hosting a server** | [docs/hosting.md](docs/hosting.md): Docker or not, settings, accounts, news, HTTPS with Caddy, sharing a machine, the API, players' logs |
+| **Help and guides** | [The wiki](https://github.com/JDevWebb/cross-com-enhanced/wiki): getting started, every launcher screen and setting, your connection, hosting a server, troubleshooting and error messages |
+| **Hosting a server** | [The wiki's hosting pages](https://github.com/JDevWebb/cross-com-enhanced/wiki/Hosting-a-Server), and [docs/hosting.md](docs/hosting.md): Docker or not, Windows, settings, accounts, news, HTTPS with Caddy or of its own (join codes), sharing a machine, the API, players' logs |
 | **The client** | [client/README.md](client/README.md): what the DLLs do, the overlay, `crosscom.toml` |
 | **The protocols** | [docs/protocol.md](docs/protocol.md): what the server answers, worked out from the game |
 | **Releases** | [docs/releasing.md](docs/releasing.md): checking a download (checksums, the release key's signature, build provenance, VirusTotal), how releases are built, signed and published, and CI |
-| **Building** | `scripts/build-launcher.sh` builds the client DLLs and the launcher (`launcher-slint/`, with the DLLs built in) into `dist/crosscom-launcher.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests; `scripts/launcher-shots.sh` redraws the launcher screenshots |
+| **Building** | `scripts/build-launcher.sh` builds the client DLLs, the Windows server and the launcher (`launcher-slint/`, with both built in) into `dist/crosscom-launcher.exe` and `dist/crosscom-server.exe` (in Docker); `scripts/check.sh` runs the formatting, lints and tests; `scripts/launcher-shots.sh` redraws the launcher screenshots |
 
 ## Standing on the shoulders of
 
@@ -260,7 +280,7 @@ Testing reports are the most useful thing right now: play with friends and [repo
 
 - **Pull requests:** keep them focused, and say how you tested (the pull request's checklist asks). Run `scripts/check.sh` first, and `scripts/bots.sh` for server changes. Changes that affect the game should say whether they were tried in the game itself.
 - **Research:** write what you worked out in your own words. Game files, extracted game data and disassembly can't go in this repository.
-- **Servers:** running one for your group is one of the best ways to help.
+- **Servers:** running one for your group is one of the best ways to help: the launcher's **Host** screen makes it one click.
 
 ## Licence
 

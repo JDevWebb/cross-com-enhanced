@@ -81,15 +81,20 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          # The client DLLs (32-bit, as the game), then the launcher with them built in: the one
-          # file players need.
+          # The client DLLs (32-bit, as the game) and the server, then the launcher with them built
+          # in: the one file players need (Host runs the server from it). The server goes out on
+          # its own too, for a Windows PC that only hosts.
           cargo build --locked --release -p crosscom-orbit -p crosscom-uplay --target i686-pc-windows-msvc
+          cargo build --locked --release -p crosscom-server --target x86_64-pc-windows-msvc
           # The game's Orbit imports, by their exact names: link.exe once cut them short.
           python scripts/check-exports.py target/i686-pc-windows-msvc/release/ubiorbitapi_r2_loader.dll
-          mkdir -p client-dlls dist
+          mkdir -p client-dlls server-exe dist
           cp target/i686-pc-windows-msvc/release/ubiorbitapi_r2_loader.dll target/i686-pc-windows-msvc/release/uplay_r1_loader.dll client-dlls/
-          CROSSCOM_CLIENT_DIR="$PWD/client-dlls" cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dlls
+          cp target/x86_64-pc-windows-msvc/release/crosscom-server.exe server-exe/
+          CROSSCOM_CLIENT_DIR="$PWD/client-dlls" CROSSCOM_SERVER_DIR="$PWD/server-exe" \
+            cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dlls,embed-server
           cp launcher-slint/target/release/crosscom-launcher.exe client-dlls/*.dll dist/
+          cp server-exe/crosscom-server.exe dist/crosscom-server-windows-x86_64.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows
@@ -195,7 +200,7 @@ jobs:
           if [ -z "$VT_API_KEY" ]; then echo "No VT_API_KEY secret; skipping the scan"; exit 1; fi
           # Into vt.md only when it finished: a half table would replace the plain links.
           scripts/virustotal.sh dist/crosscom-launcher.exe dist/uplay_r1_loader.dll dist/ubiorbitapi_r2_loader.dll \
-            dist/crosscom-server-linux-x86_64 > vt.tmp
+            dist/crosscom-server-linux-x86_64 dist/crosscom-server-windows-x86_64.exe > vt.tmp
           mv vt.tmp vt.md
           cat vt.md
       - name: Write the release notes
@@ -236,7 +241,7 @@ jobs:
             else
               echo "| File | Report |"
               echo "|---|---|"
-              for f in crosscom-launcher.exe uplay_r1_loader.dll ubiorbitapi_r2_loader.dll crosscom-server-linux-x86_64; do
+              for f in crosscom-launcher.exe uplay_r1_loader.dll ubiorbitapi_r2_loader.dll crosscom-server-linux-x86_64 crosscom-server-windows-x86_64.exe; do
                 sha="$(sha256sum "dist/$f" | cut -d' ' -f1)"
                 echo "| \`$f\` | [VirusTotal](https://www.virustotal.com/gui/file/$sha) |"
               done

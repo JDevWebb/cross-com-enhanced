@@ -6,10 +6,22 @@
 //! HTTPS, and a failure after something answered (a certificate that isn't valid, a broken
 //! handshake) never leads to plain HTTP: it may be someone in the way.
 //!
+//! A server hosted from a player's launcher has HTTPS with a certificate of its own, which no
+//! certificate authority vouches for: its host's join code names it by its fingerprint, and
+//! HTTPS to it takes that certificate and no other ([`pin`]). Never plain HTTP then. Its HTTPS is
+//! on its web port, the one the game asks for its online config on (80 unless the server names
+//! another: `host:port`), as the server serves both there.
+//!
 //! The game itself asks for its online config over plain HTTP, on port 80; that one stays as the
 //! game does it (`launcher::server::check`).
 
+use std::io::Read;
+use std::io::Write;
 use std::net::IpAddr;
+use std::net::TcpStream;
+use std::net::ToSocketAddrs;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// The longest a connection may take: a server without HTTPS should be found out quickly.
@@ -190,9 +202,13 @@ fn one_line(value: &str) -> String {
 }
 
 /// Sends a `GET` or `POST` (with `body`) of `path` to `server`: over HTTPS, or plain HTTP to a
-/// server at a private address where nothing answers on HTTPS. Gives up after `timeout`.
+/// server at a private address where nothing answers on HTTPS. Gives up after `timeout`. A
+/// server with a [`pin`] is asked over HTTPS with its certificate alone.
 pub fn request(server: &str, method: &str, path: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Response, Unreachable> {
     let (host, port) = address(server);
+    if let Some(fingerprint) = pinned(&host) {
+        return pinned_request(&host, port, fingerprint, method, path, headers, body, timeout);
+    }
     let https = match send(&url("https", &host, None, path), method, headers, body, timeout) {
         Ok((status, body)) => {
             return Ok(Response {
@@ -215,12 +231,288 @@ pub fn request(server: &str, method: &str, path: &str, headers: &[(&str, String)
     })
 }
 
+/// A certificate's fingerprint: its SHA-256.
+pub type Fingerprint = [u8; 32];
+
+/// The servers whose HTTPS is known by its certificate's fingerprint: host and fingerprint.
+static PINS: Mutex<Vec<(String, Fingerprint)>> = Mutex::new(Vec::new());
+
+/// A fingerprint as written (64 hex digits, perhaps in groups split by `:` or spaces).
+#[must_use]
+pub fn parse_fingerprint(text: &str) -> Option<Fingerprint> {
+    let hex: String = text.chars().filter(|c| !matches!(c, ':' | ' ' | '-')).collect();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// A fingerprint as written: 64 lowercase hex digits.
+#[must_use]
+pub fn fingerprint_text(fingerprint: &Fingerprint) -> String {
+    fingerprint.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// From now on, HTTPS to `server` takes the certificate whose fingerprint is `fingerprint`
+/// alone (a server hosted from a player's launcher). `None` takes its pin away.
+pub fn pin(server: &str, fingerprint: Option<Fingerprint>) {
+    let host = address(server).0.to_ascii_lowercase();
+    let mut pins = PINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pins.retain(|(h, _)| *h != host);
+    if let Some(fingerprint) = fingerprint {
+        pins.push((host, fingerprint));
+    }
+}
+
+/// Whether `server` is known by its certificate's fingerprint ([`pin`]).
+#[must_use]
+pub fn is_pinned(server: &str) -> bool {
+    pinned(&address(server).0).is_some()
+}
+
+fn pinned(host: &str) -> Option<Fingerprint> {
+    let pins = PINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pins.iter().find(|(h, _)| h.eq_ignore_ascii_case(host)).map(|(_, f)| *f)
+}
+
+/// The name asked for in the handshake: the certificate is checked by its fingerprint, not by
+/// a name.
+const PINNED_NAME: &str = "cross-com.invalid";
+
+/// Takes the certificate whose fingerprint is the pinned one, and checks the handshake's
+/// signatures as any certificate's.
+#[derive(Debug)]
+struct Pinned {
+    fingerprint: Fingerprint,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use sha2::Digest;
+        if sha2::Sha256::digest(end_entity.as_ref()).as_slice() == self.fingerprint {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("not the certificate the join code names".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// [`request`] to a pinned server: HTTPS on its web port with its certificate alone, one
+/// request on its connection.
+#[allow(clippy::too_many_arguments)]
+fn pinned_request(
+    host: &str,
+    port: u16,
+    fingerprint: Fingerprint,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+    timeout: Duration,
+) -> Result<Response, Unreachable> {
+    let failed = |e: &dyn std::fmt::Display| {
+        Unreachable(format!(
+            "{host} didn't answer over HTTPS ({e}). It may be down for now, or its host's join code may have changed."
+        ))
+    };
+    pinned_exchange(host, fingerprint, method, path, headers, body, timeout, port).map_err(|e| failed(&e))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pinned_exchange(
+    host: &str,
+    fingerprint: Fingerprint,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+    timeout: Duration,
+    port: u16,
+) -> std::io::Result<Response> {
+    let address = (host, port).to_socket_addrs()?.next().ok_or_else(|| std::io::Error::other("no address"))?;
+    let stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT.min(timeout))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Pinned {
+        fingerprint,
+        provider: Arc::clone(&provider),
+    };
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from(PINNED_NAME).map_err(std::io::Error::other)?;
+    let connection = rustls::ClientConnection::new(Arc::new(config), name).map_err(std::io::Error::other)?;
+    let mut tls = rustls::StreamOwned::new(connection, stream);
+    let named = if host.contains(':') { format!("[{host}]") } else { host.to_owned() };
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {named}:{port}\r\nUser-Agent: Cross-Com\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {}\r\n", one_line(value)));
+    }
+    if method != "GET" {
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("\r\n");
+    tls.write_all(request.as_bytes())?;
+    tls.write_all(body)?;
+    tls.flush()?;
+    // The answer, to the end (or as far as it says it goes).
+    let mut answer = Vec::new();
+    let limit = MAX_RESPONSE + 16 * 1024;
+    match (&mut tls).take(limit).read_to_end(&mut answer) {
+        Ok(_) => {}
+        // Closed without TLS's goodbye: what came is kept if it's whole (Content-Length says).
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !answer.is_empty() => {}
+        Err(e) => return Err(e),
+    }
+    parse_answer(&answer).ok_or_else(|| std::io::Error::other("its answer made no sense"))
+}
+
+/// A whole HTTP answer: its status and body (as far as its `Content-Length` goes).
+fn parse_answer(answer: &[u8]) -> Option<Response> {
+    let end = answer.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&answer[..end]).ok()?;
+    let status: u16 = head.lines().next()?.split(' ').nth(1)?.parse().ok()?;
+    let mut body = answer[end + 4..].to_vec();
+    let length = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(':'))
+        .find(|(n, _)| n.trim().eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+    if let Some(length) = length {
+        if body.len() < length {
+            return None;
+        }
+        body.truncate(length);
+    }
+    body.truncate(usize::try_from(MAX_RESPONSE).unwrap_or(usize::MAX));
+    Some(Response {
+        status,
+        body,
+        sent: Sent::Encrypted,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn fingerprints_as_written() {
+        let hex = "93812b3fbb13dcb60da0f4fbce81fb959a308a2b25b1b09b3be973da9b9d297e";
+        let f = parse_fingerprint(hex).unwrap();
+        assert_eq!(fingerprint_text(&f), hex);
+        assert_eq!(parse_fingerprint(&hex.to_uppercase()), Some(f));
+        let grouped: Vec<String> = hex.as_bytes().chunks(2).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
+        assert_eq!(parse_fingerprint(&grouped.join(":")), Some(f));
+        assert_eq!(parse_fingerprint(&hex[1..]), None);
+        assert_eq!(parse_fingerprint(&hex.replace('9', "g")), None);
+    }
+
+    #[test]
+    fn reads_an_answer() {
+        let r = parse_answer(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokextra").unwrap();
+        assert_eq!((r.status, r.body.as_slice(), r.sent), (200, &b"ok"[..], Sent::Encrypted));
+        assert!(parse_answer(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nok").is_none(), "cut short");
+        assert!(parse_answer(b"nonsense").is_none());
+    }
+
+    /// A server with its own certificate: asked with that certificate alone, and refused with
+    /// any other fingerprint.
+    #[test]
+    fn a_pinned_server_is_asked_with_its_own_certificate_alone() {
+        let made = rcgen::generate_simple_self_signed(vec!["anything.example".to_owned()]).unwrap();
+        let cert = rustls::pki_types::CertificateDer::from(made.cert.der().to_vec());
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(made.key_pair.serialize_der().into());
+        use sha2::Digest;
+        let fingerprint: Fingerprint = sha2::Sha256::digest(cert.as_ref()).into();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let config = Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let Ok(connection) = rustls::ServerConnection::new(Arc::clone(&config)) else { continue };
+                let mut tls = rustls::StreamOwned::new(connection, stream);
+                let mut got = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match tls.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                    }
+                }
+                if got.is_empty() {
+                    continue;
+                }
+                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{\"a\"");
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            }
+        });
+        let ask = |f: Fingerprint| pinned_exchange("127.0.0.1", f, "GET", "/api/info", &[], &[], Duration::from_secs(5), port);
+        let answer = ask(fingerprint).unwrap();
+        assert_eq!((answer.status, answer.body.as_slice()), (200, &b"{\"a\""[..]));
+        let mut other = fingerprint;
+        other[0] ^= 1;
+        let e = ask(other).unwrap_err();
+        assert!(e.to_string().contains("not the certificate the join code names"), "{e}");
+    }
+
+    #[test]
+    fn pins_by_host() {
+        let f = [7u8; 32];
+        pin("Pinned.Example:80", Some(f));
+        assert_eq!(pinned("pinned.example"), Some(f));
+        pin("pinned.example", None);
+        assert_eq!(pinned("pinned.example"), None);
+    }
 
     #[test]
     fn finds_the_host_and_port() {

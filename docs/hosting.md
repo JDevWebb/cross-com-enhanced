@@ -1,12 +1,19 @@
 # Hosting a Cross-Com server
 
 The server is one program with three ports. Run it on a machine your players can reach: a Linux
-PC at home with the ports forwarded, a cheap VPS, or a machine on the LAN or VPN you play over.
+PC at home with the ports forwarded, a cheap VPS, a Windows PC, or a machine on the LAN or VPN
+you play over.
+
+**The quickest way is the launcher's Host screen** (0.1.3 and later): it runs the server built
+into it on your PC while the launcher is open, asks your router to forward its ports, checks it
+from outside and gives your friends a join code. The
+[wiki](https://github.com/JDevWebb/cross-com-enhanced/wiki/Hosting-from-the-Launcher) has it
+step by step. This page is for running the server on its own.
 
 | Port | Protocol | What for |
 |---|---|---|
-| 80 | TCP | The online config the game asks for first (it always uses port 80); the API, on a LAN or VPN server without HTTPS |
-| 443 | TCP | [HTTPS](#https-with-caddy), which a server on the internet needs: the launcher's and the client's API calls (sign-in, sign-up, logs, router reports, the overlay's reads) |
+| 80 | TCP | The online config the game asks for first (on port 80, or the port a [join code](#https-of-its-own-join-codes) names); the API; and the server's own HTTPS, when it has it there |
+| 443 | TCP | [HTTPS with Caddy](#https-with-caddy) for a server by domain: the launcher's and the client's API calls (sign-in, sign-up, logs, router reports, the overlay's reads) |
 | 21030 | UDP | Sign-in |
 | 21031 | UDP | Everything else: profiles, matchmaking, friends |
 
@@ -17,7 +24,7 @@ to forward the game's port too, when it can (see [Connection records](#connectio
 Players must reach the server at its own address, not through a NAT that changes where their
 packets seem to come from: the server tells players each other's addresses as it sees them.
 Docker Desktop on macOS and Windows does that rewriting, so host on Linux (or on a VM's bridged
-network) for games between different PCs.
+network), or run the [Windows build](#on-windows) on Windows, for games between different PCs.
 
 ## With Docker (recommended)
 
@@ -186,6 +193,47 @@ log_level = "info"
 and run `target/release/crosscom-server --config crosscom-server.toml`. Port 80 needs root or, on
 Linux, `sudo setcap cap_net_bind_service=+ep target/release/crosscom-server`.
 
+## On Windows
+
+Each release has `crosscom-server-windows-x86_64.exe` (0.1.3 and later): the same server, one
+file, nothing to install. Put it in a folder of its own with `crosscom-server.toml` beside it, let
+it through Windows Firewall (`New-NetFirewallRule -DisplayName "Cross-Com server" -Direction
+Inbound -Program "C:\CrossCom\crosscom-server-windows-x86_64.exe" -Action Allow -Profile Any`,
+as administrator) and run it from that folder. Port 80 needs no administrator on Windows, but
+Windows' own web server (HTTP.sys: IIS and the like) may hold it. Task Scheduler runs it at startup;
+the [wiki](https://github.com/JDevWebb/cross-com-enhanced/wiki/Windows-Dedicated-Server) has it
+step by step.
+
+## HTTPS of its own (join codes)
+
+A server without a domain can still have HTTPS: with `https_port` set (`CROSSCOM_HTTPS_PORT`), it
+makes a certificate of its own the first time it starts (`https-certificate.der` and its key
+`https-key.der`, beside the database) and serves HTTPS on that port. With `https_port` the same as
+`http_port`, both are on one port: a connection starting with TLS's handshake (its first byte,
+`0x16`) is HTTPS, any other plain HTTP. One port is all a router has to forward then, whatever
+number it gives it outside.
+
+No certificate authority vouches for it, so players set up with a **join code**:
+`ADDRESS[:PORT]#FINGERPRINT`, the address and port they reach the server at (`:80` left out) and
+the certificate's SHA-256 in hex, which the server logs as it starts (`HTTPS on the HTTP port 80
+too, certificate ...`). Their launcher keeps both (`server` and `server_certificate` in the game's
+`crosscom.toml`) and talks to that server over HTTPS taking that certificate alone, on its web
+port, never falling back to plain HTTP. The client sends the game's online config request to the
+code's port too (the game asks for port 80; the client's lookup answers with the code's).
+
+The HTTPS side passes each request on to the HTTP side from `127.0.0.2`, which the server then
+trusts as a proxy (as Caddy): `X-Forwarded-For` names the client, and sign-ins through it count
+as HTTPS. So `https_port` needs `listen_ip` to be `0.0.0.0` or `127.0.0.1`.
+
+**Players on the server's own network.** A server whose `public_address` is a public one gives
+players on this machine, its network or a VPN its own address there (in the online config, and
+for the secure server after sign-in): sent to the public address, they'd go out through the router
+and back in, which many routers don't do, and their sign-in ticket (bound to the address it was
+issued to) would be refused. For everyone else, players on its network are at its public
+address. `answer_as_reached = true` does the first for a server whose `public_address` is a
+private one too (one for its network and VPN alone); leave it off in Docker, where the server's
+own address is its container's.
+
 ## News
 
 The game shows news in its main menu (the Ghost Feed on the right) and on its Community Messages
@@ -264,6 +312,9 @@ when an address reaches another game's server (on a machine that hosts both, see
 `shows` is `null`, `"multiplayer"`, `"campaign"` or `"guerrilla"`. A player counts from their
 sign-in until their game disconnects, or a minute after it stops answering. `udp_ports` are the
 sign-in ports, which clients' connection tests ask (see [Connection records](#connection-records)).
+A server whose `public_address` is a public one also gives it as `public_address`: a client
+that set the server up by an address on its own network (the host's own game, at `127.0.0.1`)
+then still forwards its game's port for the players on the internet.
 
 The `POST`s (`/api/key-login`, `/accounts`, the router reports) take JSON only, sent as
 `Content-Type: application/json` (`415` otherwise), and none from a web page: one carrying an
@@ -281,6 +332,14 @@ server, or was used already (each goes through once), `400` for a time more than
 Failed tries count with the game's own sign-in: after 10 in 15 minutes from one address, or for
 one identity, it answers `429`. Like sign-up, it goes over HTTPS when the server has it; through a
 trusted proxy, both answer `403` to a request that didn't come over HTTPS.
+
+`POST /api/check-host` with `{"web_port": 8080, "udp_ports": [21030, 21031]}` checks a server
+hosted at the caller's own address from outside, as a host's launcher asks the community server
+to: the web port for `/api/info` (a Cross-Com server says `game` there), and each UDP port for the
+address echo every Cross-Com server answers. It answers `{"address": ..., "web": "ok" | "no
+answer" | "another server", "udp": [{"port": ..., "answers": true}]}`. Only the caller's own
+address, only a public IPv4 one (`400` otherwise), up to 4 UDP ports, 3 checks a minute from an
+address (`429`).
 
 `GET /api/leaderboard?mode=conflict` ranks every player who has played that mode (`all`,
 `conflict`, `decoy`, `saboteur`, `siege`, `stockade` or `takeover`; `all` without one), from

@@ -31,11 +31,30 @@ pub const RULE: &str = "Ghost Recon Future Soldier (Cross-Com)";
 /// The launcher's rule, wherever it is.
 pub const LAUNCHER_RULE: &str = "Cross-Com launcher (connection test)";
 
-/// A rule to add: its name and the program it lets UDP in to.
+/// A rule to add: its name, the program it lets in to, and what it lets in (`UDP`, or `TCP`
+/// for a hosted server's web side).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub name: String,
     pub program: PathBuf,
+    pub protocol: &'static str,
+}
+
+/// The hosted server's rules' name: `<SERVER_RULE> (<protocol>)`.
+pub const SERVER_RULE: &str = "Cross-Com server (hosted from the launcher)";
+
+/// The rules for a server the launcher hosts, run from `program`: its web side (TCP: the online
+/// config, HTTPS) and the game's sign-in and services (UDP).
+#[must_use]
+pub fn server_rules(program: &Path) -> Vec<Rule> {
+    ["TCP", "UDP"]
+        .into_iter()
+        .map(|protocol| Rule {
+            name: format!("{SERVER_RULE} ({protocol})"),
+            program: program.to_path_buf(),
+            protocol,
+        })
+        .collect()
 }
 
 /// The rules for the game's exes in `dir`.
@@ -46,6 +65,7 @@ pub fn game_rules(dir: &Path) -> Vec<Rule> {
         .map(|program| Rule {
             name: rule_name(&program),
             program,
+            protocol: "UDP",
         })
         .collect()
 }
@@ -57,6 +77,7 @@ pub fn launcher_rule() -> Option<Rule> {
     Some(Rule {
         name: LAUNCHER_RULE.into(),
         program,
+        protocol: "UDP",
     })
 }
 
@@ -117,19 +138,21 @@ pub fn script(rules: &[Rule]) -> Result<String, String> {
             "Get-NetFirewallApplicationFilter -Program {path} -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' }} | Remove-NetFirewallRule"
         ));
         lines.push(format!(
-            "New-NetFirewallRule -DisplayName {name} -Direction Inbound -Program {path} -Protocol UDP -Action Allow -Profile Any | Out-Null"
+            "New-NetFirewallRule -DisplayName {name} -Direction Inbound -Program {path} -Protocol {} -Action Allow -Profile Any | Out-Null",
+            rule.protocol
         ));
     }
     Ok(lines.join("\n"))
 }
 
-/// Whether `netsh`'s verbose listing of a rule (`shown`) is a rule for `program`, for UDP (an
-/// earlier launcher's, for every protocol, isn't). The field names are in Windows' language; the
-/// values (the path, `UDP`) aren't.
+/// Whether `netsh`'s verbose listing of a rule (`shown`) is a rule for `program`, for
+/// `protocol` (an earlier launcher's, for every protocol, isn't). The field names are in
+/// Windows' language; the values (the path, `UDP`) aren't.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn shows_rule(shown: &str, program: &Path) -> bool {
+fn shows_rule(shown: &str, program: &Path, protocol: &str) -> bool {
     let shown = shown.to_lowercase();
-    shown.contains(&program.to_string_lossy().to_lowercase()) && shown.lines().any(|line| line.split_whitespace().last().is_some_and(|value| value == "udp"))
+    let protocol = protocol.to_lowercase();
+    shown.contains(&program.to_string_lossy().to_lowercase()) && shown.lines().any(|line| line.split_whitespace().last().is_some_and(|value| value == protocol))
 }
 
 /// The script as PowerShell's `-EncodedCommand` takes it: UTF-16LE, base64.
@@ -183,7 +206,7 @@ fn present(rules: &[Rule]) -> bool {
             .creation_flags(CREATE_NO_WINDOW)
             .output();
         let Ok(shown) = shown else { return false };
-        shown.status.success() && shows_rule(&String::from_utf8_lossy(&shown.stdout), &rule.program)
+        shown.status.success() && shows_rule(&String::from_utf8_lossy(&shown.stdout), &rule.program, rule.protocol)
     })
 }
 
@@ -260,6 +283,20 @@ pub fn ensure_launcher() -> Outcome {
     ensure_rules(&launcher_rule().into_iter().collect::<Vec<_>>())
 }
 
+/// Makes sure the server the launcher hosts, at `program`, is let in, asking Windows if it isn't.
+#[cfg(windows)]
+#[must_use]
+pub fn ensure_server(program: &Path) -> Outcome {
+    ensure_rules(&server_rules(program))
+}
+
+/// Whether [`ensure_server`] would ask Windows for permission.
+#[cfg(windows)]
+#[must_use]
+pub fn server_would_ask(program: &Path) -> bool {
+    !present(&server_rules(program))
+}
+
 #[cfg(not(windows))]
 #[must_use]
 pub fn ensure(_dir: &Path) -> Outcome {
@@ -270,6 +307,18 @@ pub fn ensure(_dir: &Path) -> Outcome {
 #[must_use]
 pub fn ensure_launcher() -> Outcome {
     Outcome::Present
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn ensure_server(_program: &Path) -> Outcome {
+    Outcome::Present
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn server_would_ask(_program: &Path) -> bool {
+    false
 }
 
 #[cfg(not(windows))]
@@ -347,6 +396,7 @@ mod tests {
         let rule = Rule {
             name: rule_name(&program),
             program,
+            protocol: "UDP",
         };
         let script = script(std::slice::from_ref(&rule)).unwrap();
         assert!(script.contains(r"-Program 'C:\Games\Tom Clancy''s Ghost Recon Future Soldier\Future Soldier DX11.exe'"));
@@ -362,6 +412,7 @@ mod tests {
         let rule = |path: &str| Rule {
             name: RULE.into(),
             program: PathBuf::from(path),
+            protocol: "UDP",
         };
         // U+2018 to U+201B end a single-quoted string in PowerShell as ' does.
         for bad in [
@@ -393,11 +444,11 @@ mod tests {
         let shown = |protocol: &str| {
             format!("Rule Name:                            x\r\nEnabled:                              Yes\r\nProtocol:                             {protocol}\r\nProgram:                              C:\\Games\\GRFS\\Future Soldier DX11.exe\r\n")
         };
-        assert!(shows_rule(&shown("UDP"), &program));
-        assert!(!shows_rule(&shown("Any"), &program), "an earlier launcher's rule: replaced");
-        assert!(!shows_rule(&shown("UDP"), Path::new(r"C:\Other\Future Soldier DX11.exe")), "another folder's");
+        assert!(shows_rule(&shown("UDP"), &program, "UDP"));
+        assert!(!shows_rule(&shown("Any"), &program, "UDP"), "an earlier launcher's rule: replaced");
+        assert!(!shows_rule(&shown("UDP"), Path::new(r"C:\Other\Future Soldier DX11.exe"), "UDP"), "another folder's");
         // Windows in another language names the fields its own way.
-        assert!(shows_rule("Protokoll:   UDP\nProgramm:  c:\\games\\grfs\\future soldier dx11.exe\n", &program));
+        assert!(shows_rule("Protokoll:   UDP\nProgramm:  c:\\games\\grfs\\future soldier dx11.exe\n", &program, "UDP"));
     }
 
     #[test]
@@ -405,6 +456,7 @@ mod tests {
         let rule = Rule {
             name: LAUNCHER_RULE.into(),
             program: PathBuf::from(r"C:\Users\Kozak\Downloads\crosscom-launcher.exe"),
+            protocol: "UDP",
         };
         let script = script(std::slice::from_ref(&rule)).unwrap();
         assert!(
@@ -415,6 +467,26 @@ mod tests {
             script.contains(r"-Program 'C:\Users\Kozak\Downloads\crosscom-launcher.exe' -Protocol UDP -Action Allow"),
             "{script}"
         );
+    }
+
+    #[test]
+    fn the_hosted_server_gets_tcp_and_udp() {
+        let program = Path::new(r"C:\Users\Kozak\AppData\Roaming\Cross-Com\Server\crosscom-server.exe");
+        let rules = server_rules(program);
+        assert_eq!(rules.iter().map(|r| r.protocol).collect::<Vec<_>>(), ["TCP", "UDP"]);
+        let script = script(&rules).unwrap();
+        assert!(script.contains("crosscom-server.exe' -Protocol TCP -Action Allow"), "{script}");
+        assert!(script.contains("crosscom-server.exe' -Protocol UDP -Action Allow"), "{script}");
+        assert!(shows_rule(
+            "Protocol: TCP\nProgram: c:\\users\\kozak\\appdata\\roaming\\cross-com\\server\\crosscom-server.exe",
+            program,
+            "TCP"
+        ));
+        assert!(!shows_rule(
+            "Protocol: UDP\nProgram: c:\\users\\kozak\\appdata\\roaming\\cross-com\\server\\crosscom-server.exe",
+            program,
+            "TCP"
+        ));
     }
 
     #[test]

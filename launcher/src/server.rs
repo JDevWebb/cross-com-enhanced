@@ -33,13 +33,60 @@ pub const COMMUNITY_STATUS: &str = "";
 pub use crosscom_client_common::http::HTTPS_HELP;
 
 /// The server as typed: a host name or address, perhaps with `http://` or `https://` or a
-/// trailing `/`. Port 80 is the game's, so none other is taken.
+/// trailing `/`, and perhaps a join code's fingerprint after `#` (left out here; see
+/// [`join_code`]). Port 80 is the game's, so none other is taken.
 #[must_use]
 pub fn host(typed: &str) -> String {
     let t = typed.trim();
+    let t = t.split_once('#').map_or(t, |(host, _)| host).trim();
     let t = t.strip_prefix("http://").or_else(|| t.strip_prefix("https://")).unwrap_or(t);
     t.trim_end_matches('/').to_owned()
 }
+
+/// A server as typed, or a host's join code (`HOST#FINGERPRINT`, its HTTPS certificate's): the
+/// host, and the fingerprint when there's one.
+pub fn join_code(typed: &str) -> Result<(String, Option<Fingerprint>), String> {
+    let host = host(typed);
+    match typed.split_once('#') {
+        None => Ok((host, None)),
+        Some((_, fingerprint)) => crosscom_client_common::http::parse_fingerprint(fingerprint.trim())
+            .map(|f| (host, Some(f)))
+            .ok_or_else(|| "That join code isn't whole: copy it again from the host's launcher (Host › Join code).".to_owned()),
+    }
+}
+
+/// The join code friends set up the launcher with, for a server at `host` whose web side (HTTP
+/// and HTTPS, as the router forwards it) is on `port`, and whose HTTPS certificate is
+/// `fingerprint`: `HOST:PORT#FINGERPRINT`, without `:80`.
+#[must_use]
+pub fn make_join_code(host: &str, port: u16, fingerprint: &Fingerprint) -> String {
+    let at = if port == crosscom_client_common::http::HTTP_PORT {
+        host.to_owned()
+    } else {
+        format!("{host}:{port}")
+    };
+    format!("{at}#{}", crosscom_client_common::http::fingerprint_text(fingerprint))
+}
+
+/// The server typed, ready to be asked: its host, with HTTPS to it taking only the certificate
+/// a join code names (or any a certificate authority vouches for, without one).
+pub fn chosen(typed: &str) -> Result<String, String> {
+    let (host, fingerprint) = join_code(typed)?;
+    crosscom_client_common::http::pin(&host, fingerprint);
+    Ok(host)
+}
+
+/// The server as Setup keeps it while it's being chosen: the host, and a join code's
+/// fingerprint after `#`.
+#[must_use]
+pub fn typed(text: &str) -> String {
+    match text.split_once('#') {
+        Some((_, fingerprint)) => format!("{}#{}", host(text), fingerprint.trim()),
+        None => host(text),
+    }
+}
+
+pub use crosscom_client_common::http::Fingerprint;
 
 /// Whether `server` (as typed) is the community test network.
 #[must_use]
@@ -248,6 +295,12 @@ fn login_body(host: &str, identity: &Identity, time: i64) -> serde_json::Value {
 /// where nothing answers on the HTTPS port. The status and the answer's text.
 fn post_json(server: &str, path: &str, body: &str) -> Result<(u16, String), String> {
     let host = host(server);
+    // A server hosted from a player's launcher: its own certificate, which `http` checks.
+    if crosscom_client_common::http::is_pinned(&host) {
+        let headers = [("Content-Type", "application/json".to_owned())];
+        let answer = crosscom_client_common::http::request(&host, "POST", path, &headers, body.as_bytes(), TIMEOUT).map_err(|e| e.0)?;
+        return Ok((answer.status, String::from_utf8_lossy(&answer.body).into_owned()));
+    }
     let https = match post(&format!("https://{host}{path}"), body) {
         Ok(answer) => return Ok(answer),
         Err(e) => e,
@@ -289,6 +342,26 @@ fn account(status: u16, body: &str) -> Result<Account, String> {
         })
     };
     read().ok_or_else(|| "the server's answer made no sense".into())
+}
+
+#[cfg(test)]
+mod join_code_tests {
+    use super::*;
+
+    #[test]
+    fn join_codes() {
+        let f = [0xabu8; 32];
+        let code = make_join_code("203.0.113.7", 80, &f);
+        assert_eq!(code, format!("203.0.113.7#{}", "ab".repeat(32)));
+        let moved = make_join_code("203.0.113.7", 8080, &f);
+        assert_eq!(join_code(&moved), Ok(("203.0.113.7:8080".into(), Some(f))), "the web port, kept with the host");
+        assert_eq!(join_code(&code), Ok(("203.0.113.7".into(), Some(f))));
+        assert_eq!(join_code(&format!(" https://{code} ")), Ok(("203.0.113.7".into(), Some(f))), "pasted with extra bits");
+        assert_eq!(join_code("play.example.org"), Ok(("play.example.org".into(), None)));
+        assert!(join_code("203.0.113.7#abc").is_err(), "cut short");
+        assert_eq!(host(&code), "203.0.113.7");
+        assert_eq!(typed(&format!("  {code}")), code);
+    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ use crate::core::ClientState;
 use crate::core::Launcher;
 use crate::AppWindow;
 use crate::CheckRow;
+use crate::CodeRow;
 use crate::DlcRow;
 use crate::InfoView;
 use crate::NewsRow;
@@ -193,8 +194,121 @@ fn open(w: &AppWindow, l: &Arc<Launcher>, screen: &str) {
         }
         "play" | "setup" => open_setup(w, l, &info),
         "settings" => open_settings(w, l, &info),
+        "host" => show_host(w, l),
         _ => {}
     }
+}
+
+/// Before Host's first start: Windows' prompt for the server's firewall rules.
+const HOST_FIREWALL_NOTICE: (&str, &str) = (
+    "Windows will ask for permission",
+    "Next, Windows asks whether to let Windows PowerShell make changes to your PC. That's the launcher adding \
+     Windows Firewall rules, so your friends can reach the server: incoming connections to the server only (TCP for \
+     its web side, UDP for the game's sign-in and services). It changes nothing else.\n\nClick Yes when Windows asks.",
+);
+
+/// Host's status, looked at off the window's thread (the server is asked how it is).
+fn show_host(w: &AppWindow, l: &Arc<Launcher>) {
+    let l = l.clone();
+    background(
+        w,
+        move || (l.host.status(), l.plays_on_hosted()),
+        |w, (status, here)| {
+            w.set_host_state(s(status.state));
+            w.set_host_said(s(&status.said));
+            w.set_host_players(i32::try_from(status.players).unwrap_or(i32::MAX));
+            let lines: Vec<CheckRow> = status
+                .lines
+                .iter()
+                .map(|l| CheckRow {
+                    label: s(&l.label),
+                    value: s(&l.value),
+                    tone: s(l.tone),
+                    detail: s(&l.detail),
+                    action: s(""),
+                })
+                .collect();
+            w.set_host_lines(ModelRc::new(VecModel::from(lines)));
+            let codes: Vec<CodeRow> = status
+                .codes
+                .iter()
+                .map(|c| CodeRow {
+                    place: s(&c.place),
+                    code: s(&c.code),
+                })
+                .collect();
+            w.set_host_codes(ModelRc::new(VecModel::from(codes)));
+            let log: Vec<SharedString> = status.log.iter().rev().take(40).rev().map(s).collect();
+            w.set_host_log(ModelRc::new(VecModel::from(log)));
+            w.set_host_plays_here(here);
+        },
+    );
+}
+
+/// Host's Start: the notice first when Windows will ask for permission.
+fn host_start(w: &AppWindow, l: &Arc<Launcher>) {
+    let asking = l.clone();
+    background(w, move || asking.host.firewall_would_ask(), {
+        let l = l.clone();
+        move |w, asks| {
+            if asks {
+                notice(w, HOST_FIREWALL_NOTICE, "host");
+            } else {
+                host_start_now(w, &l);
+            }
+        }
+    });
+}
+
+/// Starts the server, off the window's thread, showing its steps as they go.
+fn host_start_now(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_host_state(s("starting"));
+    w.set_host_said(s("Starting…"));
+    let starting = l.clone();
+    let internet = l.host_internet();
+    background(w, move || starting.host.start(internet), {
+        let l = l.clone();
+        move |w, started: Result<(), String>| {
+            if let Err(e) = started {
+                toast(w, &e);
+            }
+            show_host(w, &l);
+        }
+    });
+}
+
+fn host_stop(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_host_said(s("Stopping…"));
+    let stopping = l.clone();
+    background(w, move || stopping.host.stop(), {
+        let l = l.clone();
+        move |w, ()| show_host(w, &l)
+    });
+}
+
+/// Host's Play on my server: the game set up to play on the server hosted here.
+fn host_play_here(w: &AppWindow, l: &Arc<Launcher>) {
+    w.set_host_play_busy(true);
+    w.set_host_play_said(s(""));
+    let playing = l.clone();
+    background(w, move || playing.play_on_hosted(), {
+        let l = l.clone();
+        move |w, said: Result<String, String>| {
+            w.set_host_play_busy(false);
+            match said {
+                Ok(said) => {
+                    w.set_host_play_said(s(said));
+                    w.set_host_play_failed(false);
+                }
+                Err(e) => {
+                    w.set_host_play_said(s(e));
+                    w.set_host_play_failed(true);
+                }
+            }
+            refresh_info(w, &l);
+            show_host(w, &l);
+        }
+    });
 }
 
 /// Play's checklist, looked at off the window's thread (Windows is asked about the firewall).
@@ -262,7 +376,7 @@ fn setup_host(w: &AppWindow) -> String {
     if w.get_setup_community() {
         server::COMMUNITY.into()
     } else {
-        server::host(&w.get_setup_server_typed())
+        server::typed(&w.get_setup_server_typed())
     }
 }
 
@@ -324,7 +438,8 @@ fn setup_changed(w: &AppWindow) {
     w.set_setup_dlc(dlc_rows(&scan));
     w.set_setup_dlc_note(s(dlc::warning(&scan).unwrap_or_default()));
     let host = setup_host(w);
-    w.set_setup_host(s(&host));
+    // Compared with the server set up: by its host (a join code's fingerprint aside).
+    w.set_setup_host(s(server::host(&host)));
     // A server changed since it was checked: checked again before it's trusted.
     if CHECKED.with(|c| *c.borrow() != host) {
         w.set_setup_server_ok(s(""));
@@ -365,8 +480,9 @@ fn check_server(w: &AppWindow, l: &Arc<Launcher>) {
     background(
         w,
         move || {
-            let at = server::check(&checking)?;
-            let account = l.find_account(&checking).map_err(|e| format!("Couldn't sign in with your identity: {e}"))?;
+            let host = server::chosen(&checking)?;
+            let at = server::check(&host)?;
+            let account = l.find_account(&host).map_err(|e| format!("Couldn't sign in with your identity: {e}"))?;
             Ok::<_, String>((at, account))
         },
         move |w, answer| {
@@ -872,9 +988,33 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
         w.window().set_maximized(to);
         w.set_maximised(to);
     }));
-    w.on_close_window(|| {
-        let _ = slint::quit_event_loop();
-    });
+    {
+        let l = l.clone();
+        w.on_close_window(move || {
+            // The server hosted here stops with the launcher, its forwards taken away.
+            l.host.stop();
+            let _ = slint::quit_event_loop();
+        });
+    }
+    w.on_host_start(on(host_start));
+    w.on_host_stop(on(host_stop));
+    w.on_host_play_here(on(host_play_here));
+    {
+        let (weak, l) = (weak.clone(), l.clone());
+        w.on_host_access(move |internet| {
+            if let (Err(e), Some(w)) = (l.set_host_internet(internet), weak.upgrade()) {
+                toast(&w, &e);
+            }
+        });
+    }
+    {
+        let weak = weak.clone();
+        w.on_host_copied(move |place| {
+            if let Some(w) = weak.upgrade() {
+                toast(&w, &format!("Copied the join code for {}.", place.to_lowercase()));
+            }
+        });
+    }
     {
         let (weak, l) = (weak.clone(), l.clone());
         w.on_go(move |screen| {
@@ -944,6 +1084,7 @@ fn wire(w: &AppWindow, l: &Arc<Launcher>) {
             match then.as_str() {
                 "test" => test_connection_now(&w, &l),
                 "firewall" => allow_firewall_now(&w, &l),
+                "host" => host_start_now(&w, &l),
                 _ => {}
             }
         });
@@ -984,6 +1125,20 @@ pub fn run() -> Result<(), slint::PlatformError> {
     w.set_community_status(s(server::COMMUNITY_STATUS));
     let l = Arc::new(Launcher::new(Launcher::default_prefs_path()));
     wire(&w, &l);
+    w.set_host_carries_server(crosscom_launcher::hosting::built_in().is_some() || cfg!(debug_assertions));
+    w.set_host_internet(l.host_internet());
+    // Host's status, while it's shown or the server runs.
+    let host_timer = slint::Timer::default();
+    {
+        let (weak, l) = (w.as_weak(), l.clone());
+        host_timer.start(slint::TimerMode::Repeated, Duration::from_secs(2), move || {
+            if let Some(w) = weak.upgrade() {
+                if w.get_shown() == "host" || w.get_host_state() != "stopped" {
+                    show_host(&w, &l);
+                }
+            }
+        });
+    }
     open(&w, &l, "play");
     w.set_loaded(true);
     crate::update::start(&w);

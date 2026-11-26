@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The README's launcher screenshots -> docs/screenshots/launcher-{play,setup,settings}.png: the
+# The README's launcher screenshots -> docs/screenshots/launcher-{play,setup,settings,host}.png: the
 # launcher's screens filled in from made-up state and drawn by Slint's software renderer, with
 # no screen and no network (launcher-slint/src/shots.rs). In the build image (IMAGE, default
 # fes-build:local); TARGET as for build-launcher.sh. The build gets the source read-only, without

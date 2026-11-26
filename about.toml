@@ -28,19 +28,6 @@ accepted = [
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 
-# libsodium-sys (the server, through sodiumoxide) builds in libsodium itself (ISC), whose licence
-# it carries but doesn't name.
-[libsodium-sys.clarify]
-license = "MIT AND ISC"
-[[libsodium-sys.clarify.files]]
-path = "LICENSE-MIT"
-license = "MIT"
-checksum = "9239d55835457d1873f8e6ee5e8ad6080940b1851e4fbbba967e8770f34d2f0f"
-[[libsodium-sys.clarify.files]]
-path = "libsodium/LICENSE"
-license = "ISC"
-checksum = "bb55dac9e65555b91aa790eb0655a523ab78f343ab500b326b1d51d7854abb9d"
-
 # vendor/hudhook (its Cargo.toml names only LICENSE): hudhook's MIT, and MinHook's BSD-2-Clause
 # (with the Hacker Disassembler Engine's), which it builds into the client DLL.
 [hudhook.clarify]

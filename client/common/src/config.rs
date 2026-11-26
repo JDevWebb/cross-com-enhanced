@@ -24,6 +24,10 @@ pub struct Config {
     /// The Cross-Com server, a host name or an address. Without it the game talks to Ubisoft's
     /// (long gone) servers.
     pub server: Option<String>,
+    /// The server's own HTTPS certificate, by its fingerprint (SHA-256, in hex), for a server
+    /// hosted from a player's launcher (its host's join code gives it): HTTPS to the server then
+    /// takes this certificate alone (see `http::pin`).
+    pub server_certificate: Option<String>,
     /// The account to sign in with.
     pub username: String,
     /// What the game signs in with: a game token the launcher got over HTTPS (`cct_...`, see
@@ -55,6 +59,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             server: None,
+            server_certificate: None,
             username: String::new(),
             password: String::new(),
             cd_key: String::new(),
@@ -140,10 +145,22 @@ impl Config {
             line: e.span().map(|span| text[..span.start.min(text.len())].lines().count().max(1)),
         })?;
         config.validate()?;
+        config.pin_server();
         Ok(config)
     }
 
+    /// Has HTTPS to the server take its own certificate alone, when the settings name one
+    /// (`server_certificate`); or any it names by its domain, when they don't.
+    pub fn pin_server(&self) {
+        if let Some(server) = self.server.as_deref().filter(|s| !s.trim().is_empty()) {
+            crate::http::pin(server, self.server_certificate.as_deref().and_then(crate::http::parse_fingerprint));
+        }
+    }
+
     fn validate(&self) -> Result<(), Error> {
+        if let Some(f) = self.server_certificate.as_deref().filter(|f| crate::http::parse_fingerprint(f).is_none()) {
+            return Err(Error::Invalid(format!("server_certificate is a certificate's SHA-256 in 64 hex digits, not {f:?}")));
+        }
         if let Some(n) = self.quick_match_min_players {
             if !(MIN_QUICK_MATCH_PLAYERS..=12).contains(&n) {
                 return Err(Error::Invalid(format!("quick_match_min_players is {MIN_QUICK_MATCH_PLAYERS} to 12, not {n}")));
@@ -168,11 +185,13 @@ impl Config {
         find(&self.overlay_key).or_else(|| find(DEFAULT_OVERLAY_KEY)).unwrap_or(("F5", 0x74))
     }
 
-    /// Where a lookup of `host` should go instead, if anywhere.
+    /// Where a lookup of `host` should go instead, if anywhere: the server's host, and the port
+    /// its web side is on (80, the game's own, unless the server names another: a server hosted
+    /// at home, whose router forwards some other port).
     #[must_use]
-    pub fn redirect(&self, host: &str) -> Option<&str> {
+    pub fn redirect(&self, host: &str) -> Option<(String, u16)> {
         if host.eq_ignore_ascii_case(ONLINE_CONFIG_HOST) {
-            self.server.as_deref().filter(|s| !s.is_empty())
+            self.server.as_deref().filter(|s| !s.trim().is_empty()).map(crate::http::address)
         } else {
             None
         }
@@ -282,8 +301,13 @@ mod tests {
             server: Some("10.0.0.5".into()),
             ..Config::default()
         };
-        assert_eq!(config.redirect("onlineconfigservice.ubi.com"), Some("10.0.0.5"));
-        assert_eq!(config.redirect("OnlineConfigService.Ubi.com"), Some("10.0.0.5"));
+        assert_eq!(config.redirect("onlineconfigservice.ubi.com"), Some(("10.0.0.5".into(), 80)));
+        assert_eq!(config.redirect("OnlineConfigService.Ubi.com"), Some(("10.0.0.5".into(), 80)));
+        let hosted = Config {
+            server: Some("203.0.113.7:8080".into()),
+            ..Config::default()
+        };
+        assert_eq!(hosted.redirect(ONLINE_CONFIG_HOST), Some(("203.0.113.7".into(), 8080)), "a hosted server's web port");
         assert_eq!(config.redirect("www.ubi.com"), None);
         assert_eq!(Config::default().redirect(ONLINE_CONFIG_HOST), None);
     }

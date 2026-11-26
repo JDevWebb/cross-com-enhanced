@@ -5,6 +5,7 @@
 slint::include_modules!();
 
 mod core;
+mod host;
 mod shots;
 mod ui;
 mod update;

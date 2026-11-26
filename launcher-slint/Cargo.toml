@@ -39,6 +39,8 @@ winres = "0.1.12"
 [features]
 # The client DLLs built in (scripts/build-launcher.sh sets CROSSCOM_CLIENT_DIR).
 embed-dlls = ["crosscom-launcher/embed-dlls"]
+# The server built in, for Host (scripts/build-launcher.sh sets CROSSCOM_SERVER_DIR).
+embed-server = ["crosscom-launcher/embed-server"]
 
 [profile.release]
 opt-level = "s"

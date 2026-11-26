@@ -1,0 +1,227 @@
+// Host: a Cross-Com server on this PC for friends, started and stopped here, running while the
+// launcher is open. What it took to reach it (the firewall, the router's forwards, the address on
+// the internet), the join codes friends paste into their launchers, the host's own game, and the
+// server's log.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { Btn, Caps, Card, CardHead, Para, Spinner, Option } from "widgets.slint";
+import { StatusLine } from "play.slint";
+import { CheckRow, CodeRow } from "types.slint";
+
+export component HostScreen inherits Rectangle {
+    // "stopped", "starting", "running" or "failed".
+    in property <string> state: "stopped";
+    // What it's doing, or why it failed.
+    in property <string> said;
+    in property <int> players;
+    in property <[CheckRow]> lines;
+    in property <[CodeRow]> codes;
+    in property <[string]> log;
+    // The game is set up, and plays on this server already.
+    in property <bool> game-ready;
+    in property <bool> plays-here;
+    in property <bool> play-busy;
+    in property <string> play-said;
+    in property <bool> play-failed;
+    // Whether this launcher carries the server.
+    in property <bool> carries-server: true;
+    // Who can join: anyone on the internet with a join code too, or this PC's networks alone.
+    in-out property <bool> internet;
+    callback access-changed(bool);
+    callback start-server();
+    callback stop-server();
+    callback play-here();
+    callback copied(string);
+
+    property <bool> on: state == "running" || state == "starting";
+
+    ScrollView {
+        VerticalLayout {
+            padding: 28px;
+            padding-right: 34px;
+            spacing: 16px;
+            alignment: start;
+
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "HOST A SERVER";
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: 26px;
+                    letter-spacing: 0.6px;
+                    color: Theme.fg;
+                }
+                Para {
+                    text: "Run a Cross-Com server on this PC for your friends: it runs while the launcher is open. Friends join with a join code, on your network, a VPN such as Tailscale, or the internet.";
+                }
+            }
+
+            Card {
+                height: server.preferred-height;
+                server := VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    CardHead {
+                        title: "Server";
+                        note: root.state == "running" ? (root.players == 1 ? "1 player online" : root.players + " players online")
+                            : root.state == "starting" ? "starting" : root.state == "failed" ? "stopped" : "";
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        if root.state == "starting": VerticalLayout { alignment: center; Spinner { size: 16px; } }
+                        Text {
+                            text: root.state == "running" ? "Running. Friends can join with a code below."
+                                : root.state == "starting" ? (root.said != "" ? root.said : "Starting…")
+                                : root.state == "failed" ? "The server stopped."
+                                : !root.carries-server ? "This launcher was built without the server: download a release."
+                                : "Not running.";
+                            color: root.state == "running" ? Theme.good : root.state == "failed" ? Theme.bad : Theme.soft;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        if !root.on: Btn {
+                            text: "Start server";
+                            kind: "primary";
+                            enabled: root.carries-server;
+                            clicked => { root.start-server(); }
+                        }
+                        if root.on: Btn {
+                            text: "Stop server";
+                            enabled: root.state == "running";
+                            clicked => { root.stop-server(); }
+                        }
+                    }
+                    if root.state == "failed" && root.said != "": Text { text: root.said; color: Theme.bad; font-size: Type.small; wrap: word-wrap; }
+                    VerticalLayout {
+                        spacing: 8px;
+                        Caps { text: root.on ? "WHO CAN JOIN (STOP THE SERVER TO CHANGE IT)" : "WHO CAN JOIN"; }
+                        Option {
+                            title: "My network and VPN";
+                            sub: "Friends on your network, or on a VPN with you (Tailscale, ZeroTier, Radmin). Nothing is opened on your router.";
+                            on: !root.internet;
+                            clicked => {
+                                if !root.on && root.internet {
+                                    root.internet = false;
+                                    root.access-changed(false);
+                                }
+                            }
+                        }
+                        Option {
+                            title: "Anyone on the internet with a join code";
+                            sub: "Your router is asked to forward the server's ports (UPnP, PCP or NAT-PMP) while it runs, and the community server checks it can be reached from outside.";
+                            on: root.internet;
+                            clicked => {
+                                if !root.on && !root.internet {
+                                    root.internet = true;
+                                    root.access-changed(true);
+                                }
+                            }
+                        }
+                    }
+                    if root.state == "stopped": Para {
+                        text: "Starting it lets it through Windows Firewall (Windows asks the first time).";
+                    }
+                }
+            }
+
+            if root.lines.length > 0: Card {
+                height: reach.preferred-height;
+                reach := VerticalLayout {
+                    padding: 18px;
+                    spacing: 6px;
+                    CardHead { title: "Reaching it"; }
+                    for l in root.lines: StatusLine {
+                        label: l.label;
+                        value: l.value;
+                        tone: l.tone;
+                        detail: l.detail;
+                        action: "";
+                    }
+                }
+            }
+
+            if root.codes.length > 0: Card {
+                height: join.preferred-height;
+                join := VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    CardHead { title: "Join codes"; }
+                    Para {
+                        text: "Friends paste one into their launcher: Settings › Server › Another server (or the first setup), then Check. It's this server's address with its certificate's fingerprint, so their launcher talks to your server and no other. Share it with the people you play with.";
+                    }
+                    clip := TextInput { width: 0px; height: 0px; visible: false; read-only: true; single-line: true; }
+                    for c in root.codes: HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Caps { text: c.place.to-uppercase(); }
+                            Text { text: c.code; font-family: Type.mono; font-size: 12.5px; color: Theme.fg; wrap: char-wrap; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Btn {
+                                text: "Copy";
+                                clicked => {
+                                    clip.text = c.code;
+                                    clip.select-all();
+                                    clip.copy();
+                                    clip.text = "";
+                                    root.copied(c.place);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Card {
+                height: game.preferred-height;
+                game := VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    CardHead { title: "Your game"; note: root.plays-here ? "on this server" : ""; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Para {
+                            horizontal-stretch: 1;
+                            text: root.plays-here ? "Your game plays on this server. To play elsewhere again, choose the server in Settings › Server."
+                                : !root.game-ready ? "Set the game up first (Play), then come back to play on your own server."
+                                : "Your game plays on another server. Play on your own to play with the friends who join it.";
+                        }
+                        if !root.plays-here: VerticalLayout {
+                            alignment: center;
+                            Btn {
+                                text: "Play on my server";
+                                kind: "ghost";
+                                enabled: root.state == "running" && root.game-ready && !root.play-busy;
+                                busy: root.play-busy;
+                                clicked => { root.play-here(); }
+                            }
+                        }
+                    }
+                    if root.play-said != "": Text { text: root.play-said; color: root.play-failed ? Theme.bad : Theme.good; font-size: Type.small; wrap: word-wrap; }
+                }
+            }
+
+            if root.log.length > 0: Card {
+                height: logs.preferred-height;
+                logs := VerticalLayout {
+                    padding: 18px;
+                    spacing: 4px;
+                    CardHead { title: "Server log"; }
+                    for line in root.log: Text {
+                        text: line;
+                        font-family: Type.mono;
+                        font-size: 11px;
+                        color: Theme.soft;
+                        wrap: char-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
