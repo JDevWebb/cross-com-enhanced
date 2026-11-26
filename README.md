@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="#first-test-build"><b>First test build</b></a> ·
+  <a href="#test-builds"><b>Test builds</b></a> ·
   <a href="#the-community-test-network">Community test network</a> ·
   <a href="#play">Play</a> ·
   <a href="#what-works">What works</a> ·
@@ -23,10 +23,10 @@
 
 ---
 
-## First test build
+## Test builds
 
 > [!IMPORTANT]
-> **This is the first test build (0.1.0), released for public testing.** Every mode has been played end to end on real copies of the game, on Windows 11 and under Wine on Linux, between home networks over the internet. Expect rough edges: things may break, and servers may be reset between builds. **Your reports are what this build is for**: see [Reporting a problem](#reporting-a-problem).
+> **Cross-Com Enhanced is in public testing: each [release](https://github.com/JDevWebb/cross-com-enhanced/releases/latest) is a test build.** Every mode has been played end to end on real copies of the game, on Windows 11 and under Wine on Linux, between home networks over the internet. Expect rough edges: things may break, and servers may be reset between builds. **Your reports are what these builds are for**: see [Reporting a problem](#reporting-a-problem).
 
 What that means for you:
 
