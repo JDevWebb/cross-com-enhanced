@@ -179,6 +179,8 @@ export component SettingsScreen inherits Rectangle {
         { id: "logs", label: "Logs", sub: "Game logs to the server" },
         { id: "about", label: "About", sub: "Version, credits, setup" },
     ];
+    // Saves: the profile whose Use for my account is being asked about ("" when none is).
+    property <string> use-asking;
     // The server chosen is the one set up already.
     property <bool> same-server: root.server-chosen != "" && root.server-chosen == root.info.server;
 
@@ -207,7 +209,10 @@ export component SettingsScreen inherits Rectangle {
                     label: s.label;
                     sub: s.sub;
                     on: root.section == s.id;
-                    clicked => { root.section = s.id; }
+                    clicked => {
+                        root.section = s.id;
+                        root.use-asking = "";
+                    }
                 }
             }
             Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
@@ -569,14 +574,30 @@ export component SettingsScreen inherits Rectangle {
                         padding-top: 15px;
                         Text { text: "No game profiles on this PC yet: the game makes one the first time you play."; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
                     }
-                    for p in root.profiles: SettingRow {
-                        title: p.name + (p.name != p.account ? "  (" + p.account + ")" : "");
-                        sub: p.played + (p.campaign ? " · campaign saves" : "");
-                        if p.current: Tag { text: "Plays now"; }
-                        if !p.current: Btn {
-                            text: "Use for my account";
-                            enabled: !root.playing && !root.saves-busy && root.info.account != "";
-                            clicked => { root.saves-use(p.account); }
+                    for p in root.profiles: VerticalLayout {
+                        SettingRow {
+                            title: p.name + (p.name != p.account ? "  (" + p.account + ")" : "");
+                            sub: p.played + (p.campaign ? " · campaign saves" : "");
+                            if p.current: Tag { text: "Plays now"; }
+                            if !p.current: Btn {
+                                text: "Use for my account";
+                                enabled: !root.playing && !root.saves-busy && root.info.account != "" && root.use-asking == "";
+                                clicked => { root.use-asking = p.account; }
+                            }
+                        }
+                        if root.use-asking == p.account: VerticalLayout {
+                            padding-top: 10px;
+                            Confirm {
+                                text: "Your account " + root.info.account + " plays " + p.name + "'s profile from now on: its options, key bindings and campaign, named " + root.info.account + ". The profile it plays now is kept in the launcher's folder, in Profile backups, and isn't used any more.";
+                                yes: "Use this profile";
+                                no: "Keep mine";
+                                answered(yes) => {
+                                    root.use-asking = "";
+                                    if yes {
+                                        root.saves-use(p.account);
+                                    }
+                                }
+                            }
                         }
                     }
                     SettingRow {
