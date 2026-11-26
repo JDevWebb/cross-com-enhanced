@@ -8,10 +8,10 @@ use serde::de;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
-use sodiumoxide::crypto::secretbox;
 use toml::Value;
 
 use crate::prudp::packet::StreamType;
+use crate::secretbox;
 use crate::Error;
 
 // Custom serialization and deserialization for byte arrays.

@@ -14,9 +14,10 @@ import { TitleBar, SideMenu, Toast, Notice, UpdateBar, StatusBar } from "chrome.
 import { PlayScreen } from "play.slint";
 import { SetupScreen } from "setup.slint";
 import { SettingsScreen } from "settings.slint";
-import { InfoView, NewsRow, DlcRow, CheckRow } from "types.slint";
+import { HostScreen } from "host.slint";
+import { InfoView, NewsRow, DlcRow, CheckRow, CodeRow } from "types.slint";
 
-export { Theme, InfoView, NewsRow, DlcRow }
+export { Theme, InfoView, NewsRow, DlcRow, CodeRow }
 
 export component AppWindow inherits Window {
     title: "Cross-Com Enhanced";
@@ -32,10 +33,10 @@ export component AppWindow inherits Window {
 
     in property <string> release;
     in property <bool> maximised;
-    // "play", "setup" (run again, from Settings › About) or "settings". Play needs everything set
-    // up: until then it's the setup.
+    // "play", "setup" (run again, from Settings › About), "settings" or "host". Play needs
+    // everything set up: until then it's the setup.
     in-out property <string> screen: "play";
-    out property <string> shown: !info.ready && screen != "settings" ? "setup" : screen;
+    out property <string> shown: !info.ready && screen != "settings" && screen != "host" ? "setup" : screen;
     // Play's side panel ("status" or "news"), and the section Settings shows.
     in-out property <string> play-tab: "status";
     in-out property <string> settings-section: "game";
@@ -143,6 +144,20 @@ export component AppWindow inherits Window {
     in property <string> restore-said;
     in property <bool> restore-failed;
 
+    // Host.
+    in property <string> host-state: "stopped";
+    in property <string> host-said;
+    in property <int> host-players;
+    in property <[CheckRow]> host-lines;
+    in property <[CodeRow]> host-codes;
+    in property <[string]> host-log;
+    in property <bool> host-plays-here;
+    in property <bool> host-play-busy;
+    in property <string> host-play-said;
+    in property <bool> host-play-failed;
+    in property <bool> host-carries-server: true;
+    in-out property <bool> host-internet;
+
     // The window.
     callback drag();
     callback minimise();
@@ -179,6 +194,12 @@ export component AppWindow inherits Window {
     callback update-notes();
     callback update-later();
     callback check-update();
+    // Host.
+    callback host-start();
+    callback host-stop();
+    callback host-play-here();
+    callback host-copied(string);
+    callback host-access(bool);
 
     VerticalLayout {
         TitleBar {
@@ -344,6 +365,26 @@ export component AppWindow inherits Window {
                         open-link(id) => { root.open-link(id); }
                         run-setup => { root.go("setup"); }
                     }
+                    if root.loaded && root.shown == "host": HostScreen {
+                        state: root.host-state;
+                        said: root.host-said;
+                        players: root.host-players;
+                        lines: root.host-lines;
+                        codes: root.host-codes;
+                        log: root.host-log;
+                        game-ready: root.info.ready;
+                        plays-here: root.host-plays-here;
+                        play-busy: root.host-play-busy;
+                        play-said: root.host-play-said;
+                        play-failed: root.host-play-failed;
+                        carries-server: root.host-carries-server;
+                        internet <=> root.host-internet;
+                        access-changed(on) => { root.host-access(on); }
+                        start-server => { root.host-start(); }
+                        stop-server => { root.host-stop(); }
+                        play-here => { root.host-play-here(); }
+                        copied(place) => { root.host-copied(place); }
+                    }
                     if !root.loaded: VerticalLayout {
                         alignment: center;
                         spacing: 18px;
@@ -363,7 +404,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.loaded: StatusBar {
-                    text: root.shown == "setup" ? (root.info.ready ? "Setting up again: nothing changes until you press Set up." : "Not set up yet: step " + (root.setup-step + 1) + " of 5.")
+                    text: root.shown == "host" ? (root.host-state == "running" ? "Hosting: " + root.host-players + " online on your server." : root.host-state == "starting" ? "Starting your server…" : root.host-state == "failed" ? "Your server stopped." : "Your server isn't running.")
+                        : root.shown == "setup" ? (root.info.ready ? "Setting up again: nothing changes until you press Set up." : "Not set up yet: step " + (root.setup-step + 1) + " of 5.")
                         : !root.info.ready ? "Not set up: Play opens the setup."
                         : root.starting ? "Starting the game…"
                         : root.play-said != "" ? root.play-said
@@ -372,7 +414,8 @@ export component AppWindow inherits Window {
                         : root.server-state == "down" ? "The server didn't answer: " + root.server-detail
                         : root.server-state == "asking" ? "Asking " + root.info.server + "…"
                         : "Signed in to " + root.info.server + " as " + root.info.account;
-                    tone: root.shown == "setup" || !root.info.ready ? "warn"
+                    tone: root.shown == "host" ? (root.host-state == "running" ? "good" : root.host-state == "starting" ? "busy" : root.host-state == "failed" ? "bad" : "warn")
+                        : root.shown == "setup" || !root.info.ready ? "warn"
                         : root.starting || root.setup-busy || root.logs-sending || (root.play-said == "" && root.server-state == "asking") ? "busy"
                         : root.play-said != "" ? (root.play-failed ? "bad" : "good")
                         : root.server-state == "down" ? "bad"

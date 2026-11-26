@@ -37,9 +37,10 @@ pub const REACH_PATH: &str = "/api/reach";
 /// The biggest request body taken.
 pub const MAX_BODY: usize = 512;
 const REACH_PREFIX: &[u8] = b"crosscom-reach ";
-/// Calls from one address per minute: a client renews its forward every 10 minutes, and its
-/// connection test calls each once.
-const FORWARDS_PER_MINUTE: u32 = 12;
+/// Calls from one address per minute: a client asks every 10 seconds until its game is in
+/// Multiplayer (as many clients as play behind the address: housemates, a test's gameboxes),
+/// then renews its forward every 10 minutes; its connection test calls each once.
+const FORWARDS_PER_MINUTE: u32 = 30;
 const REACHES_PER_MINUTE: u32 = 4;
 /// Addresses counted at once.
 const MAX_COUNTED: usize = 10_000;
@@ -83,6 +84,9 @@ pub struct Matched {
     pub announced: bool,
     /// The report brings a forward it didn't have before (or on another port).
     pub new_forward: bool,
+    /// The player's game hasn't announced a peer-to-peer socket yet (it's not in Multiplayer):
+    /// its client is waiting for it, and nothing is wrong.
+    pub waiting: bool,
 }
 
 pub struct Reach {
@@ -135,6 +139,8 @@ impl Reach {
         if !self.allow(client, false) {
             return (error("429 Too Many Requests", "too many reports from here; try again later"), None);
         }
+        // Where its game is seen (on the server's own network: at its public address, `here`).
+        let client = crate::here::seen(std::net::SocketAddr::new(client, 0)).ip();
         let Ok(request) = serde_json::from_slice::<ForwardRequest>(body) else {
             return (error("400 Bad Request", "expected {\"local\", \"forward\", \"nat\"}"), None);
         };
@@ -205,7 +211,13 @@ impl Reach {
             found.and_then(|((pid, _), _, _)| crate::announce::open(pid))
         };
         let answer = json!({ "address": client.to_string(), "port": port, "open": open }).to_string();
-        (("200 OK", answer), found.map(|((pid, _), announced, _)| Matched { pid, announced, new_forward }))
+        let matched = found.map(|((pid, _), announced, _)| Matched {
+            pid,
+            announced,
+            new_forward,
+            waiting: !self.sessions.registered(pid).iter().any(|u| u.scheme == "udp"),
+        });
+        (("200 OK", answer), matched)
     }
 
     /// Whether `pid`'s game announced `local` as one of its peer-to-peer sockets (a `udp` station
@@ -270,6 +282,7 @@ mod tests {
             pid,
             announced,
             new_forward: false,
+            waiting: false,
         })
     }
 
@@ -387,7 +400,11 @@ mod tests {
             "198.51.100.8".parse().unwrap(),
             br#"{"account":"Pepper","local":"192.168.1.30:2346","forward":{"port":40000,"how":"UPnP"},"nat":"consistent"}"#,
         );
-        assert_eq!((answer.0, pid), ("200 OK", matched(pepper, false)));
+        let waiting = Matched {
+            waiting: true,
+            ..matched(pepper, false).unwrap()
+        };
+        assert_eq!((answer.0, pid), ("200 OK", Some(waiting)), "waiting: not a report to warn about");
         assert_eq!(json_of(&answer)["port"], serde_json::Value::Null);
         assert_eq!(r.sessions.reachability(pepper), None);
     }

@@ -48,6 +48,15 @@ pub struct Config {
     pub logs_max_mb: u64,
     /// Days logs are kept.
     pub logs_keep_days: u32,
+    /// HTTPS of the server's own on this port (http_port's own serves both), for a server with no proxy giving it HTTPS (one
+    /// hosted from the launcher, at home): its own certificate, made once and kept beside the
+    /// database, which players' launchers know by its fingerprint (the host's join code; see
+    /// `tls.rs`). Off by default.
+    pub https_port: Option<u16>,
+    /// Gives each player on this machine, a LAN or a VPN the server's address there, whatever
+    /// `public_address` is: for a server hosted from the launcher for its network and VPN. Off by
+    /// default: a server in a container would give its container's own address.
+    pub answer_as_reached: bool,
 }
 
 impl Default for Config {
@@ -68,6 +77,8 @@ impl Default for Config {
             logs_dir: "logs".into(),
             logs_max_mb: 2048,
             logs_keep_days: 30,
+            https_port: None,
+            answer_as_reached: false,
         }
     }
 }
@@ -86,7 +97,7 @@ impl Config {
     /// `CROSSCOM_PUBLIC_ADDRESS`, `CROSSCOM_LOG_LEVEL`, `CROSSCOM_SIGNUP` (`true` or `false`) and
     /// `CROSSCOM_SIGNUP_CODE` and `CROSSCOM_TRUSTED_PROXIES` (separated by commas or spaces),
     /// `CROSSCOM_ACCEPT_LOGS` (`true` or `false`), `CROSSCOM_LOGS_MAX_MB` and
-    /// `CROSSCOM_LOGS_KEEP_DAYS`. `var` looks one up.
+    /// `CROSSCOM_LOGS_KEEP_DAYS`, `CROSSCOM_HTTPS_PORT`. `var` looks one up.
     pub fn with_env(mut self, var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |name: &str| var(name).filter(|v| !v.trim().is_empty());
         if let Some(address) = var("CROSSCOM_PUBLIC_ADDRESS") {
@@ -110,6 +121,9 @@ impl Config {
         if let Some(code) = var("CROSSCOM_SIGNUP_CODE") {
             self.signup_code = Some(code);
         }
+        if let Some(port) = var("CROSSCOM_HTTPS_PORT") {
+            self.https_port = Some(port.trim().parse().map_err(|_| format!("CROSSCOM_HTTPS_PORT is a port, not {port:?}"))?);
+        }
         if let Some(proxies) = var("CROSSCOM_TRUSTED_PROXIES") {
             self.trusted_proxies = proxies.split([',', ' ']).filter(|p| !p.is_empty()).map(str::to_owned).collect();
         }
@@ -127,14 +141,31 @@ impl Config {
         }
     }
 
-    /// The proxies in `trusted_proxies`.
+    /// The proxies in `trusted_proxies`, and the server's own HTTPS when it has it
+    /// (`tls::FRONT`).
     pub fn trusted_proxies(&self) -> Result<crate::proxy::Trusted, String> {
-        crate::proxy::Trusted::parse(&self.trusted_proxies)
+        let mut proxies = self.trusted_proxies.clone();
+        if self.https_port.is_some() {
+            proxies.push(crate::tls::FRONT.to_string());
+        }
+        crate::proxy::Trusted::parse(&proxies)
+    }
+
+    /// Where the server's own HTTPS certificate and its key are kept: beside the database.
+    pub fn tls_files(&self) -> (PathBuf, PathBuf) {
+        let dir = self.database.parent().unwrap_or_else(|| Path::new(""));
+        (dir.join("https-certificate.der"), dir.join("https-key.der"))
     }
 
     /// Refuses a sign-up code short enough to guess, and proxies that aren't addresses.
     fn check(&self) -> Result<(), String> {
         self.trusted_proxies()?;
+        if self.https_port.is_some() && !(self.listen_ip.is_unspecified() || self.listen_ip.is_loopback()) {
+            return Err("https_port needs listen_ip to be all addresses (0.0.0.0) or this machine's: the server's HTTPS passes requests to its HTTP side on 127.0.0.1".into());
+        }
+        if self.https_port == Some(0) {
+            return Err("https_port is a port, not 0 (the same as http_port serves both there)".into());
+        }
         match &self.signup_code {
             Some(code) if !code.is_empty() && code.chars().count() < crate::signup::MIN_CODE_LEN => Err(format!(
                 "signup_code is too short to keep strangers out: use at least {} random characters",

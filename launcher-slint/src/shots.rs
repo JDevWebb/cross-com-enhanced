@@ -1,5 +1,5 @@
 //! The README's screenshots (`crosscom-launcher --shots DIR`, run by scripts/launcher-shots.sh):
-//! Play, Setup and Settings filled in by the launcher's own code (ui.rs) from made-up state, and
+//! Play, Setup, Settings and Host filled in by the launcher's own code (ui.rs) from made-up state, and
 //! drawn by Slint's software renderer into memory, so no screen, game or server is needed and
 //! nothing reaches the network. Each is a PNG named as the README uses it.
 
@@ -30,6 +30,8 @@ const HEIGHT: u32 = 780;
 const TALL: u32 = 940;
 /// Settings › About, whole, down to its small print and Slint's attribution.
 const ABOUT_HEIGHT: u32 = 1560;
+/// Host, down to its join codes.
+const HOST_HEIGHT: u32 = 1300;
 /// Where the made-up game is.
 const GAME: &str = r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Tom Clancy's Ghost Recon Future Soldier";
 const NAME: &str = "Kozak";
@@ -206,6 +208,51 @@ fn about(w: &AppWindow) {
     w.set_settings_section(s("about"));
 }
 
+/// Host, running for anyone on the internet: what it took, checked from outside, and its join
+/// codes (documentation addresses, a made-up certificate).
+fn host(w: &AppWindow) {
+    use crate::CheckRow;
+    use crate::CodeRow;
+    w.set_info(ui::info_view(&ready()));
+    w.set_screen(s("host"));
+    w.set_host_state(s("running"));
+    w.set_host_players(3);
+    w.set_host_internet(true);
+    w.set_host_plays_here(true);
+    let line = |label: &str, value: &str, tone: &str, detail: &str| CheckRow {
+        label: s(label),
+        value: s(value),
+        tone: s(tone),
+        detail: s(detail),
+        action: s(""),
+    };
+    let lines = vec![
+        line("Windows Firewall", "Server allowed", "good", "Windows lets players reach the server."),
+        line(
+            "Web port (TCP)",
+            "Forwarded",
+            "good",
+            "Your router forwards 203.0.113.24:8080 to this PC (UPnP): the online config and HTTPS. Your router wouldn't give port 80 itself, so friends' games are sent to port 8080 (the join code says it).",
+        ),
+        line("Sign-in (UDP 21030)", "Forwarded", "good", "Your router forwards 203.0.113.24:21030 to this PC (UPnP)."),
+        line("Game services (UDP 21031)", "Forwarded", "good", "Your router forwards 203.0.113.24:21031 to this PC (UPnP)."),
+        line("From outside", "Reachable", "good", "The community server reached your server at 203.0.113.24: friends on the internet can join."),
+    ];
+    w.set_host_lines(ModelRc::new(VecModel::from(lines)));
+    let fingerprint = "5c1e0b7f93a2d4c86e0f1b2a3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7";
+    let code = |place: &str, at: &str| CodeRow {
+        place: s(place),
+        code: s(format!("{at}#{fingerprint}")),
+    };
+    let codes = vec![
+        code("Friends on the internet", "203.0.113.24:8080"),
+        code("Friends on your network", "192.168.1.20"),
+        code("Friends on your VPN (Tailscale)", "100.101.102.103"),
+    ];
+    w.set_host_codes(ModelRc::new(VecModel::from(codes)));
+    w.set_host_log(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
+}
+
 /// Settings › Identity, just copied.
 fn identity(w: &AppWindow) {
     settings(w);
@@ -226,13 +273,14 @@ pub fn run(dir: &Path) -> Result<(), String> {
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     w.show().map_err(|e| e.to_string())?;
 
-    let shots: [Shot; 6] = [
+    let shots: [Shot; 7] = [
         ("launcher-play", play, HEIGHT),
         ("launcher-play-missing-dlc", play_missing_dlc, HEIGHT),
         ("launcher-setup", setup, TALL),
         ("launcher-settings", settings, HEIGHT),
         ("launcher-settings-identity", identity, HEIGHT),
         ("launcher-about", about, ABOUT_HEIGHT),
+        ("launcher-host", host, HOST_HEIGHT),
     ];
     for (name, set, height) in shots {
         window.set_size(slint::PhysicalSize::new(WIDTH, height));

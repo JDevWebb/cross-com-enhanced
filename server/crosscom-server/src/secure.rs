@@ -23,7 +23,9 @@ struct SecureConnection {
 fn registered<CI>(ci: &ClientInfo<CI>, sid: u8, ty: u8) -> Result<(u32, StationURL), Error> {
     ci.user_id.ok_or(Error::AccessDenied)?;
     let connection_id = ci.connection_id.ok_or(Error::InternalError)?.into();
-    let url = format!("prudp:/address={};port={};sid={sid};type={ty}", ci.address().ip(), ci.address().port())
+    // As players elsewhere see it (on the server's own network: at its public address).
+    let at = crate::here::seen(*ci.address());
+    let url = format!("prudp:/address={};port={};sid={sid};type={ty}", at.ip(), at.port())
         .parse()
         .map_err(|_| Error::InternalError)?;
     Ok((connection_id, url))

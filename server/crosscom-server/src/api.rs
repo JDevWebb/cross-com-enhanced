@@ -61,6 +61,11 @@ struct Info {
     players_online: usize,
     news: Vec<news::Shown>,
     udp_ports: Vec<u16>,
+    /// The server's public address, when it has one: a server hosted at home, set up on its
+    /// players' own network, says so, and their clients forward their game's port as for one
+    /// on the internet (`here`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +135,7 @@ impl Api {
             players_online: self.online.count(),
             news: news::shown(&news::load(&self.news, logger), now),
             udp_ports: self.udp_ports.clone(),
+            public_address: crate::here::public().map(|ip| ip.to_string()),
         };
         serde_json::to_string(&info).unwrap_or_default()
     }

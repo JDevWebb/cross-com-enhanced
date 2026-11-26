@@ -5,12 +5,13 @@
 //! a port briefly to see whether the router allows it.
 //!
 //! Only the router this PC routes through is asked, and an answer from any other host is ignored,
-//! so another machine on the network can't pose as the router. UPnP's search is done here, not
-//! by `igd_next`, so that its answer's description address is only fetched when the answer came
-//! from the router and the address is on the router: nothing on the network can point this PC
-//! at another host. A mapping whose "external" address
-//! isn't a public one (a router behind another NAT) is refused: it would be no use to players
-//! outside.
+//! so another machine on the network can't pose as the router. UPnP is done here, search and
+//! actions both: its answer's description address is only fetched when the answer came from the
+//! router and the address is on the router, so nothing on the network can point this PC at
+//! another host; and each action names the service the router offers (`WANIPConnection:2`, or
+//! `WANPPPConnection:1` on a router that dials its internet itself), as stricter routers require.
+//! A mapping whose "external" address isn't a public one (a router behind another NAT) is
+//! refused: it would be no use to players outside.
 //!
 //! Adapted from 5th Echelon Enhanced's `portmap` (MIT, by the same author).
 
@@ -20,9 +21,41 @@ use std::net::SocketAddrV4;
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use igd_next::PortMappingProtocol;
-
 const PMP_PORT: u16 = 5351;
+
+/// What a forward carries: the game's UDP, or a hosted server's web side (TCP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    Udp,
+    Tcp,
+}
+
+impl Protocol {
+    /// As UPnP names it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::Udp => "UDP",
+            Protocol::Tcp => "TCP",
+        }
+    }
+
+    /// Its IP protocol number (PCP's).
+    fn number(self) -> u8 {
+        match self {
+            Protocol::Udp => 17,
+            Protocol::Tcp => 6,
+        }
+    }
+
+    /// NAT-PMP's mapping request for it.
+    fn pmp_opcode(self) -> u8 {
+        match self {
+            Protocol::Udp => 1,
+            Protocol::Tcp => 2,
+        }
+    }
+}
 
 /// A port the router forwards to this PC. Dropping it leaves the mapping in
 /// place until its lease ends; [`Mapping::remove`] takes it away now.
@@ -31,27 +64,64 @@ pub struct Mapping {
     pub public: SocketAddrV4,
     /// "UPnP", "PCP" or "NAT-PMP".
     pub how: &'static str,
+    /// The port on this PC it goes to.
+    local_port: u16,
     handle: Handle,
 }
 
 enum Handle {
-    Upnp { gateway: igd_next::Gateway, port: u16 },
-    Pmp { gateway: Ipv4Addr, local: Ipv4Addr, port: u16 },
-    Pcp { gateway: Ipv4Addr, local: Ipv4Addr, port: u16, nonce: [u8; 12] },
+    Upnp {
+        service: Service,
+        protocol: Protocol,
+        port: u16,
+    },
+    Pmp {
+        gateway: Ipv4Addr,
+        local: Ipv4Addr,
+        protocol: Protocol,
+        port: u16,
+    },
+    Pcp {
+        gateway: Ipv4Addr,
+        local: Ipv4Addr,
+        protocol: Protocol,
+        port: u16,
+        nonce: [u8; 12],
+    },
 }
 
 impl Mapping {
+    /// What it forwards.
+    #[must_use]
+    pub fn protocol(&self) -> Protocol {
+        match &self.handle {
+            Handle::Upnp { protocol, .. } | Handle::Pmp { protocol, .. } | Handle::Pcp { protocol, .. } => *protocol,
+        }
+    }
+
+    /// The port on this PC it goes to.
+    #[must_use]
+    pub fn local_port(&self) -> u16 {
+        self.local_port
+    }
+
     /// Asks the router to stop forwarding the port.
     pub fn remove(self) {
         match self.handle {
-            Handle::Upnp { gateway, port } => {
-                let _ = gateway.remove_port(PortMappingProtocol::UDP, port);
+            Handle::Upnp { service, protocol, port } => {
+                let _ = service.remove(protocol, port);
             }
-            Handle::Pmp { gateway, local, port } => {
-                let _ = pmp_map(gateway, local, port, 0, 0);
+            Handle::Pmp { gateway, local, protocol, port } => {
+                let _ = pmp_map(gateway, local, protocol, port, 0, 0);
             }
-            Handle::Pcp { gateway, local, port, nonce } => {
-                let _ = pcp_request(gateway, local, &pcp_map_request(local, nonce, port, 0, 0));
+            Handle::Pcp {
+                gateway,
+                local,
+                protocol,
+                port,
+                nonce,
+            } => {
+                let _ = pcp_request(gateway, local, &pcp_map_request(local, nonce, protocol, port, 0, 0));
             }
         }
     }
@@ -67,15 +137,20 @@ pub fn map(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -
 /// As [`map`], asking for `external` on the router's side (the port it already gives this PC's
 /// `port`; see [`port_to_ask`]).
 pub fn map_as(port: u16, external: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
-    let upnp_err = match upnp(port, external, pinned, lease, description) {
+    map_with(Protocol::Udp, port, external, pinned, lease, description)
+}
+
+/// As [`map_as`], for `protocol`: a hosted server forwards TCP (its web side) as well as UDP.
+pub fn map_with(protocol: Protocol, port: u16, external: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
+    let upnp_err = match upnp(protocol, port, external, pinned, lease, description) {
         Ok(m) => return Ok(m),
         Err(e) => e,
     };
-    let pcp_err = match pcp(port, external, pinned, lease) {
+    let pcp_err = match pcp(protocol, port, external, pinned, lease) {
         Ok(m) => return Ok(m),
         Err(e) => e,
     };
-    pmp(port, external, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; PCP: {pcp_err}; NAT-PMP: {pmp_err}"))
+    pmp(protocol, port, external, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; PCP: {pcp_err}; NAT-PMP: {pmp_err}"))
 }
 
 /// The router-side port to ask for, for this PC's `local` port: the one the server saw this PC's
@@ -105,6 +180,9 @@ const SSDP_WAIT: Duration = Duration::from_secs(3);
 /// How long each of the router's descriptions may take to fetch, and the most read of one.
 const DESCRIPTION_WAIT: Duration = Duration::from_secs(5);
 const MAX_DESCRIPTION: u64 = 256 * 1024;
+/// How long each UPnP action may take, and the most read of its answer.
+const ACTION_WAIT: Duration = Duration::from_secs(5);
+const MAX_ANSWER: u64 = 64 * 1024;
 /// The UPnP services that forward ports.
 const WAN_SERVICES: [&str; 3] = [
     "urn:schemas-upnp-org:service:WANPPPConnection:1",
@@ -112,17 +190,185 @@ const WAN_SERVICES: [&str; 3] = [
     "urn:schemas-upnp-org:service:WANIPConnection:2",
 ];
 
-/// Finds the router's UPnP service: the standard search to the whole network (some routers
+/// A router's port-forwarding service.
+struct Service {
+    /// The router, at the port its UPnP descriptions and actions are on.
+    at: SocketAddrV4,
+    /// Its type, which each action names: one of [`WAN_SERVICES`].
+    kind: String,
+    /// The path its actions are posted to.
+    control: String,
+    /// The actions it has.
+    actions: Vec<String>,
+}
+
+/// Why a UPnP action didn't work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refused {
+    /// The router's own reason: its UPnP error code and description.
+    Upnp(u16, String),
+    /// No answer, or one that made no sense.
+    Other(String),
+}
+
+impl Refused {
+    fn code(&self) -> Option<u16> {
+        match self {
+            Refused::Upnp(code, _) => Some(*code),
+            Refused::Other(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Upnp(code, what) if what.is_empty() => write!(f, "the router refused (UPnP error {code})"),
+            Refused::Upnp(code, what) => write!(f, "the router refused (UPnP error {code}, {what})"),
+            Refused::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+/// UPnP's errors this code acts on (UPnP IGD's WANIPConnection specification).
+const CONFLICT_IN_MAPPING_ENTRY: u16 = 718;
+const ONLY_PERMANENT_LEASES_SUPPORTED: u16 = 725;
+
+impl Service {
+    /// The service's name without its namespace (`WANIPConnection:2`).
+    fn name(&self) -> &str {
+        self.kind.strip_prefix("urn:schemas-upnp-org:service:").unwrap_or(&self.kind)
+    }
+
+    fn has(&self, action: &str) -> bool {
+        self.actions.iter().any(|a| a == action)
+    }
+
+    /// Posts `action` with `args` (in the specification's order) to the service: its answer,
+    /// or the router's reason for refusing.
+    fn call(&self, action: &str, args: &[(&str, String)]) -> Result<xmltree::Element, Refused> {
+        use std::io::Read as _;
+        let mut body = format!(
+            "<?xml version=\"1.0\"?>\r\n<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" \
+             s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:{action} xmlns:u=\"{}\">",
+            self.kind
+        );
+        for (name, value) in args {
+            body.push_str(&format!("<{name}>{}</{name}>", escape(value)));
+        }
+        body.push_str(&format!("</u:{action}></s:Body></s:Envelope>\r\n"));
+        let url = format!("http://{}{}", self.at, self.control);
+        let soap_action = format!("\"{}#{action}\"", self.kind);
+        let failed = |e: &dyn std::fmt::Display| Refused::Other(format!("{action}: {e}"));
+        let response = attohttpc::post(&url)
+            .follow_redirects(false)
+            .proxy_settings(attohttpc::ProxySettings::builder().build())
+            .timeout(ACTION_WAIT)
+            .header("Content-Type", "text/xml; charset=\"utf-8\"")
+            .header("SOAPAction", soap_action.as_str())
+            .text(body)
+            .send()
+            .map_err(|e| failed(&e))?;
+        let (status, _, reader) = response.split();
+        let mut text = Vec::new();
+        reader.take(MAX_ANSWER).read_to_end(&mut text).map_err(|e| failed(&e))?;
+        let root = xmltree::Element::parse(text.as_slice()).ok();
+        if let Some(fault) = root.as_ref().and_then(|r| find(r, "UPnPError")) {
+            let code = text_of(fault, "errorCode").and_then(|c| c.parse().ok()).unwrap_or(0);
+            return Err(Refused::Upnp(code, text_of(fault, "errorDescription").unwrap_or_default()));
+        }
+        if !status.is_success() {
+            return Err(failed(&format!("the router answered {status}")));
+        }
+        root.as_ref()
+            .and_then(|r| find(r, &format!("{action}Response")))
+            .cloned()
+            .ok_or_else(|| failed(&"the router's answer made no sense"))
+    }
+
+    fn external_ip(&self) -> Result<Ipv4Addr, Refused> {
+        let answer = self.call("GetExternalIPAddress", &[])?;
+        let ip = text_of(&answer, "NewExternalIPAddress").unwrap_or_default();
+        ip.parse()
+            .map_err(|_| Refused::Other(format!("the router gave no internet address ({ip:?}): this connection of its may not be the one in use")))
+    }
+
+    /// Forwards `external` to `internal` for `lease` seconds (0: until taken away).
+    fn add(&self, protocol: Protocol, external: u16, internal: SocketAddrV4, lease: u32, description: &str) -> Result<(), Refused> {
+        self.call("AddPortMapping", &mapping_args(protocol, external, internal, lease, description)).map(|_| ())
+    }
+
+    /// Forwards a port the router picks (`external` if it can) to `internal`: the port.
+    fn add_any(&self, protocol: Protocol, external: u16, internal: SocketAddrV4, lease: u32, description: &str) -> Result<u16, Refused> {
+        let answer = self.call("AddAnyPortMapping", &mapping_args(protocol, external, internal, lease, description))?;
+        text_of(&answer, "NewReservedPort")
+            .and_then(|p| p.parse().ok())
+            .filter(|p| *p != 0)
+            .ok_or_else(|| Refused::Other("AddAnyPortMapping: the router's answer had no port".into()))
+    }
+
+    fn remove(&self, protocol: Protocol, external: u16) -> Result<(), Refused> {
+        let args = [
+            ("NewRemoteHost", String::new()),
+            ("NewExternalPort", external.to_string()),
+            ("NewProtocol", protocol.name().into()),
+        ];
+        self.call("DeletePortMapping", &args).map(|_| ())
+    }
+
+    /// The router's mapping number `index`: (protocol, external port, internal client, internal
+    /// port).
+    fn entry(&self, index: u32) -> Result<(String, u16, String, u16), Refused> {
+        let answer = self.call("GetGenericPortMappingEntry", &[("NewPortMappingIndex", index.to_string())])?;
+        let text = |name: &str| text_of(&answer, name).unwrap_or_default();
+        let port = |name: &str| text(name).parse().unwrap_or(0);
+        Ok((text("NewProtocol"), port("NewExternalPort"), text("NewInternalClient"), port("NewInternalPort")))
+    }
+}
+
+/// AddPortMapping's and AddAnyPortMapping's arguments, in the specification's order.
+fn mapping_args(protocol: Protocol, external: u16, internal: SocketAddrV4, lease: u32, description: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("NewRemoteHost", String::new()),
+        ("NewExternalPort", external.to_string()),
+        ("NewProtocol", protocol.name().into()),
+        ("NewInternalPort", internal.port().to_string()),
+        ("NewInternalClient", internal.ip().to_string()),
+        ("NewEnabled", "1".into()),
+        ("NewPortMappingDescription", description.into()),
+        ("NewLeaseDuration", lease.to_string()),
+    ]
+}
+
+/// `text` for an XML element's content.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The first element named `name` in `element` (itself included), whatever its namespace.
+fn find<'a>(element: &'a xmltree::Element, name: &str) -> Option<&'a xmltree::Element> {
+    if element.name == name {
+        return Some(element);
+    }
+    element.children.iter().filter_map(|c| c.as_element()).find_map(|c| find(c, name))
+}
+
+/// The text of the first element named `name` in `element`.
+fn text_of(element: &xmltree::Element, name: &str) -> Option<String> {
+    find(element, name).map(|e| e.get_text().map(|t| t.trim().to_owned()).unwrap_or_default())
+}
+
+/// Finds the router's UPnP services: the standard search to the whole network (some routers
 /// answer nothing else), then one sent to the router alone. Only an answer that came from the
 /// router, pointing at a description on the router, is followed, and only to the router: another
 /// device on the network can neither pose as it nor have this PC fetch from anywhere else.
-fn find_router(router: Ipv4Addr, local: Ipv4Addr) -> Result<igd_next::Gateway, String> {
+fn find_router(router: Ipv4Addr, local: Ipv4Addr) -> Result<Vec<Service>, String> {
     let multicast = ssdp_search(local, SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), 1900), router);
     let (port, path) = match multicast {
         Ok(found) => found,
         Err(first) => ssdp_search(local, SocketAddrV4::new(router, 1900), router).map_err(|direct| format!("{first}; asked directly: {direct}"))?,
     };
-    gateway_at(router, port, &path)
+    services_at(router, port, &path)
 }
 
 /// Sends the UPnP search to `to` from `local` and waits for the router's answer: the port and path
@@ -206,107 +452,196 @@ fn fetch(router: Ipv4Addr, port: u16, path: &str) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-/// The router's port-forwarding service, from its description at `path` on `port`.
-fn gateway_at(router: Ipv4Addr, port: u16, path: &str) -> Result<igd_next::Gateway, String> {
-    let (scpd, control) = wan_service(&fetch(router, port, path)?).ok_or("the router's description has no port-forwarding service")?;
-    let (_, scpd) = on_router(&scpd, router, Some(port))?;
-    let (_, control) = on_router(&control, router, Some(port))?;
-    let control_schema = actions(&fetch(router, port, &scpd)?).ok_or("the router's service description made no sense")?;
-    Ok(igd_next::Gateway {
-        addr: SocketAddr::V4(SocketAddrV4::new(router, port)),
-        root_url: path.to_owned(),
-        control_url: control,
-        control_schema_url: scpd,
-        control_schema,
-    })
+/// The router's port-forwarding services, from its description at `path` on `port`: each one it
+/// lists, in its order (a router may list a connection it doesn't use before the one it does).
+/// Its `URLBase`, when it has one on the router, is where the services' own paths are.
+fn services_at(router: Ipv4Addr, port: u16, path: &str) -> Result<Vec<Service>, String> {
+    let (base, found) = wan_services(&fetch(router, port, path)?).ok_or("the router's description made no sense")?;
+    let port = match base {
+        Some(base) => on_router(&base, router, None)?.0,
+        None => port,
+    };
+    let mut services = Vec::new();
+    let mut why = "the router's description has no port-forwarding service".to_owned();
+    for Listed { kind, scpd, control } in found {
+        let service = (|| {
+            let (_, scpd) = on_router(&scpd, router, Some(port))?;
+            let (_, control) = on_router(&control, router, Some(port))?;
+            let actions = actions(&fetch(router, port, &scpd)?).ok_or("the router's service description made no sense")?;
+            Ok::<_, String>(Service {
+                at: SocketAddrV4::new(router, port),
+                kind,
+                control,
+                actions,
+            })
+        })();
+        match service {
+            Ok(s) => services.push(s),
+            Err(e) => why = e,
+        }
+    }
+    if services.is_empty() {
+        return Err(why);
+    }
+    Ok(services)
 }
 
-/// The first port-forwarding service in a UPnP device description: its description's URL and its
-/// control URL.
-fn wan_service(description: &[u8]) -> Option<(String, String)> {
-    fn in_device(device: &xmltree::Element) -> Option<(String, String)> {
+/// A port-forwarding service as a device description lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Listed {
+    /// Its type (one of [`WAN_SERVICES`]), its description's URL and its control URL.
+    kind: String,
+    scpd: String,
+    control: String,
+}
+
+/// A UPnP device description's `URLBase`, if any, and each port-forwarding service in it.
+fn wan_services(description: &[u8]) -> Option<(Option<String>, Vec<Listed>)> {
+    fn in_device(device: &xmltree::Element, found: &mut Vec<Listed>) {
         let services = device.get_child("serviceList").into_iter().flat_map(|l| l.children.iter().filter_map(|c| c.as_element()));
-        let found = services.filter(|s| s.name == "service").find_map(|s| {
+        for s in services.filter(|s| s.name == "service") {
             let text = |name: &str| s.get_child(name).and_then(|e| e.get_text()).map(|t| t.trim().to_owned());
-            if !WAN_SERVICES.contains(&text("serviceType")?.as_str()) {
-                return None;
+            if let (Some(kind), Some(scpd), Some(control)) = (text("serviceType"), text("SCPDURL"), text("controlURL")) {
+                if WAN_SERVICES.contains(&kind.as_str()) {
+                    found.push(Listed { kind, scpd, control });
+                }
             }
-            Some((text("SCPDURL")?, text("controlURL")?))
-        });
-        found.or_else(|| {
-            let devices = device.get_child("deviceList")?.children.iter().filter_map(|c| c.as_element());
-            devices.filter(|d| d.name == "device").find_map(in_device)
-        })
+        }
+        let devices = device.get_child("deviceList").into_iter().flat_map(|l| l.children.iter().filter_map(|c| c.as_element()));
+        for d in devices.filter(|d| d.name == "device") {
+            in_device(d, found);
+        }
     }
     let root = xmltree::Element::parse(description).ok()?;
-    root.children.iter().filter_map(|c| c.as_element()).filter(|d| d.name == "device").find_map(in_device)
+    let base = root.get_child("URLBase").and_then(|b| b.get_text()).map(|t| t.trim().to_owned()).filter(|b| !b.is_empty());
+    let mut found = Vec::new();
+    for device in root.children.iter().filter_map(|c| c.as_element()).filter(|d| d.name == "device") {
+        in_device(device, &mut found);
+    }
+    Some((base, found))
 }
 
-/// The actions in a UPnP service description, each with the names of its arguments in.
-fn actions(scpd: &[u8]) -> Option<std::collections::HashMap<String, Vec<String>>> {
+/// The names of the actions in a UPnP service description.
+fn actions(scpd: &[u8]) -> Option<Vec<String>> {
     let root = xmltree::Element::parse(scpd).ok()?;
     let list = root.get_child("actionList")?;
-    let text = |e: &xmltree::Element, name: &str| e.get_child(name).and_then(|c| c.get_text()).map(|t| t.trim().to_owned());
     Some(
         list.children
             .iter()
             .filter_map(|c| c.as_element())
             .filter(|a| a.name == "action")
-            .filter_map(|action| {
-                let args = action.get_child("argumentList")?.children.iter().filter_map(|c| c.as_element());
-                let ins = args
-                    .filter(|a| a.name == "argument" && text(a, "direction").as_deref() == Some("in"))
-                    .filter_map(|a| text(a, "name"));
-                Some((text(action, "name")?, ins.collect()))
-            })
+            .filter_map(|a| a.get_child("name").and_then(|n| n.get_text()).map(|t| t.trim().to_owned()))
             .collect(),
     )
 }
 
-fn upnp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
+fn upnp(protocol: Protocol, port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
     let router = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(router)).ok_or("no local address towards the router")?;
-    let gateway = find_router(router, local)?;
-    let external = match gateway.get_external_ip().map_err(|e| e.to_string())? {
-        std::net::IpAddr::V4(ip) => ip,
-        std::net::IpAddr::V6(_) => return Err("IPv6 external address".into()),
-    };
-    usable_external(external)?;
-    let internal = SocketAddr::V4(SocketAddrV4::new(local, port));
-    let mapped = match gateway.add_port(PortMappingProtocol::UDP, external_port, internal, lease, description) {
-        Ok(()) => external_port,
-        Err(_) => {
-            // This PC's own mapping from an earlier game (one that didn't get to remove it)
-            // holds the port for up to its lease; many routers then refuse any other mapping
-            // to the same address and port ("no free ports"). Only mappings to this PC's
-            // address and port are taken away.
-            let entries = (0..MAX_ENTRIES).map_while(|i| gateway.get_generic_port_mapping_entry(i).ok());
-            let stale = stale_mappings(entries.map(|e| (e.protocol, e.external_port, e.internal_client, e.internal_port)), local, port);
-            for external in &stale {
-                let _ = gateway.remove_port(PortMappingProtocol::UDP, *external);
+    forward_on(find_router(router, local)?, protocol, SocketAddrV4::new(local, port), external_port, lease, description)
+}
+
+/// Forwards `external_port` to `internal` on the first of `services` that has an internet
+/// address and agrees: a router may list a connection it doesn't use before the one it does.
+fn forward_on(services: Vec<Service>, protocol: Protocol, internal: SocketAddrV4, external_port: u16, lease: u32, description: &str) -> Result<Mapping, String> {
+    let several = services.len() > 1;
+    let mut why = Vec::new();
+    for service in services {
+        let tried = service.external_ip().map_err(|e| e.to_string()).and_then(|external| {
+            usable_external(external)?;
+            let mapped = map_on(&service, protocol, external_port, internal, lease, description)?;
+            Ok(SocketAddrV4::new(external, mapped))
+        });
+        match tried {
+            Ok(public) => {
+                return Ok(Mapping {
+                    public,
+                    how: "UPnP",
+                    local_port: internal.port(),
+                    handle: Handle::Upnp {
+                        service,
+                        protocol,
+                        port: public.port(),
+                    },
+                })
             }
-            match gateway.add_port(PortMappingProtocol::UDP, external_port, internal, lease, description) {
-                Ok(()) => external_port,
-                // Taken, e.g. by another PC on this network playing too.
-                Err(_) => gateway.add_any_port(PortMappingProtocol::UDP, internal, lease, description).map_err(|e| e.to_string())?,
+            Err(e) if several => why.push(format!("{}: {e}", service.name())),
+            Err(e) => why.push(e),
+        }
+    }
+    Err(why.join("; "))
+}
+
+/// Forwards `external` (or, when the router won't, another port) to `internal` on `service`:
+/// the port forwarded, or the router's reason for refusing the one asked for.
+fn map_on(service: &Service, protocol: Protocol, external: u16, internal: SocketAddrV4, lease: u32, description: &str) -> Result<u16, String> {
+    let first = match add_leased(service, protocol, external, internal, lease, description) {
+        Ok(()) => return Ok(external),
+        Err(e) => e,
+    };
+    // This PC's own mapping from an earlier game (one that didn't get to remove it) holds the
+    // port for up to its lease; many routers then refuse any other mapping to the same address
+    // and port. Only mappings to this PC's address and port are taken away.
+    let entries = (0..MAX_ENTRIES).map_while(|i| service.entry(i).ok());
+    let stale = stale_mappings(entries, protocol, *internal.ip(), internal.port());
+    for old in &stale {
+        let _ = service.remove(protocol, *old);
+    }
+    if !stale.is_empty() && add_leased(service, protocol, external, internal, lease, description).is_ok() {
+        return Ok(external);
+    }
+    // Taken, e.g. by another PC on this network playing too: another port. Any other refusal
+    // (not allowed for this PC, say) would refuse that as much, and its reason is the one given.
+    if stale.is_empty() && first.code() != Some(CONFLICT_IN_MAPPING_ENTRY) {
+        return Err(first.to_string());
+    }
+    if service.has("AddAnyPortMapping") {
+        let any = match service.add_any(protocol, external, internal, lease, description) {
+            Err(e) if e.code() == Some(ONLY_PERMANENT_LEASES_SUPPORTED) && lease != 0 => service.add_any(protocol, external, internal, 0, description),
+            other => other,
+        };
+        if let Ok(port) = any {
+            return Ok(port);
+        }
+    } else {
+        for _ in 0..OTHER_PORTS {
+            let other = random_port();
+            if add_leased(service, protocol, other, internal, lease, description).is_ok() {
+                return Ok(other);
             }
         }
-    };
-    Ok(Mapping {
-        public: SocketAddrV4::new(external, mapped),
-        how: "UPnP",
-        handle: Handle::Upnp { gateway, port: mapped },
-    })
+    }
+    Err(first.to_string())
+}
+
+/// Ports tried when the router can't pick one itself (it has no AddAnyPortMapping).
+const OTHER_PORTS: usize = 4;
+
+/// AddPortMapping for `lease` seconds; with none (until taken away) on a router that keeps only
+/// those, as older ones do. Such a forward outlives the game: the next game's takes it away
+/// (see [`stale_mappings`]).
+fn add_leased(service: &Service, protocol: Protocol, external: u16, internal: SocketAddrV4, lease: u32, description: &str) -> Result<(), Refused> {
+    match service.add(protocol, external, internal, lease, description) {
+        Err(e) if e.code() == Some(ONLY_PERMANENT_LEASES_SUPPORTED) && lease != 0 => service.add(protocol, external, internal, 0, description),
+        other => other,
+    }
+}
+
+/// A port from the dynamic range (49152 to 65535).
+fn random_port() -> u16 {
+    let mut bytes = [0u8; 2];
+    getrandom::fill(&mut bytes).expect("the system's random source");
+    49_152 + u16::from_le_bytes(bytes) % 16_384
 }
 
 /// The most mapping entries read from a router's table.
 const MAX_ENTRIES: u32 = 128;
 
-/// The external ports of the router's UDP mappings to `local`:`port`, from its table's
+/// The external ports of the router's `protocol` mappings to `local`:`port`, from its table's
 /// (protocol, external port, internal client, internal port) entries.
-fn stale_mappings(entries: impl Iterator<Item = (PortMappingProtocol, u16, String, u16)>, local: Ipv4Addr, port: u16) -> Vec<u16> {
+fn stale_mappings(entries: impl Iterator<Item = (String, u16, String, u16)>, protocol: Protocol, local: Ipv4Addr, port: u16) -> Vec<u16> {
     entries
-        .filter(|(protocol, _, client, internal)| *protocol == PortMappingProtocol::UDP && *internal == port && client.trim() == local.to_string())
+        .filter(|(kind, _, client, internal)| kind.eq_ignore_ascii_case(protocol.name()) && *internal == port && client.trim() == local.to_string())
         .map(|(_, external, _, _)| external)
         .collect()
 }
@@ -389,8 +724,8 @@ fn pmp_request(gateway: Ipv4Addr, local: Ipv4Addr, request: &[u8], reply_len: us
     Err("no answer".into())
 }
 
-fn pmp_map(gateway: Ipv4Addr, local: Ipv4Addr, port: u16, external: u16, lifetime: u32) -> Result<u16, String> {
-    let mut req = vec![0u8, 1, 0, 0];
+fn pmp_map(gateway: Ipv4Addr, local: Ipv4Addr, protocol: Protocol, port: u16, external: u16, lifetime: u32) -> Result<u16, String> {
+    let mut req = vec![0u8, protocol.pmp_opcode(), 0, 0];
     req.extend_from_slice(&port.to_be_bytes());
     req.extend_from_slice(&external.to_be_bytes());
     req.extend_from_slice(&lifetime.to_be_bytes());
@@ -398,28 +733,29 @@ fn pmp_map(gateway: Ipv4Addr, local: Ipv4Addr, port: u16, external: u16, lifetim
     Ok(u16::from_be_bytes([reply[10], reply[11]]))
 }
 
-fn pmp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
+fn pmp(protocol: Protocol, port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
     let gateway = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
     let reply = pmp_request(gateway, local, &[0, 0], 12)?;
     let external = Ipv4Addr::new(reply[8], reply[9], reply[10], reply[11]);
     usable_external(external)?;
-    let mapped = pmp_map(gateway, local, port, external_port, lease)?;
+    let mapped = pmp_map(gateway, local, protocol, port, external_port, lease)?;
     Ok(Mapping {
         public: SocketAddrV4::new(external, mapped),
         how: "NAT-PMP",
-        handle: Handle::Pmp { gateway, local, port },
+        local_port: port,
+        handle: Handle::Pmp { gateway, local, protocol, port },
     })
 }
 
 /// A PCP MAP request (RFC 6887 §11.1) for UDP `port` on `local` to `external` (0: any) for
 /// `lifetime` seconds (0: remove), with the mapping's `nonce`.
-fn pcp_map_request(local: Ipv4Addr, nonce: [u8; 12], port: u16, external: u16, lifetime: u32) -> Vec<u8> {
+fn pcp_map_request(local: Ipv4Addr, nonce: [u8; 12], protocol: Protocol, port: u16, external: u16, lifetime: u32) -> Vec<u8> {
     let mut req = vec![2u8, 1, 0, 0];
     req.extend_from_slice(&lifetime.to_be_bytes());
     req.extend_from_slice(&local.to_ipv6_mapped().octets());
     req.extend_from_slice(&nonce);
-    req.extend_from_slice(&[17, 0, 0, 0]);
+    req.extend_from_slice(&[protocol.number(), 0, 0, 0]);
     req.extend_from_slice(&port.to_be_bytes());
     req.extend_from_slice(&external.to_be_bytes());
     req.extend_from_slice(&[0u8; 16]);
@@ -467,17 +803,24 @@ fn pcp_request(gateway: Ipv4Addr, local: Ipv4Addr, request: &[u8]) -> Result<Vec
     Err("no answer".into())
 }
 
-fn pcp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
+fn pcp(protocol: Protocol, port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
     let gateway = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
     let nonce = pcp_nonce();
-    let reply = pcp_request(gateway, local, &pcp_map_request(local, nonce, port, external_port, lease))?;
+    let reply = pcp_request(gateway, local, &pcp_map_request(local, nonce, protocol, port, external_port, lease))?;
     let public = pcp_map_answer(&reply, &nonce)?;
     usable_external(*public.ip())?;
     Ok(Mapping {
         public,
         how: "PCP",
-        handle: Handle::Pcp { gateway, local, port, nonce },
+        local_port: port,
+        handle: Handle::Pcp {
+            gateway,
+            local,
+            protocol,
+            port,
+            nonce,
+        },
     })
 }
 
@@ -495,7 +838,7 @@ mod tests {
     fn pcp_map_requests_and_answers() {
         let local = Ipv4Addr::new(192, 168, 1, 20);
         let nonce = [9u8; 12];
-        let req = super::pcp_map_request(local, nonce, 2346, 2346, 3600);
+        let req = super::pcp_map_request(local, nonce, Protocol::Udp, 2346, 2346, 3600);
         assert_eq!(req.len(), 60);
         assert_eq!((req[0], req[1]), (2, 1), "version 2, MAP");
         assert_eq!(&req[4..8], &3600u32.to_be_bytes());
@@ -535,15 +878,16 @@ mod tests {
     #[test]
     fn only_this_pcs_own_mappings_are_stale() {
         let local = Ipv4Addr::new(192, 168, 0, 2);
-        let entry = |protocol, external, client: &str, internal| (protocol, external, client.to_string(), internal);
+        let entry = |protocol: &str, external, client: &str, internal| (protocol.to_string(), external, client.to_string(), internal);
         let table = vec![
-            entry(PortMappingProtocol::UDP, 2346, "192.168.0.2", 2346),
-            entry(PortMappingProtocol::UDP, 41234, "192.168.0.2", 2346),
-            entry(PortMappingProtocol::UDP, 13001, "192.168.0.7", 2346),
-            entry(PortMappingProtocol::TCP, 2346, "192.168.0.2", 2346),
-            entry(PortMappingProtocol::UDP, 3074, "192.168.0.2", 3074),
+            entry("UDP", 2346, "192.168.0.2", 2346),
+            entry("udp", 41234, "192.168.0.2", 2346),
+            entry("UDP", 13001, "192.168.0.7", 2346),
+            entry("TCP", 2346, "192.168.0.2", 2346),
+            entry("UDP", 3074, "192.168.0.2", 3074),
         ];
-        assert_eq!(stale_mappings(table.into_iter(), local, 2346), [2346, 41234]);
+        assert_eq!(stale_mappings(table.clone().into_iter(), Protocol::Udp, local, 2346), [2346, 41234]);
+        assert_eq!(stale_mappings(table.into_iter(), Protocol::Tcp, local, 2346), [2346], "TCP's own");
     }
 
     #[test]
@@ -585,50 +929,137 @@ mod tests {
         assert_eq!(location("HTTP/1.1 200 OK\r\n\r\n"), None);
     }
 
+    /// A router that dials its internet itself listing that connection first, unused, and the
+    /// one it uses (`WANIPConnection:2`) after.
     const DESCRIPTION: &str = r#"<?xml version="1.0"?>
-<root xmlns="urn:schemas-upnp-org:device-1-0"><device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+<root xmlns="urn:schemas-upnp-org:device-1-0"><device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:2</deviceType>
 <serviceList><service><serviceType>urn:schemas-upnp-org:service:Layer3Forwarding:1</serviceType><SCPDURL>/L3F.xml</SCPDURL><controlURL>/ctl/L3F</controlURL></service></serviceList>
-<deviceList><device><deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType><deviceList><device>
-<serviceList><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType><SCPDURL>/WANIPCn.xml</SCPDURL><controlURL>/ctl/IPConn</controlURL></service></serviceList>
-</device></deviceList></device></deviceList></device></root>"#;
+<deviceList><device><deviceType>urn:schemas-upnp-org:device:WANDevice:2</deviceType><deviceList>
+<device><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANPPPConnection:1</serviceType><SCPDURL>/WANPPPCn.xml</SCPDURL><controlURL>/ctl/PPPConn</controlURL></service></serviceList></device>
+<device><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:2</serviceType><SCPDURL>/WANIPCn.xml</SCPDURL><controlURL>/ctl/IPConn</controlURL></service></serviceList></device>
+</deviceList></device></deviceList></device></root>"#;
 
     const SCPD: &str = r#"<?xml version="1.0"?>
 <scpd xmlns="urn:schemas-upnp-org:service-1-0"><actionList>
 <action><name>GetExternalIPAddress</name><argumentList><argument><name>NewExternalIPAddress</name><direction>out</direction></argument></argumentList></action>
-<action><name>DeletePortMapping</name><argumentList><argument><name>NewRemoteHost</name><direction>in</direction></argument><argument><name>NewExternalPort</name><direction>in</direction></argument><argument><name>NewProtocol</name><direction>in</direction></argument></argumentList></action>
+<action><name>AddPortMapping</name></action>
+<action><name>DeletePortMapping</name><argumentList><argument><name>NewRemoteHost</name><direction>in</direction></argument></argumentList></action>
 </actionList></scpd>"#;
 
     #[test]
     fn reads_the_routers_descriptions() {
-        assert_eq!(wan_service(DESCRIPTION.as_bytes()), Some(("/WANIPCn.xml".into(), "/ctl/IPConn".into())));
-        assert_eq!(wan_service(b"<root><device></device></root>"), None);
-        assert_eq!(wan_service(b"not xml"), None);
-        let actions = actions(SCPD.as_bytes()).unwrap();
-        assert_eq!(actions["DeletePortMapping"], ["NewRemoteHost", "NewExternalPort", "NewProtocol"]);
-        assert!(actions["GetExternalIPAddress"].is_empty());
+        let (base, found) = wan_services(DESCRIPTION.as_bytes()).unwrap();
+        assert_eq!(base, None);
+        let kinds: Vec<&str> = found.iter().map(|l| l.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["urn:schemas-upnp-org:service:WANPPPConnection:1", "urn:schemas-upnp-org:service:WANIPConnection:2"],
+            "each, in order"
+        );
+        assert_eq!((found[1].scpd.as_str(), found[1].control.as_str()), ("/WANIPCn.xml", "/ctl/IPConn"));
+        let with_base = DESCRIPTION.replace(
+            "<device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+            "<URLBase>http://192.168.1.1:5431/</URLBase><device><deviceType>x",
+        );
+        assert_eq!(wan_services(with_base.as_bytes()).unwrap().0.as_deref(), Some("http://192.168.1.1:5431/"));
+        assert_eq!(wan_services(b"<root><device></device></root>"), Some((None, vec![])));
+        assert_eq!(wan_services(b"not xml"), None);
+        assert_eq!(actions(SCPD.as_bytes()).unwrap(), ["GetExternalIPAddress", "AddPortMapping", "DeletePortMapping"]);
     }
 
-    /// A router on this PC: answers the search with `location` (from `from`), and serves the
-    /// descriptions over HTTP. Its search port and its HTTP port.
-    fn fake_router(from: Ipv4Addr, location: impl Fn(u16) -> String + Send + 'static) -> (u16, u16) {
+    /// One HTTP request off `stream`: its head and body (by its Content-Length).
+    fn read_request(stream: &mut std::net::TcpStream) -> (String, String) {
         use std::io::Read as _;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap_or(0);
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data).into_owned();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        l.split_once(':')
+                            .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, v)| v.trim().parse().unwrap_or(0))
+                    })
+                    .unwrap_or(0usize);
+                if n == 0 || data.len() >= end + 4 + length {
+                    return (text[..end].to_owned(), text[end + 4..].to_owned());
+                }
+            } else if n == 0 {
+                return (text, String::new());
+            }
+        }
+    }
+
+    /// The fake router's UPnP actions: the PPP connection isn't in use (no internet address),
+    /// and the IP one takes only its own service type and only forwards with no lease (725).
+    fn soap_answer(path: &str, head: &str, body: &str) -> (&'static str, String) {
+        let kind = match path {
+            "/ctl/PPPConn" => "urn:schemas-upnp-org:service:WANPPPConnection:1",
+            "/ctl/IPConn" => "urn:schemas-upnp-org:service:WANIPConnection:2",
+            _ => return ("404 Not Found", String::new()),
+        };
+        let fault = |code: u16, what: &str| {
+            let xml = format!(
+                "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>{code}</errorCode><errorDescription>{what}</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
+            );
+            ("500 Internal Server Error", xml)
+        };
+        let action = head
+            .lines()
+            .find_map(|l| {
+                l.split_once(':')
+                    .filter(|(k, _)| k.eq_ignore_ascii_case("soapaction"))
+                    .map(|(_, v)| v.trim().trim_matches('"').to_owned())
+            })
+            .unwrap_or_default();
+        let Some(action) = action.strip_prefix(&format!("{kind}#")).map(str::to_owned) else {
+            return fault(401, "Invalid Action");
+        };
+        if !body.contains(&format!("xmlns:u=\"{kind}\"")) {
+            return fault(401, "Invalid Action");
+        }
+        let answer = |inner: &str| {
+            let xml = format!("<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:{action}Response xmlns:u=\"{kind}\">{inner}</u:{action}Response></s:Body></s:Envelope>");
+            ("200 OK", xml)
+        };
+        match (path, action.as_str()) {
+            ("/ctl/PPPConn", "GetExternalIPAddress") => answer("<NewExternalIPAddress></NewExternalIPAddress>"),
+            ("/ctl/IPConn", "GetExternalIPAddress") => answer("<NewExternalIPAddress>203.0.114.7</NewExternalIPAddress>"),
+            ("/ctl/IPConn", "AddPortMapping") if body.contains("<NewInternalClient>192.168.1.66</NewInternalClient>") => fault(606, "Action not authorized"),
+            ("/ctl/IPConn", "AddPortMapping") if !body.contains("<NewLeaseDuration>0</NewLeaseDuration>") => fault(725, "OnlyPermanentLeasesSupported"),
+            ("/ctl/IPConn", "AddPortMapping" | "DeletePortMapping") => answer(""),
+            ("/ctl/IPConn", "GetGenericPortMappingEntry") => fault(713, "SpecifiedArrayIndexInvalid"),
+            _ => fault(401, "Invalid Action"),
+        }
+    }
+
+    /// A router on this PC: answers the search with `location` (from `from`), serves the
+    /// descriptions over HTTP, and answers UPnP actions (`soap_answer`). Its search port and its
+    /// HTTP port.
+    fn fake_router(from: Ipv4Addr, location: impl Fn(u16) -> String + Send + 'static) -> (u16, u16) {
         use std::io::Write as _;
         let http = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let http_port = http.local_addr().unwrap().port();
         std::thread::spawn(move || {
             for stream in http.incoming().flatten() {
                 let mut stream = stream;
-                let mut request = [0u8; 2048];
-                let n = stream.read(&mut request).unwrap_or(0);
-                let request = String::from_utf8_lossy(&request[..n]);
-                let path = request.split(' ').nth(1).unwrap_or("");
-                let body = match path {
-                    "/rootDesc.xml" => DESCRIPTION,
-                    "/WANIPCn.xml" => SCPD,
-                    _ => "",
+                let (head, body) = read_request(&mut stream);
+                let path = head.split(' ').nth(1).unwrap_or("").to_owned();
+                let (status, body) = match path.as_str() {
+                    "/rootDesc.xml" => ("200 OK", DESCRIPTION.to_owned()),
+                    "/WANIPCn.xml" | "/WANPPPCn.xml" => ("200 OK", SCPD.to_owned()),
+                    _ if head.starts_with("POST ") => soap_answer(&path, &head, &body),
+                    _ => ("404 Not Found", String::new()),
                 };
-                let status = if body.is_empty() { "404 Not Found" } else { "200 OK" };
-                let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
             }
         });
         let ssdp = UdpSocket::bind((from, 0)).unwrap();
@@ -652,10 +1083,43 @@ mod tests {
         let (ssdp, http) = fake_router(router, |http| format!("http://127.0.0.1:{http}/rootDesc.xml"));
         let (port, path) = ssdp_search(router, SocketAddrV4::new(router, ssdp), router).unwrap();
         assert_eq!((port, path.as_str()), (http, "/rootDesc.xml"));
-        let gateway = gateway_at(router, port, &path).unwrap();
-        assert_eq!(gateway.addr, SocketAddr::V4(SocketAddrV4::new(router, http)));
-        assert_eq!((gateway.control_url.as_str(), gateway.control_schema_url.as_str()), ("/ctl/IPConn", "/WANIPCn.xml"));
-        assert!(gateway.control_schema.contains_key("DeletePortMapping"));
+        let services = services_at(router, port, &path).unwrap();
+        assert_eq!(services.len(), 2);
+        let ip = &services[1];
+        assert_eq!(
+            (ip.at, ip.control.as_str(), ip.name()),
+            (SocketAddrV4::new(router, http), "/ctl/IPConn", "WANIPConnection:2")
+        );
+        assert!(ip.has("DeletePortMapping") && !ip.has("AddAnyPortMapping"));
+    }
+
+    /// Each action names the router's own service; the unused connection listed first is passed
+    /// over; a router keeping only forwards with no lease gets one.
+    #[test]
+    fn forwards_on_the_connection_in_use_in_its_own_terms() {
+        let router = Ipv4Addr::LOCALHOST;
+        let (_, http) = fake_router(router, |_| String::new());
+        let internal = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 20), 2346);
+        let mapping = forward_on(services_at(router, http, "/rootDesc.xml").unwrap(), Protocol::Udp, internal, 2346, 1800, "test").unwrap();
+        assert_eq!((mapping.public, mapping.how), (SocketAddrV4::new(Ipv4Addr::new(203, 0, 114, 7), 2346), "UPnP"));
+        let Handle::Upnp { service, port, .. } = &mapping.handle else {
+            panic!("a UPnP forward")
+        };
+        assert_eq!((service.name(), *port), ("WANIPConnection:2", 2346));
+        mapping.remove();
+    }
+
+    /// The router's reason comes back as it gave it, not as "no free ports".
+    #[test]
+    fn says_why_the_router_refused() {
+        let router = Ipv4Addr::LOCALHOST;
+        let (_, http) = fake_router(router, |_| String::new());
+        let internal = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 66), 2346);
+        let e = forward_on(services_at(router, http, "/rootDesc.xml").unwrap(), Protocol::Udp, internal, 2346, 1800, "test")
+            .err()
+            .unwrap();
+        assert!(e.contains("WANIPConnection:2: the router refused (UPnP error 606, Action not authorized)"), "{e}");
+        assert!(e.contains("WANPPPConnection:1: the router gave no internet address"), "{e}");
     }
 
     #[test]
@@ -677,6 +1141,45 @@ mod tests {
         let (ssdp, _) = fake_router(other, |http| format!("http://127.0.0.1:{http}/rootDesc.xml"));
         let e = ssdp_search(Ipv4Addr::LOCALHOST, SocketAddrV4::new(other, ssdp), Ipv4Addr::LOCALHOST).unwrap_err();
         assert!(e.contains("127.0.0.2 answered, but the router is 127.0.0.1"), "{e}");
+    }
+
+    /// Against this network's real router: forwards a spare UDP port (`CROSSCOM_LIVE_PORT`,
+    /// default 45346) to this machine through each way in turn, says what each did, and takes
+    /// every forward away again. `cargo test -p crosscom-client-net live_router -- --ignored
+    /// --nocapture`, on the router's network (in Docker: `--network host`).
+    #[test]
+    #[ignore = "changes the real router's forwards for a moment"]
+    fn live_router() {
+        let port = std::env::var("CROSSCOM_LIVE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(45_346);
+        let router = default_gateway().expect("a default gateway");
+        let local = local_ip_towards(router).expect("a local address");
+        println!("router {router}, this machine {local}, port {port}");
+        match find_router(router, local) {
+            Ok(services) => {
+                for s in services {
+                    println!("UPnP service: {} at {}{} ({} actions)", s.name(), s.at, s.control, s.actions.len());
+                }
+            }
+            Err(e) => println!("UPnP search: {e}"),
+        }
+        type Way = fn(u16, u16, Option<Ipv4Addr>, u32) -> Result<Mapping, String>;
+        let ways: [(&str, Way); 6] = [
+            ("UPnP UDP", |p, e, l, t| upnp(Protocol::Udp, p, e, l, t, "Cross-Com live test")),
+            ("PCP UDP", |p, e, l, t| pcp(Protocol::Udp, p, e, l, t)),
+            ("NAT-PMP UDP", |p, e, l, t| pmp(Protocol::Udp, p, e, l, t)),
+            ("UPnP TCP", |p, e, l, t| upnp(Protocol::Tcp, p, e, l, t, "Cross-Com live test")),
+            ("PCP TCP", |p, e, l, t| pcp(Protocol::Tcp, p, e, l, t)),
+            ("NAT-PMP TCP", |p, e, l, t| pmp(Protocol::Tcp, p, e, l, t)),
+        ];
+        for (name, way) in ways {
+            match way(port, port, Some(local), 120) {
+                Ok(m) => {
+                    println!("{name}: forwards {} ({})", m.public, m.how);
+                    m.remove();
+                }
+                Err(e) => println!("{name}: {e}"),
+            }
+        }
     }
 
     #[test]

@@ -14,6 +14,15 @@ fn main() {
     let from = std::env::var("CROSSCOM_UPDATE_FROM").unwrap_or_else(|_| "https://api.github.com/repos/JDevWebb/cross-com-enhanced/releases/latest".into());
     println!("cargo:rustc-env=CROSSCOM_UPDATE_FROM={from}");
 
+    println!("cargo:rerun-if-env-changed=CROSSCOM_SERVER_DIR");
+    if std::env::var_os("CARGO_FEATURE_EMBED_SERVER").is_some() {
+        let dir = std::env::var_os("CROSSCOM_SERVER_DIR").expect("embed-server needs CROSSCOM_SERVER_DIR: the folder with crosscom-server.exe");
+        let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+        let from = std::path::Path::new(&dir).join("crosscom-server.exe");
+        println!("cargo:rerun-if-changed={}", from.display());
+        std::fs::copy(&from, out.join("crosscom-server.exe")).unwrap_or_else(|e| panic!("{}: {e}", from.display()));
+    }
+
     println!("cargo:rerun-if-env-changed=CROSSCOM_CLIENT_DIR");
     if std::env::var_os("CARGO_FEATURE_EMBED_DLLS").is_none() {
         return;

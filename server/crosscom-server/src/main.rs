@@ -16,6 +16,7 @@
 mod accounts;
 mod announce;
 mod api;
+mod check_host;
 mod clans;
 mod config;
 mod connections;
@@ -23,6 +24,7 @@ mod dares;
 mod fixed;
 mod friends;
 mod game_session;
+mod here;
 mod invitations;
 mod leaderboard;
 mod logs;
@@ -44,6 +46,7 @@ mod signup;
 mod social;
 mod stats;
 mod ticket;
+mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -56,6 +59,7 @@ use quazal::prudp::packet::StreamType;
 use quazal::prudp::packet::VPort;
 use quazal::prudp::Server;
 use quazal::rmc::RVSecHandler;
+use quazal::secretbox;
 use quazal::Context;
 use slog::error;
 use slog::info;
@@ -64,7 +68,6 @@ use sloggers::terminal::Destination;
 use sloggers::terminal::TerminalLoggerBuilder;
 use sloggers::types::Severity;
 use sloggers::Build;
-use sodiumoxide::crypto::secretbox;
 
 use crate::accounts::Accounts;
 use crate::config::Config;
@@ -248,10 +251,6 @@ fn password_from(mut input: impl std::io::BufRead) -> Result<String, String> {
 
 fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     let logger = logger(&config.log_level);
-    if sodiumoxide::init().is_err() {
-        error!(logger, "couldn't start libsodium");
-        return ExitCode::FAILURE;
-    }
     let public_ip = match config.public_ip() {
         Ok(ip) => ip,
         Err(e) => {
@@ -260,6 +259,8 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         }
     };
     info!(logger, "Cross-Com server {}; players connect to {public_ip}", env!("CROSSCOM_RELEASE"));
+    here::set_public(public_ip);
+    here::set_as_reached(config.answer_as_reached);
 
     // Both servers share the key that seals tickets: the auth server issues them, the secure
     // server opens them.
@@ -300,8 +301,33 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
         Ok(records) => connections::start(&logger, records, Arc::clone(&sessions)),
         Err(e) => error!(logger, "couldn't open the connection records in {}: {e}; joins aren't recorded", config.database.display()),
     }
+    // HTTPS of its own, when it has no proxy for it: requests go on to the HTTP side here.
+    let front = match config.https_port {
+        None => None,
+        Some(port) => {
+            let (cert, key) = config.tls_files();
+            let to_http = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, config.http_port));
+            match tls::certificate(&cert, &key).and_then(|identity| tls::Front::new(to_http, identity)) {
+                Ok(front) => {
+                    if port == config.http_port {
+                        info!(logger, "HTTPS on the HTTP port {port} too, certificate {}", front.fingerprint);
+                    }
+                    Some(Arc::new(front))
+                }
+                Err(e) => {
+                    error!(logger, "{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
     let http = online_config::Http {
-        content: online_config::content(public_ip, config.auth_port),
+        check_host: check_host::CheckHost::default(),
+        tls: front.clone().filter(|_| config.https_port == Some(config.http_port)),
+        content: online_config::Content {
+            public_ip,
+            auth_port: config.auth_port,
+        },
         reach: reach::Reach::new(Arc::clone(&sessions), Arc::clone(&accounts)),
         signup: config.signup.then(|| signup::SignUp::new(Arc::clone(&accounts), config.signup_code.clone())),
         api: api::Api::new(Arc::clone(&accounts), Arc::clone(&failed_sign_ins), config.news.clone(), Arc::clone(&online))
@@ -346,6 +372,11 @@ fn serve(config: &Config, accounts: Arc<Accounts>) -> ExitCode {
     // (on the secure server): searches go by them.
     let packs = Arc::new(packs::Packs::default());
 
+    // HTTPS on a port of its own (on the HTTP port, the HTTP side hands it what's TLS).
+    if let Some((port, front)) = config.https_port.zip(front.clone()).filter(|(port, _)| *port != config.http_port) {
+        let listen = SocketAddr::new(config.listen_ip, port);
+        spawn("https", logger.clone(), move |logger| tls::serve(&logger, listen, front).map_err(std::io::Error::other));
+    }
     let threads = [
         spawn("online config", logger.clone(), move |logger| online_config::serve(&logger, http_listen, http)),
         spawn("auth", logger.clone(), {
@@ -462,7 +493,9 @@ fn address_echo(logger: &Logger, packet: QPacket, client: SocketAddr, socket: &s
         return;
     }
     let mut reply = packet.payload;
-    reply.extend_from_slice(format!("udp:/address={};port={}\0", client.ip(), client.port()).as_bytes());
+    // Where players elsewhere see it (on the server's own network: at its public address).
+    let seen = here::seen(client);
+    reply.extend_from_slice(format!("udp:/address={};port={}\0", seen.ip(), seen.port()).as_bytes());
     if let Err(e) = socket.send_to(&reply, client) {
         slog::warn!(logger, "address echo to {client} failed: {e}");
     }

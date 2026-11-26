@@ -175,9 +175,11 @@ fn ticket(ctx: &Context, ci_address: &SocketAddr, user_pid: u32, server_pid: u32
     ticket.as_bytes(user_pid, ticket_password(user_pid), &ctx.ticket_key)
 }
 
-/// Where the secure server is, for the game to connect to next.
-fn connection_data(ctx: &Context) -> Result<RVConnectionData, Error> {
+/// Where the secure server is, for the game at `client` to connect to next: as it reaches the
+/// server (`here`), where its ticket is good.
+fn connection_data(ctx: &Context, client: std::net::SocketAddr) -> Result<RVConnectionData, Error> {
     let secure = ctx.secure_server_addr.ok_or(Error::InternalError)?;
+    let secure = std::net::SocketAddr::new(crate::here::server_as_reached(client.ip(), secure.ip()), secure.port());
     Ok(RVConnectionData {
         url_regular_protocols: format!("prudps:/address={};port={};CID=1;PID={SERVER_PID};sid=1;stream=3;type=2", secure.ip(), secure.port())
             .parse()
@@ -212,7 +214,7 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             return_value: QResult::Ok,
             pid_principal: TRACKING_PID,
             pbuf_response: ticket(ctx, ci.address(), TRACKING_PID, SERVER_PID),
-            p_connection_data: connection_data(ctx)?,
+            p_connection_data: connection_data(ctx, *ci.address())?,
             str_return_msg: String::new(),
         })
     }
@@ -284,7 +286,7 @@ impl<CI> TicketGrantingProtocolServerTrait<CI> for TicketGranting {
             return_value: QResult::Ok,
             pid_principal: pid,
             pbuf_response: ticket(ctx, ci.address(), pid, SERVER_PID),
-            p_connection_data: connection_data(ctx)?,
+            p_connection_data: connection_data(ctx, *ci.address())?,
             str_return_msg: String::new(),
         })
     }

@@ -132,7 +132,7 @@ impl Report {
         match (&self.router, self.forward_works) {
             (Ok(r), Some(true)) => lines.push(format!("Port forwarding: works ({}).", r.how)),
             (Ok(r), Some(false)) => lines.push(format!(
-                "Port forwarding: the router agreed ({}), but nothing came in through it. Another router may be in front of it.",
+                "Port forwarding: the router agreed ({}), but nothing came in through it. Windows Firewall may not be letting the launcher in, or another router may be in front of it.",
                 r.how
             )),
             (Ok(r), None) => lines.push(format!(
@@ -164,6 +164,17 @@ fn short(e: &str) -> String {
         return "the router didn't answer UPnP, PCP or NAT-PMP; it may be turned off in its settings".into();
     }
     e.chars().take(160).collect()
+}
+
+/// The public address of a server on this network that's hosted here for players on the
+/// internet too (its info says it: `public_address`), if it is.
+#[must_use]
+pub fn hosted_publicly(server: &str) -> Option<Ipv4Addr> {
+    let server_info::Reply::Info(info) = server_info::fetch(server, Duration::from_secs(8)).ok()? else {
+        return None;
+    };
+    let public: Ipv4Addr = info.public_address?.parse().ok()?;
+    (!private(IpAddr::V4(public))).then_some(public)
 }
 
 /// The server's UDP sign-in ports and its address, from its info.

@@ -11,6 +11,9 @@ path = "src/lib.rs"
 # The client DLLs built in: CROSSCOM_CLIENT_DIR names the folder holding the two (the release
 # build sets it), and the launcher installs them from itself.
 embed-dlls = []
+# The server built in, for hosting from the launcher (hosting.rs): CROSSCOM_SERVER_DIR names the
+# folder holding crosscom-server.exe.
+embed-server = []
 
 [dependencies]
 crosscom-client-common = { path = "../client/common" }
@@ -31,7 +34,7 @@ winreg = "0.56"
 # Asking Windows' permission to add the game's firewall rules (`firewall`), where Windows' own
 # programs are (`windows_dirs`), and encrypting the player's identity for the Windows user
 # (`identity`).
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_JobObjects"] }
 
 [dev-dependencies]
 tempfile = "3"

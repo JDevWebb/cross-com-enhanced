@@ -24,7 +24,7 @@ component LinkText inherits Text {
 
 // One line of the status panel: what's checked and how it stands, a line under it, and the button
 // that fixes it when the launcher can.
-component StatusLine inherits Rectangle {
+export component StatusLine inherits Rectangle {
     in property <string> label;
     in property <string> value;
     // "good", "warn", "bad" or "muted".

@@ -268,7 +268,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         let k = key(&request.game_session_key);
         let session = self.sessions.get(k).ok_or(Error::AccessDenied)?;
         Ok(GetSessionResponse {
-            search_result: self.result(ci.address().ip(), (k, session)),
+            search_result: self.result(crate::here::seen(*ci.address()).ip(), (k, session)),
         })
     }
 
@@ -303,7 +303,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             self.sessions.offer(*k, pid);
         }
         Ok(SearchSessionsResponse {
-            search_results: QList(found.into_iter().map(|r| self.result(ci.address().ip(), r)).collect()),
+            search_results: QList(found.into_iter().map(|r| self.result(crate::here::seen(*ci.address()).ip(), r)).collect()),
         })
     }
 
@@ -585,7 +585,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .skip(range.offset as usize)
             .take(range.size as usize)
-            .map(|&p| self.participant(ci.address().ip(), &session, p))
+            .map(|&p| self.participant(crate::here::seen(*ci.address()).ip(), &session, p))
             .collect();
         Ok(GetParticipantsResponse {
             participants: QList(participants),
@@ -602,9 +602,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
         _socket: &std::net::UdpSocket,
     ) -> Result<RegisterUrLsResponse, Error> {
         let pid = player(ci)?;
-        let observed = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
-            .parse()
-            .map_err(|_| Error::InternalError)?;
+        let at = crate::here::seen(*ci.address());
+        let observed = format!("prudp:/address={};port={}", at.ip(), at.port()).parse().map_err(|_| Error::InternalError)?;
         self.sessions.set_urls(pid, observed, request.station_urls.0);
         Ok(RegisterUrLsResponse)
     }
@@ -668,7 +667,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
                     .take(MAX_RESULTS)
                     .map(|(k, s)| GameSessionSearchWithParticipantsResult {
                         participant_ids: QList(s.participants.clone()),
-                        game_session_search_result: self.result(ci.address().ip(), (k, s)),
+                        game_session_search_result: self.result(crate::here::seen(*ci.address()).ip(), (k, s)),
                     })
                     .collect(),
             ),
@@ -690,7 +689,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .0
             .iter()
             .take(MAX_RESULTS)
-            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result(ci.address().ip(), (key(k), s))))
+            .filter_map(|k| self.sessions.get(key(k)).map(|s| self.result(crate::here::seen(*ci.address()).ip(), (key(k), s))))
             .collect();
         Ok(GetSessionsResponse { search_results: QList(found) })
     }
@@ -712,7 +711,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessions {
             .iter()
             .filter(|p| session.participants.contains(p))
             .take(MAX_RESULTS)
-            .map(|&p| self.participant(ci.address().ip(), &session, p))
+            .map(|&p| self.participant(crate::here::seen(*ci.address()).ip(), &session, p))
             .collect();
         Ok(GetParticipantsUrLsResponse {
             participants: QList(participants),
@@ -769,9 +768,8 @@ impl<CI> Protocol<CI> for GameSessionProtocol<CI> {
             }
         }
         info!(logger, "{pid:#x} registered URLs {urls:?}");
-        let observed = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
-            .parse()
-            .map_err(|_| Error::InternalError)?;
+        let at = crate::here::seen(*ci.address());
+        let observed = format!("prudp:/address={};port={}", at.ip(), at.port()).parse().map_err(|_| Error::InternalError)?;
         self.sessions.set_urls(pid, observed, urls);
         // Whether other players can reach it where it announces itself.
         crate::announce::check(logger, pid, false);

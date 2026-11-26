@@ -22,7 +22,6 @@
 //! [`STATUS_FILE`] in the game's folder for the launcher.
 
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -44,8 +43,12 @@ pub const GAME_PEER_PORT: u16 = 2346;
 /// How long the router is asked to keep the forward, and how often it's renewed.
 const LEASE: u32 = 30 * 60;
 const RENEW: Duration = Duration::from_secs(10 * 60);
-/// How often the server is asked whether the game has registered yet.
-const WAIT_FOR_GAME: Duration = Duration::from_secs(20);
+/// How often the server is asked whether the game has registered yet: the forward follows as
+/// soon as it has, and until then the server finds the game unreachable (it checks the game as
+/// it registers). Behind one address, the server takes 30 reports a minute (12 before 0.1.3).
+const WAIT_FOR_GAME: Duration = Duration::from_secs(10);
+/// After the server couldn't be asked: when to ask again.
+const WAIT_AFTER_ERROR: Duration = Duration::from_secs(60);
 /// After the router refused, or a forward let nothing in: when to try again.
 const RETRY: Duration = Duration::from_secs(30 * 60);
 const DESCRIPTION: &str = "Cross-Com (Future Soldier)";
@@ -171,14 +174,26 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
     let Some(server_ip) = ports.first().map(SocketAddr::ip) else {
         return;
     };
-    if check::private(server_ip) {
-        info!("port forward: not needed for a server on this network ({server_ip})");
-        return;
-    }
-    let IpAddr::V4(server_v4) = server_ip else {
+    // A server on this network needs no forward, unless it's hosted here for players on the
+    // internet too (it says its public address): then the game is reached as for any other.
+    let towards = if check::private(server_ip) {
+        match check::hosted_publicly(server) {
+            Some(public) => {
+                info!("port forward: the server on this network ({server_ip}) is reached from the internet at {public}");
+                IpAddr::V4(public)
+            }
+            None => {
+                info!("port forward: not needed for a server on this network ({server_ip})");
+                return;
+            }
+        }
+    } else {
+        server_ip
+    };
+    let IpAddr::V4(towards) = towards else {
         return;
     };
-    let Some(local) = portmap::local_ip_towards(server_v4) else {
+    let Some(local) = portmap::local_ip_towards(towards) else {
         warn!("port forward: no local address towards {server_ip}");
         return;
     };
@@ -200,7 +215,7 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
             Ok(_) => thread::sleep(WAIT_FOR_GAME),
             Err(e) => {
                 warn!("port forward: {e}");
-                thread::sleep(RETRY);
+                thread::sleep(WAIT_AFTER_ERROR);
             }
         }
     };
@@ -228,7 +243,10 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
                 if !checked {
                     let (_, works) = check::forwarding(server, Some(local));
                     if works != Some(true) {
-                        info!("port forward: the router agreed ({}), but a forward let nothing in; not used", mapping.how);
+                        info!(
+                            "port forward: the router agreed ({}), but the server's packet didn't come in through it (Windows Firewall not letting the game in, or another router in front); not used",
+                            mapping.how
+                        );
                         mapping.remove();
                         thread::sleep(RETRY);
                         continue;
@@ -263,11 +281,11 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
     }
 }
 
-/// Whether the client keeps a forward for `server`: anything but an address on this network.
+/// Whether the client may keep a forward for `server`: any server set up. One on this network
+/// says whether it needs one (`run`: only when it's hosted here for players on the internet).
 #[must_use]
 pub fn wanted(server: &str) -> bool {
-    let host = crosscom_client_common::server_info::address(server).0;
-    !host.parse::<Ipv4Addr>().is_ok_and(|ip| check::private(IpAddr::V4(ip)))
+    !crosscom_client_common::server_info::address(server).0.is_empty()
 }
 
 #[cfg(test)]

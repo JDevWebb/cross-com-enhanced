@@ -9,12 +9,10 @@ crosscom-client-common = { path = "../common" }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# UPnP; PCP and NAT-PMP are done here (portmap.rs).
-igd-next = "0.16"
 # Nonces (PCP, the echo and reach checks) from the system's random source.
 getrandom = "0.3"
-# Finding the router's UPnP service ourselves, so nothing is fetched but from the router
-# (portmap.rs): the HTTP client and XML reader igd-next uses.
+# UPnP, PCP and NAT-PMP are done here (portmap.rs), so nothing is fetched but from the router
+# and each action names the router's own service: an HTTP client and an XML reader.
 attohttpc = { version = "0.30", default-features = false }
 xmltree = "0.10"
 

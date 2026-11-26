@@ -141,7 +141,8 @@ impl NatTraversal {
                 continue;
             }
             let address = *target.address();
-            for station in stations.iter().filter(|s| may_probe(s, seen, address.ip())) {
+            let target_seen = crate::here::seen(address).ip();
+            for station in stations.iter().filter(|s| may_probe(s, seen, target_seen)) {
                 let parameters = InitiateProbeRequest {
                     url_station_to_probe: station.clone(),
                 }
@@ -171,11 +172,10 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
     ) -> Result<RequestProbeInitiationResponse, Error> {
         let pid = player(ci)?;
         crate::connections::probed(pid);
-        let observed: StationURL = format!("prudp:/address={};port={}", ci.address().ip(), ci.address().port())
-            .parse()
-            .map_err(|_| Error::InternalError)?;
+        let at = crate::here::seen(*ci.address());
+        let observed: StationURL = format!("prudp:/address={};port={}", at.ip(), at.port()).parse().map_err(|_| Error::InternalError)?;
         let stations = own_stations(&self.sessions.registered(pid), &observed);
-        self.probe(logger, ctx, pid, ci.address().ip(), &request.url_target_list.0, &stations, client_registry, socket)?;
+        self.probe(logger, ctx, pid, at.ip(), &request.url_target_list.0, &stations, client_registry, socket)?;
         Ok(RequestProbeInitiationResponse)
     }
 
@@ -190,7 +190,7 @@ impl<CI> NatTraversalProtocolServerTrait<CI> for NatTraversal {
     ) -> Result<RequestProbeInitiationExtResponse, Error> {
         let pid = player(ci)?;
         crate::connections::probed(pid);
-        let seen: IpAddr = ci.address().ip();
+        let seen: IpAddr = crate::here::seen(*ci.address()).ip();
         let station = request.url_station_to_probe;
         if !may_probe(&station, seen, seen) {
             warn!(logger, "{pid:#x} asked for probes to {station}, not an address of its own; refused");

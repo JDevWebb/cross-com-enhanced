@@ -6,13 +6,13 @@ use hmac::Hmac;
 use hmac::Mac;
 use md5::Digest;
 use md5::Md5;
-use sodiumoxide::crypto::secretbox;
 
 use crate::prudp::packet::Rc4;
 use crate::rmc::basic::FromStream;
 use crate::rmc::basic::FromStreamError;
 use crate::rmc::basic::ReadStream;
 use crate::rmc::basic::ToStream;
+use crate::secretbox;
 
 /// The size of the session key in bytes.
 pub const SESSION_KEY_SIZE: usize = 16;
@@ -64,13 +64,7 @@ impl KerberosTicketInternal {
 
     /// Seals the ticket using a secret key.
     fn seal(&self, key: &secretbox::Key) -> Vec<u8> {
-        let n = secretbox::gen_nonce();
-        let mut c = secretbox::seal(&self.to_bytes(), &n, key);
-
-        let mut res = Vec::with_capacity(c.len() + secretbox::NONCEBYTES);
-        res.extend_from_slice(n.as_ref());
-        res.append(&mut c);
-        res
+        secretbox::seal(&self.to_bytes(), key)
     }
 
     /// Opens a sealed ticket using a secret key.
@@ -82,9 +76,7 @@ impl KerberosTicketInternal {
             )
             .into());
         }
-        let n = secretbox::Nonce::from_slice(&data[..secretbox::NONCEBYTES]).unwrap();
-        let data = &data[secretbox::NONCEBYTES..];
-        let data = secretbox::open(data, &n, key).map_err(|()| std::io::Error::new(std::io::ErrorKind::InvalidData, "open failed"))?;
+        let data = secretbox::open(data, key).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "open failed"))?;
         let mut stream = ReadStream::from_bytes(data);
         stream.read()
     }

@@ -21,6 +21,6 @@ about() { # NAME MANIFEST ARGS... (--features before the targets when needed)
 }
 about orbit client/orbit/Cargo.toml --target i686-pc-windows-msvc
 about uplay client/uplay/Cargo.toml --target i686-pc-windows-msvc
-about server server/crosscom-server/Cargo.toml --target x86_64-unknown-linux-gnu
-about launcher launcher-slint/Cargo.toml --features embed-dlls --target x86_64-pc-windows-msvc
+about server server/crosscom-server/Cargo.toml --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-msvc
+about launcher launcher-slint/Cargo.toml --features embed-dlls,embed-server --target x86_64-pc-windows-msvc
 node build/notices.js "$out" assets/fonts "$work"/*.json
