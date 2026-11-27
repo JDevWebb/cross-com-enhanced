@@ -140,7 +140,13 @@ impl Reach {
             return (error("429 Too Many Requests", "too many reports from here; try again later"), None);
         }
         // Where its game is seen (on the server's own network: at its public address, `here`).
-        let client = crate::here::seen(std::net::SocketAddr::new(client, 0)).ip();
+        let seen = crate::here::seen(std::net::SocketAddr::new(client, 0)).ip();
+        self.forward_seen(seen, seen != client, body)
+    }
+
+    /// [`Reach::forward`] from a client whose game is seen at `client`; `beside` when it's on the
+    /// server's own network, seen at the server's public address.
+    fn forward_seen(&self, client: IpAddr, beside: bool, body: &[u8]) -> (Answer, Option<Matched>) {
         let Ok(request) = serde_json::from_slice::<ForwardRequest>(body) else {
             return (error("400 Bad Request", "expected {\"local\", \"forward\", \"nat\"}"), None);
         };
@@ -202,7 +208,11 @@ impl Reach {
                 },
             );
         }
-        let port = found.and_then(|((_, port), _, _)| port);
+        // The port its router gives its game's socket, which the game registered as the server saw
+        // it. A game on the server's own network reaches the server without going out through
+        // its router, so the server never sees that: once it's in Multiplayer, it asks the router
+        // for its own port.
+        let port = found.and_then(|((pid, port), _, _)| port.or_else(|| (beside && self.sessions.registered(pid).iter().any(|u| u.scheme == "udp")).then_some(local.port())));
         // A new forward is checked afresh once this is answered: what was found before it isn't
         // what's in front of the game now.
         let open = if new_forward {
@@ -288,6 +298,34 @@ mod tests {
 
     fn json_of(answer: &Answer) -> serde_json::Value {
         serde_json::from_str(&answer.1).unwrap()
+    }
+
+    /// The hosting player's game, on the server's own network: it registered only its address
+    /// there. Once it's in Multiplayer, its client is told to forward the game's own port.
+    #[test]
+    fn a_game_on_the_servers_network_forwards_its_own_port() {
+        let sessions = Arc::new(Sessions::default());
+        let accounts = Arc::new(crate::accounts::Accounts::open(std::path::Path::new(":memory:")).unwrap());
+        let host = accounts.add("Host", "hunter22").unwrap();
+        let r = Reach::new(sessions.clone(), accounts);
+        let public: IpAddr = "203.0.113.24".parse().unwrap();
+        let body = br#"{"account":"Host","local":"192.168.2.154:2346","forward":null,"nat":"consistent"}"#;
+        sessions.set_urls(
+            host,
+            "prudp:/address=203.0.113.24;port=2347".parse().unwrap(),
+            vec!["prudp:/address=203.0.113.24;port=2347;sid=15;type=3".parse().unwrap()],
+        );
+        let (answer, _) = r.forward_seen(public, true, body);
+        assert_eq!(json_of(&answer)["port"], serde_json::Value::Null, "not in Multiplayer yet");
+        sessions.set_urls(
+            host,
+            "prudp:/address=203.0.113.24;port=2347".parse().unwrap(),
+            vec!["udp:/address=192.168.2.154;port=2346;PID=1;RVCID=2".parse().unwrap()],
+        );
+        let (answer, pid) = r.forward_seen(public, true, body);
+        assert_eq!((json_of(&answer)["port"].clone(), pid.map(|m| m.announced)), (serde_json::json!(2346), Some(true)));
+        let (answer, _) = r.forward_seen(public, false, body);
+        assert_eq!(json_of(&answer)["port"], serde_json::Value::Null, "seen elsewhere: its public port is the one it registers");
     }
 
     #[test]

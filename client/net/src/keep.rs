@@ -190,6 +190,9 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
     } else {
         server_ip
     };
+    // The server is on this network: it can't test the forward from outside (its packet would
+    // come straight across the network), so the router's word is taken.
+    let beside = towards != server_ip;
     let IpAddr::V4(towards) = towards else {
         return;
     };
@@ -240,6 +243,13 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
     loop {
         match portmap::map_as(GAME_PEER_PORT, ask, Some(local), LEASE, DESCRIPTION) {
             Ok(mapping) => {
+                if !checked && beside {
+                    checked = true;
+                    info!(
+                        "port forward: {} forwards {} to {local}:{GAME_PEER_PORT} (not tested: the server is on this network)",
+                        mapping.how, mapping.public
+                    );
+                }
                 if !checked {
                     let (_, works) = check::forwarding(server, Some(local));
                     if works != Some(true) {

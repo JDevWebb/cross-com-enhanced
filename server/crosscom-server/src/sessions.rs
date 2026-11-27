@@ -302,7 +302,10 @@ impl Sessions {
     ///
     /// Elsewhere, when its router forwards a port to its game (see [`Self::forward_of`]) other
     /// than the one its public URL names, that URL at the forwarded port comes first: it reaches
-    /// the game whatever the viewer's router does.
+    /// the game whatever the viewer's router does. A game that registered no public URL at all
+    /// (one on the server's own network, which reaches the server without going out through its
+    /// router: the hosting player's own) is given at the address the server is seen at, at the
+    /// forwarded port or else its own, since its private addresses reach no one elsewhere.
     pub fn urls_seen_from(&self, pid: u32, viewer: IpAddr) -> Vec<StationURL> {
         let mut urls = self.urls(pid);
         let seen = self.lock().urls.get(&pid).and_then(|(observed, _)| observed.address.parse::<IpAddr>().ok());
@@ -319,14 +322,18 @@ impl Sessions {
                     urls.truncate(MAX_URLS);
                 }
             }
-        } else if let (Some(seen), Some(port)) = (seen, self.forward_of(pid)) {
+        } else if let Some(seen) = seen {
             let address = seen.to_string();
+            let forward = self.forward_of(pid);
             let public = urls.iter().find(|u| u.address == address).or(urls.first()).cloned();
-            if let Some(mut forwarded) = public.filter(|u| u.port != port) {
-                forwarded.address = address;
-                forwarded.port = port;
-                urls.insert(0, forwarded);
-                urls.truncate(MAX_URLS);
+            if let Some(mut first) = public {
+                let port = forward.unwrap_or(first.port);
+                if first.address != address || first.port != port {
+                    first.address = address;
+                    first.port = port;
+                    urls.insert(0, first);
+                    urls.truncate(MAX_URLS);
+                }
             }
         }
         urls
@@ -1082,6 +1089,48 @@ mod tests {
         assert_eq!(shown("203.0.113.9"), ["198.51.100.7:2346", "172.24.16.1:2346"], "elsewhere: as registered");
         let first = &sessions.urls_seen_from(1, "198.51.100.7".parse().unwrap())[0];
         assert_eq!(first.params.get("RVCID").map(String::as_str), Some("2"), "the game's parameters kept");
+    }
+
+    /// The hosting player's game, on the server's own network: it registers only its address
+    /// there, and the server sees it at the server's public address. Players elsewhere get it
+    /// there, at the port its router forwards, or else at its own.
+    #[test]
+    fn a_game_on_the_servers_network_is_given_at_the_public_address() {
+        let sessions = Sessions::default();
+        let url = |a: &str, port: u16| format!("udp:/address={a};port={port};PID=1;RVCID=2").parse::<StationURL>().unwrap();
+        sessions.set_urls(1, "prudp:/address=203.0.113.24;port=2347".parse().unwrap(), vec![url("192.168.2.154", 2346)]);
+        let shown = |v: &str| {
+            sessions
+                .urls_seen_from(1, v.parse().unwrap())
+                .iter()
+                .map(|u| format!("{}:{}", u.address, u.port))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown("198.51.100.7"), ["203.0.113.24:2346", "192.168.2.154:2346"], "no forward: its own port");
+        assert_eq!(shown("203.0.113.24"), ["192.168.2.154:2346"], "on its network: as registered");
+        let lan: SocketAddrV4 = "192.168.2.154:2346".parse().unwrap();
+        sessions.set_reachability(
+            1,
+            Reachability {
+                forward: Some((40000, "UPnP".into())),
+                nat: "consistent".into(),
+                seen: "203.0.113.24".parse().unwrap(),
+                local: lan,
+                at: Instant::now(),
+            },
+        );
+        assert_eq!(shown("198.51.100.7"), ["203.0.113.24:40000", "192.168.2.154:2346"], "forwarded");
+        sessions.set_reachability(
+            1,
+            Reachability {
+                forward: Some((2346, "UPnP".into())),
+                nat: "consistent".into(),
+                seen: "203.0.113.24".parse().unwrap(),
+                local: lan,
+                at: Instant::now(),
+            },
+        );
+        assert_eq!(shown("198.51.100.7"), ["203.0.113.24:2346", "192.168.2.154:2346"], "forwarded on its own port");
     }
 
     #[test]
