@@ -374,7 +374,7 @@ impl Overlay {
             self.strong(ui, FG, "YOUR CONNECTION");
             let reachable = c.reachable();
             let color = match reachable {
-                crosscom_client_net::keep::Reachable::Open => GOOD,
+                crosscom_client_net::keep::Reachable::Open | crosscom_client_net::keep::Reachable::Forwarded => GOOD,
                 crosscom_client_net::keep::Reachable::Checking => MUTED,
                 _ => BAD,
             };

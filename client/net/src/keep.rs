@@ -68,10 +68,13 @@ pub struct Connection {
     /// 203.0.113.7:2346`).
     pub forward: Option<String>,
     /// Whether the server reached the game from outside, at the address other players get first
-    /// (none until it has checked).
+    /// (none until it has checked). For a server on this network, which can't check: `false` once
+    /// the router refused to forward the game's port.
     pub open: Option<bool>,
     /// When it was found (Unix time).
     pub at: u64,
+    /// The server is on this PC's network (hosted here): it can't check the game from outside.
+    pub beside: bool,
 }
 
 /// How reachable this PC's game is, for the player.
@@ -83,6 +86,9 @@ pub enum Reachable {
     Moderate,
     /// Few can, and it can join only hosts anyone can reach.
     Strict,
+    /// The router forwards the game's port, for a server on this network, which can't check it
+    /// from outside (hosting from the launcher).
+    Forwarded,
     /// Not known yet.
     Checking,
 }
@@ -90,6 +96,13 @@ pub enum Reachable {
 impl Connection {
     #[must_use]
     pub fn reachable(&self) -> Reachable {
+        if self.beside {
+            return match (&self.forward, self.open) {
+                (Some(_), _) => Reachable::Forwarded,
+                (None, Some(false)) => Reachable::Moderate,
+                (None, _) => Reachable::Checking,
+            };
+        }
         match self.open {
             Some(true) => Reachable::Open,
             Some(false) if self.nat == "symmetric" && self.forward.is_none() => Reachable::Strict,
@@ -106,6 +119,7 @@ impl Reachable {
             Reachable::Open => "Open",
             Reachable::Moderate => "Moderate",
             Reachable::Strict => "Strict",
+            Reachable::Forwarded => "Forwarded",
             Reachable::Checking => "Checking...",
         }
     }
@@ -117,6 +131,7 @@ impl Reachable {
             Reachable::Open => "Any player can join the matches you host.",
             Reachable::Moderate => "Most players can join the matches you host, but players behind strict routers can't (they aren't sent to your lobbies). Turning on UPnP in your router opens it to everyone.",
             Reachable::Strict => "Your router gives each connection a different port and doesn't forward the game's, so few players can join the matches you host, and Quick Match only sends you to hosts anyone can reach. Turn on UPnP in your router (often under Advanced or NAT).",
+            Reachable::Forwarded => "Your router forwards your game's port, so players on the internet can join the matches you host. Your own server can't check it from inside your network: a friend joining is the test.",
             Reachable::Checking => "The server checks once the game is in Multiplayer.",
         }
     }
@@ -202,7 +217,10 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
     };
     let (_, nat) = check::mapping(&ports);
     info!("port forward: the router maps ports {}", nat.as_str());
-    update(|c| c.nat = nat.as_str().into());
+    update(|c| {
+        c.nat = nat.as_str().into();
+        c.beside = beside;
+    });
     let report = |forward: Option<api::Forward>| api::ForwardReport {
         account: account.to_owned(),
         token: token.filter(|t| crosscom_client_common::config::is_game_token(t)).map(str::to_owned),
@@ -281,7 +299,13 @@ pub fn run(server: &str, account: &str, token: Option<&str>) {
             }
             Err(e) => {
                 info!("port forward: the router didn't forward the game's port: {e}");
-                update(|c| c.forward = None);
+                update(|c| {
+                    c.forward = None;
+                    // The server on this network can't check: no forward is all there is to say.
+                    if beside {
+                        c.open = Some(false);
+                    }
+                });
                 said(api::forward(server, &report(None)));
                 thread::sleep(VERDICT_AFTER);
                 said(api::forward(server, &report(None)));
@@ -307,7 +331,7 @@ mod tests {
             nat: nat.into(),
             forward: forward.then(|| "UPnP 203.0.113.7:2346".into()),
             open,
-            at: 0,
+            ..Connection::default()
         }
     }
 
@@ -323,6 +347,18 @@ mod tests {
             "a forward that let nothing in yet"
         );
         assert_eq!(connection("consistent", false, None).reachable(), Reachable::Checking);
+        // Hosting from the launcher: the server, on this network, can't check from outside.
+        let beside = |forward| Connection {
+            beside: true,
+            ..connection("consistent", forward, None)
+        };
+        assert_eq!(beside(true).reachable(), Reachable::Forwarded);
+        assert_eq!(beside(false).reachable(), Reachable::Checking, "the router not asked yet");
+        let refused = Connection {
+            open: Some(false),
+            ..beside(false)
+        };
+        assert_eq!(refused.reachable(), Reachable::Moderate, "refused: UPnP is the advice");
     }
 
     #[test]

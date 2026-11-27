@@ -787,7 +787,7 @@ fn connection_check(last: Option<&crosscom_client_net::keep::Connection>, now: u
     };
     let r = c.reachable();
     let tone = match r {
-        Reachable::Open => "good",
+        Reachable::Open | Reachable::Forwarded => "good",
         Reachable::Moderate => "warn",
         _ => "bad",
     };
@@ -928,6 +928,7 @@ mod checklist_tests {
             forward: Some("UPnP 203.0.113.7:2346".into()),
             open: Some(true),
             at: 1000,
+            beside: false,
         };
         let c = connection_check(Some(&open), 1000 + 600);
         assert_eq!((c.value.as_str(), c.tone), ("Open · 10 min ago", "good"));
@@ -936,10 +937,22 @@ mod checklist_tests {
             forward: None,
             open: Some(false),
             at: 0,
+            beside: false,
         };
         assert_eq!(connection_check(Some(&strict), 3 * 86400).tone, "bad");
         let unchecked = Connection { open: None, ..strict };
         assert_eq!(connection_check(Some(&unchecked), 10).value, "Not checked yet");
+        // Hosting from the launcher: forwarded, which the server on this network can't check.
+        let hosting = Connection {
+            nat: "consistent".into(),
+            forward: Some("UPnP 203.0.113.7:2346".into()),
+            open: None,
+            at: 1000,
+            beside: true,
+        };
+        let c = connection_check(Some(&hosting), 1000 + 60);
+        assert_eq!((c.value.as_str(), c.tone), ("Forwarded · just now", "good"));
+        assert!(c.detail.contains("a friend joining is the test"), "{}", c.detail);
     }
 }
 

@@ -112,6 +112,15 @@ pub fn announced(sessions: &Sessions, pid: u32) -> Option<(SocketAddrV4, Option<
     Some((SocketAddrV4::new(seen, url.port), rvcid))
 }
 
+/// Whether a game announced at `to` can be checked from here, for a server whose public address
+/// is `public`. Not at the server's own public address (the hosting player's game, or a
+/// housemate's): a probe from inside the network to it would come back through the router, which
+/// most routers don't do, and say nothing about players outside. Left unknown, it's offered to
+/// everyone.
+fn checkable(to: SocketAddrV4, public: Option<IpAddr>) -> bool {
+    public != Some(IpAddr::V4(*to.ip()))
+}
+
 impl Announce {
     /// A socket of its own, for probes and their answers.
     pub fn new() -> std::io::Result<Self> {
@@ -132,6 +141,10 @@ impl Announce {
         let Some((to, rvcid)) = announced(sessions, pid) else {
             return;
         };
+        if !checkable(to, crate::here::public()) {
+            slog::debug!(logger, "{pid:#x}'s game is at this server's own address ({to}): not checked from inside its network");
+            return;
+        }
         let token: [u8; 4] = rand::random();
         {
             let mut state = self.state();
@@ -288,6 +301,14 @@ mod tests {
 
     fn logger() -> Logger {
         Logger::root(slog::Discard, slog::o!())
+    }
+
+    #[test]
+    fn games_at_the_servers_own_address_arent_checked() {
+        let to: SocketAddrV4 = "203.0.113.24:2346".parse().unwrap();
+        assert!(!checkable(to, Some("203.0.113.24".parse().unwrap())), "the host's own game");
+        assert!(checkable(to, Some("198.51.100.7".parse().unwrap())));
+        assert!(checkable(to, None));
     }
 
     #[test]

@@ -425,6 +425,7 @@ fn connection_toast(shown: Option<Reachable>, now: Reachable) -> Option<(String,
     }
     Some(match now {
         Reachable::Open => ("Connection: Open. Anyone can join your matches".into(), false),
+        Reachable::Forwarded => ("Connection: your router forwards your game's port".into(), false),
         Reachable::Moderate => ("Connection: Moderate. Some players can't join your matches (overlay > Server)".into(), true),
         Reachable::Strict | Reachable::Checking => ("Connection: Strict. Few players can join your matches (overlay > Server)".into(), true),
     })
