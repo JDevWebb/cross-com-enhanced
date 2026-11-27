@@ -77,9 +77,14 @@ if [ "$(git rev-parse HEAD)" != "$remote" ]; then
 fi
 # CI runs on the newest commit a push brings, unless the push only changes release.toml or release
 # notes (ci.yml's paths-ignore): then what it checked is the newest commit on main's own line
-# (merges included) that changed anything else, pushed before.
-if [ -z "$remote" ] || ! git diff --quiet "$remote" HEAD -- . ':(exclude)release.toml' ':(exclude)docs/releases'; then
-  tested=$(git rev-parse HEAD)
+# (merges included) that changed anything else, pushed before. A commit that has a CI run already
+# is the one: main pushed before this script, with code and release notes together, was checked
+# at its newest commit, though that commit only changed the release notes.
+head=$(git rev-parse HEAD)
+if [ -n "$(gh run list -R "$REPO" --workflow CI --commit "$head" --limit 1 --json databaseId --jq '.[0].databaseId // empty')" ]; then
+  tested=$head
+elif [ -z "$remote" ] || ! git diff --quiet "$remote" HEAD -- . ':(exclude)release.toml' ':(exclude)docs/releases'; then
+  tested=$head
 else
   tested=$(git log -1 --first-parent --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
 fi
